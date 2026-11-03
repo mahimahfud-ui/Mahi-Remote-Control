@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mahi Remote Control — Web Browser Controller</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Header Bar -->
+  <header class="top-nav">
+    <div class="nav-left">
+      <span class="live-pulse"></span>
+      <span class="brand-title">MAHI REMOTE CONTROL</span>
+      <span class="brand-subtitle">| Web Operator Console</span>
+    </div>
+    <div class="nav-center">
+      <span id="connectionBadge" class="badge badge-warning">DISCONNECTED</span>
+      <span id="latencyDisplay" class="latency-pill">-- ms RTT</span>
+    </div>
+    <div class="nav-right">
+      <button id="btnPairDevice" class="btn btn-primary">+ Pair Device</button>
+      <button id="btnEmergencyKill" class="btn btn-danger">Emergency Disconnect</button>
+    </div>
+  </header>
+
+  <!-- Main Grid Workspace -->
+  <main class="workspace-grid">
+    <!-- Left Sidebar: Devices -->
+    <aside class="sidebar-devices">
+      <div class="sidebar-header">
+        <h3>PAIRED ANDROID DEVICES</h3>
+      </div>
+      <div id="deviceList" class="device-list">
+        <!-- Rendered by JS -->
+      </div>
+      <div class="connection-info-card">
+        <h4>Access Host</h4>
+        <div id="hostPill" class="mono-pill">Detecting...</div>
+        <p class="micro-text">Supports Public IP &amp; Cloudflare Tunnel</p>
+      </div>
+    </aside>
+
+    <!-- Center: Interactive Remote Phone Canvas -->
+    <section class="viewport-center">
+      <!-- Remote Toolbar -->
+      <div class="remote-toolbar">
+        <div class="btn-group">
+          <button id="btnNavBack" class="btn btn-icon" title="Back (Alt+Left)">◄ Back</button>
+          <button id="btnNavHome" class="btn btn-icon" title="Home (Alt+H)">● Home</button>
+          <button id="btnNavRecents" class="btn btn-icon" title="Recents (Alt+R)">■ Recents</button>
+          <button id="btnNavNotifs" class="btn btn-icon" title="Notifications">▼ Notifs</button>
+          <button id="btnNavSettings" class="btn btn-icon" title="Quick Settings">⚙ Quick Settings</button>
+        </div>
+
+        <div class="toolbar-divider"></div>
+
+        <div class="btn-group">
+          <button id="btnVolDown" class="btn btn-icon" title="Volume Down">🔉 Vol -</button>
+          <button id="btnVolUp" class="btn btn-icon" title="Volume Up">🔊 Vol +</button>
+        </div>
+
+        <div class="toolbar-divider"></div>
+
+        <div class="quality-selector">
+          <label for="qualitySelect">Quality:</label>
+          <select id="qualitySelect">
+            <option value="1080p">1080p (60 FPS)</option>
+            <option value="720p" selected>720p (30 FPS)</option>
+            <option value="480p">480p (15 FPS)</option>
+          </select>
+        </div>
+
+        <div id="streamStats" class="stream-stats-text">30 FPS | 2048 Kbps</div>
+      </div>
+
+      <!-- Phone Bezel & Screen Canvas -->
+      <div class="phone-frame-container">
+        <div class="phone-bezel">
+          <div class="phone-speaker"></div>
+          <div class="canvas-wrapper" id="canvasWrapper">
+            <canvas id="phoneCanvas" width="1080" height="1920"></canvas>
+            <video id="remoteVideo" autoplay playsinline muted style="display: none;"></video>
+            <div id="streamPlaceholder" class="stream-placeholder">
+              <div class="placeholder-icon">📱</div>
+              <h3>Mahi Remote Display Active</h3>
+              <p>Click anywhere on the screen to tap, drag to swipe, or use keyboard to type into active inputs.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Pane: Tabs (Diagnostics, Apps, Files, Logs) -->
+    <aside class="sidebar-tools">
+      <div class="tab-headers">
+        <button class="tab-btn active" data-tab="tabDiag">Diagnostics</button>
+        <button class="tab-btn" data-tab="tabApps">Apps</button>
+        <button class="tab-btn" data-tab="tabFiles">Files</button>
+        <button class="tab-btn" data-tab="tabLogs">Audit</button>
+      </div>
+
+      <!-- Tab: Diagnostics -->
+      <div id="tabDiag" class="tab-pane active">
+        <button id="btnRunDiag" class="btn btn-primary btn-block">Run Remote Diagnostics</button>
+        <div class="telemetry-card">
+          <h4>DEVICE TELEMETRY</h4>
+          <div class="telemetry-row"><span>Device Model:</span><strong id="diagModel">Samsung Galaxy S24 Ultra</strong></div>
+          <div class="telemetry-row"><span>OS Version:</span><strong id="diagOs">Android 14 (API 34)</strong></div>
+          <div class="telemetry-row"><span>Battery:</span><strong id="diagBattery" class="text-mint">86% (Charging)</strong></div>
+          <div class="telemetry-row"><span>Temperature:</span><strong id="diagTemp">31.2°C</strong></div>
+          <div class="telemetry-row"><span>Storage:</span><strong id="diagStorage">182.4 GB free</strong></div>
+          <div class="telemetry-row"><span>DNS &amp; Route:</span><strong class="text-mint">Verified (18ms)</strong></div>
+        </div>
+      </div>
+
+      <!-- Tab: Apps -->
+      <div id="tabApps" class="tab-pane">
+        <input type="text" id="appSearchInput" class="form-input" placeholder="Search installed apps...">
+        <div class="quick-launch-box">
+          <input type="text" id="launchPkgInput" class="form-input" placeholder="Package name (e.g. com.android.settings)" value="com.android.settings">
+          <button id="btnLaunchPkg" class="btn btn-secondary btn-block">Launch Package</button>
+        </div>
+        <div id="appList" class="app-list-container">
+          <!-- Apps populated via JS -->
+        </div>
+      </div>
+
+      <!-- Tab: Files -->
+      <div id="tabFiles" class="tab-pane">
+        <div class="file-path-bar">
+          <span id="currentFilePath">/storage/emulated/0/Documents</span>
+          <button id="btnRefreshFiles" class="btn btn-small">↻</button>
+        </div>
+        <div class="file-actions-row">
+          <input type="file" id="fileUploadInput" style="display: none;">
+          <button id="btnTriggerUpload" class="btn btn-primary btn-small">+ Upload File</button>
+          <button id="btnNewFolder" class="btn btn-secondary btn-small">+ Folder</button>
+        </div>
+        <div id="fileUploadProgress" class="progress-bar-container" style="display: none;">
+          <div class="progress-bar-fill" id="progressBarFill" style="width: 0%;"></div>
+          <span id="progressText" class="progress-text">Uploading...</span>
+        </div>
+        <div id="fileList" class="file-list-container">
+          <!-- Files populated via JS -->
+        </div>
+      </div>
+
+      <!-- Tab: Security Logs -->
+      <div id="tabLogs" class="tab-pane">
+        <div class="log-controls">
+          <span>Security Audit Trail</span>
+          <button id="btnClearLogs" class="btn btn-small">Clear</button>
+        </div>
+        <div id="auditLogBox" class="audit-log-box"></div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Modal: Pair Device -->
+  <div id="pairModal" class="modal-backdrop" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Pair Android Device</h3>
+        <button id="btnCloseModal" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p>Enter the 6-digit one-time pairing code displayed on the Android device:</p>
+        <input type="text" id="inputPairCode" class="pair-code-input" placeholder="123-456" maxlength="7">
+        <p class="micro-text">Code expires in 5 minutes. The phone owner will receive an authorization prompt.</p>
+      </div>
+      <div class="modal-footer">
+        <button id="btnSubmitPair" class="btn btn-primary btn-block">Request Authorization</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
