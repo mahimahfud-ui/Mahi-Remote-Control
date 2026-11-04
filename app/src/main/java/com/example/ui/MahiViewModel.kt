@@ -560,6 +560,15 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                     signalingClient.send("FILE_CHUNK_RESPONSE", response.toString(), msg.sender)
                 }
             }
+            "CREATE_EMPTY_FILE" -> {
+                val success = fileManager.createEmptyFile(path)
+                signalingClient.send(
+                    "COMMAND_ACK",
+                    JSONObject().put("command", "CREATE_EMPTY_FILE").put("success", success).toString(),
+                    msg.sender
+                )
+                if (success) refreshFiles()
+            }
             "WRITE_CHUNK" -> {
                 try {
                     val base64 = root.optString("data", "")
