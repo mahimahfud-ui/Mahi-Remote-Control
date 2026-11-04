@@ -15,6 +15,7 @@ services:
       - JWT_SECRET=${JWT_SECRET:?Set a random JWT_SECRET of at least 32 bytes}
       - STUN_SERVER_URL=${STUN_SERVER_URL:-stun:stun.l.google.com:19302}
       - TURN_SERVER_URL=${TURN_SERVER_URL:?Set TURN_SERVER_URL to your deployed Coturn endpoint}
+      - TURN_REALM=${TURN_REALM:?Set TURN_REALM to your public TURN hostname}
       - TURN_SHARED_SECRET=${TURN_SHARED_SECRET:?Set TURN_SHARED_SECRET in the deployment environment}
       - DATABASE_URL=postgres://mahi_admin:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres-db:5432/mahi_remote
     depends_on:
@@ -44,6 +45,7 @@ services:
     command:
       - -n
       - --log-file=stdout
+      - --realm=${TURN_REALM:?Set TURN_REALM in the deployment environment}
       - --static-auth-secret=${TURN_SHARED_SECRET:?Set TURN_SHARED_SECRET in the deployment environment}
     restart: always
 
