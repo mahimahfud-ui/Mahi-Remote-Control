@@ -54,6 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.pairing.TrustedController
+import com.example.remotescreen.ScreenStreamState
 import com.example.ui.MahiViewModel
 import org.json.JSONObject
 import com.example.ui.components.QrCodeView
@@ -70,9 +71,15 @@ import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.WarningAmber
 
 @Composable
-fun PairingScreen(viewModel: MahiViewModel) {
+fun PairingScreen(
+    viewModel: MahiViewModel,
+    onRequestScreenShare: () -> Unit = {}
+) {
     val context = LocalContext.current
     val currentCode by viewModel.pairingManager.currentPairingCode.collectAsState()
+    val activeSession by viewModel.pairingManager.activeSession.collectAsState()
+    val approvalInProgress by viewModel.pairingManager.approvalInProgress.collectAsState()
+    val streamState by viewModel.screenStreamState.collectAsState()
     val trustedControllers by viewModel.pairingManager.trustedControllers.collectAsState()
     val showQr by viewModel.showQrDialog.collectAsState()
     val runtimeConfigJson by viewModel.signalingClient.runtimeConfigJson.collectAsState()
@@ -90,108 +97,175 @@ fun PairingScreen(viewModel: MahiViewModel) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Pairing Code Card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = DarkSurface),
-            border = androidx.compose.foundation.BorderStroke(1.dp, CyanAccent.copy(alpha = 0.5f)),
-            shape = RoundedCornerShape(18.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(20.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+        if (activeSession == null) {
+            // Pairing Code Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                border = androidx.compose.foundation.BorderStroke(1.dp, CyanAccent.copy(alpha = 0.5f)),
+                shape = RoundedCornerShape(18.dp)
             ) {
-                Text(
-                    text = "ONE-TIME PAIRING CODE",
-                    color = CyanAccent,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 1.sp
-                )
-
-                Text(
-                    text = "Share this temporary code or QR with the phone or browser that will control this device. Every request requires your approval.",
-                    color = TextSecondary,
-                    fontSize = 13.sp,
-                    lineHeight = 18.sp
-                )
-
-                // Large Code Display
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(DarkSurfaceElevated)
-                        .border(1.dp, DarkSurfaceBorder, RoundedCornerShape(14.dp))
-                        .padding(vertical = 16.dp),
-                    contentAlignment = Alignment.Center
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center
+                    Text(
+                        text = "ONE-TIME PAIRING CODE",
+                        color = CyanAccent,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp
+                    )
+    
+                    Text(
+                        text = "Share this temporary code or QR with the phone or browser that will control this device. Every request requires your approval.",
+                        color = TextSecondary,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp
+                    )
+    
+                    // Large Code Display
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(DarkSurfaceElevated)
+                            .border(1.dp, DarkSurfaceBorder, RoundedCornerShape(14.dp))
+                            .padding(vertical = 16.dp),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = currentCode?.code ?: "--- ---",
-                            color = TextPrimary,
-                            fontSize = 34.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace,
-                            letterSpacing = 4.sp
-                        )
-                        Spacer(modifier = Modifier.width(16.dp))
-                        IconButton(
-                            onClick = {
-                                val code = currentCode?.code ?: return@IconButton
-                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                clipboard.setPrimaryClip(ClipData.newPlainText("Mahi Pairing Code", code))
-                                Toast.makeText(context, "Pairing code copied!", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.testTag("copy_pairing_code_button")
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
                         ) {
-                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy code", tint = CyanAccent)
+                            Text(
+                                text = currentCode?.code ?: "--- ---",
+                                color = TextPrimary,
+                                fontSize = 34.sp,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                                letterSpacing = 4.sp
+                            )
+                            Spacer(modifier = Modifier.width(16.dp))
+                            IconButton(
+                                onClick = {
+                                    val code = currentCode?.code ?: return@IconButton
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    clipboard.setPrimaryClip(ClipData.newPlainText("Mahi Pairing Code", code))
+                                    Toast.makeText(context, "Pairing code copied!", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.testTag("copy_pairing_code_button")
+                            ) {
+                                Icon(Icons.Default.ContentCopy, contentDescription = "Copy code", tint = CyanAccent)
+                            }
                         }
                     }
+    
+                    // Buttons Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Button(
+                            onClick = { viewModel.setShowQrDialog(true) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = CyanAccent,
+                                contentColor = DarkCharcoalBg
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("show_qr_code_btn")
+                        ) {
+                            Icon(Icons.Default.QrCode, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Show QR Code", fontWeight = FontWeight.SemiBold)
+                        }
+    
+                        OutlinedButton(
+                            onClick = { viewModel.generateNewPairingCode() },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                            border = ButtonDefaults.outlinedButtonBorder.copy(
+                                brush = androidx.compose.ui.graphics.SolidColor(DarkSurfaceBorder)
+                            ),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("refresh_code_btn")
+                        ) {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("New Code")
+                        }
+                    }
+    
                 }
-
-                // Buttons Row
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+            }
+            if (approvalInProgress) {
+                Text(
+                    text = "Approval sent. Waiting for the server to confirm this session…",
+                    color = WarningAmber,
+                    fontSize = 13.sp
+                )
+            }
+        } else {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                border = androidx.compose.foundation.BorderStroke(1.dp, MintAccent.copy(alpha = 0.5f)),
+                shape = RoundedCornerShape(18.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
+                    Text("CONNECTION APPROVED", color = MintAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = "Approved controller: ${activeSession.operatorName}",
+                        color = TextPrimary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = when (streamState) {
+                            is ScreenStreamState.Active -> "Your screen is currently being shared with the approved controller."
+                            is ScreenStreamState.RequestingConsent -> "Starting the secure media connection…"
+                            is ScreenStreamState.Error -> (streamState as ScreenStreamState.Error).message
+                            ScreenStreamState.Stopped, ScreenStreamState.Idle -> "The controller is approved. You must still grant Android screen-capture permission before video sharing starts."
+                        },
+                        color = TextSecondary,
+                        fontSize = 13.sp
+                    )
                     Button(
-                        onClick = { viewModel.setShowQrDialog(true) },
+                        onClick = onRequestScreenShare,
+                        enabled = streamState !is ScreenStreamState.Active &&
+                            streamState !is ScreenStreamState.RequestingConsent,
+                        modifier = Modifier.fillMaxWidth(),
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = CyanAccent,
+                            containerColor = if (streamState is ScreenStreamState.Error) WarningAmber else MintAccent,
                             contentColor = DarkCharcoalBg
                         ),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("show_qr_code_btn")
+                        shape = RoundedCornerShape(12.dp)
                     ) {
-                        Icon(Icons.Default.QrCode, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Show QR Code", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            text = when (streamState) {
+                                is ScreenStreamState.Active -> "Screen sharing active"
+                                is ScreenStreamState.RequestingConsent -> "Starting…"
+                                is ScreenStreamState.Error -> "Try screen sharing again"
+                                else -> "Start screen sharing"
+                            },
+                            fontWeight = FontWeight.Bold
+                        )
                     }
-
                     OutlinedButton(
-                        onClick = { viewModel.generateNewPairingCode() },
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
-                        border = ButtonDefaults.outlinedButtonBorder.copy(
-                            brush = androidx.compose.ui.graphics.SolidColor(DarkSurfaceBorder)
-                        ),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("refresh_code_btn")
+                        onClick = { viewModel.emergencyDisconnect() },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorCoral)
                     ) {
-                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("New Code")
+                        Text("End remote session")
                     }
                 }
-
             }
         }
 
