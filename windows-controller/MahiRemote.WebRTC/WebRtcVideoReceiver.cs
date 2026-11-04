@@ -20,13 +20,20 @@ public class VideoStreamStatistics
 
 public class IceServerConfig
 {
+    // STUN is public. TURN must be appended only after fetching short-lived,
+    // session-authorized credentials from the backend /api/v1/turn/credentials.
     public string[] Urls { get; set; } = new[]
     {
-        "stun:stun.l.google.com:19302",
-        "turn:turn.mahi-remote.cloud:3478"
+        "stun:stun.l.google.com:19302"
     };
-    public string Username { get; set; } = "mahi_operator";
-    public string Credential { get; set; } = "mahi-turn-shared-secret-auth-key";
+    public string Username { get; set; } = string.Empty;
+    public string Credential { get; set; } = string.Empty;
+
+    public bool HasTurnCredentials =>
+        !string.IsNullOrWhiteSpace(Username) &&
+        !string.IsNullOrWhiteSpace(Credential) &&
+        Urls.Any(url => url.StartsWith("turn:", StringComparison.OrdinalIgnoreCase) ||
+                        url.StartsWith("turns:", StringComparison.OrdinalIgnoreCase));
 }
 
 public class WebRtcVideoReceiver
