@@ -30,7 +30,8 @@ function payloadObject(message: any): Record<string, any> {
 }
 
 function sendJson(client: ClientConnection | undefined, message: Record<string, any>): void {
-  if (client?.ws.readyState === WebSocket.OPEN) client.ws.send(JSON.stringify(message));
+  if (!client || client.ws.readyState !== WebSocket.OPEN) return;
+  client.ws.send(JSON.stringify(message));
 }
 
 export class SignalingHub {
