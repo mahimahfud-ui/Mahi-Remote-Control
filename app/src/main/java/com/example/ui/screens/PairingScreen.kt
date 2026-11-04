@@ -74,6 +74,8 @@ fun PairingScreen(viewModel: MahiViewModel, onRequestScreenShare: () -> Unit) {
     val currentCode by viewModel.pairingManager.currentPairingCode.collectAsState()
     val trustedControllers by viewModel.pairingManager.trustedControllers.collectAsState()
     val showQr by viewModel.showQrDialog.collectAsState()
+    val browserUrl by viewModel.browserAccessUrl.collectAsState()
+    val backendStatus by viewModel.publicBackendStatus.collectAsState()
 
     Column(
         modifier = Modifier
@@ -193,6 +195,35 @@ fun PairingScreen(viewModel: MahiViewModel, onRequestScreenShare: () -> Unit) {
                     Icon(Icons.Default.CastConnected, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Start screen sharing", fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+
+        // Browser access is shown only when the backend confirms its public HTTPS URL.
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = DarkSurface),
+            border = androidx.compose.foundation.BorderStroke(1.dp, DarkSurfaceBorder),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Browser access", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                if (!browserUrl.isNullOrBlank()) {
+                    Text(browserUrl!!, color = CyanAccent, fontSize = 12.sp)
+                    OutlinedButton(
+                        onClick = {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("Mahi Remote browser URL", browserUrl))
+                            Toast.makeText(context, "Browser URL copied", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Copy browser URL")
+                    }
+                } else {
+                    Text(backendStatus, color = TextSecondary, fontSize = 12.sp)
                 }
             }
         }
