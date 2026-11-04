@@ -247,6 +247,56 @@ class SignalingClient(
         }
     }
 
+    fun fetchSessionIceConfig(
+        onSuccess: (String) -> Unit,
+        onFailure: (String) -> Unit
+    ) {
+        val baseUrl = BuildConfig.PUBLIC_BASE_URL.trim().trimEnd('/')
+        val token = sessionToken
+        if (baseUrl.isBlank() || token.isNullOrBlank()) {
+            onFailure("An HTTPS backend URL and approved session token are required.")
+            return
+        }
+
+        val request = try {
+            Request.Builder()
+                .url("$baseUrl/api/v1/turn-credentials")
+                .header("Authorization", "Bearer $token")
+                .get()
+                .build()
+        } catch (e: Exception) {
+            onFailure("Invalid TURN credential endpoint: " + (e.message ?: "unknown error"))
+            return
+        }
+
+        client.newCall(request).enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
+                onFailure("Could not obtain approved-session ICE configuration: " + (e.message ?: "network error"))
+            }
+
+            override fun onResponse(call: okhttp3.Call, response: Response) {
+                response.use {
+                    val body = it.body?.string().orEmpty()
+                    if (!it.isSuccessful) {
+                        onFailure("TURN credential endpoint returned HTTP " + it.code)
+                        return
+                    }
+                    try {
+                        val root = org.json.JSONObject(body)
+                        val servers = root.optJSONArray("iceServers")
+                        if (servers == null || servers.length() == 0) {
+                            onFailure("The backend returned no ICE servers.")
+                            return
+                        }
+                        onSuccess(root.toString())
+                    } catch (e: Exception) {
+                        onFailure("Invalid ICE configuration response: " + (e.message ?: "parse error"))
+                    }
+                }
+            }
+        })
+    }
+
     private fun scheduleReconnect() {
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
