@@ -72,7 +72,9 @@ new SignalingHub(wss);
 
 server.listen(port, host, () => {
   const publicBase = process.env.PUBLIC_BASE_URL || 'not configured';
-  const turnReady = !!(process.env.TURN_URL && process.env.TURN_SECRET && process.env.TURN_SECRET.length >= 32);
+  const coturnReady = !!(process.env.TURN_URL && process.env.TURN_SECRET && process.env.TURN_SECRET.length >= 32);
+  const cloudflareTurnReady = !!(process.env.CLOUDFLARE_TURN_KEY_ID && process.env.CLOUDFLARE_TURN_API_TOKEN);
+  const turnReady = coturnReady || cloudflareTurnReady;
   console.log('Mahi Remote Control signaling service started.');
   console.log('Local listener:', host + ':' + port);
   console.log('Public HTTPS origin:', publicBase);
