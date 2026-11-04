@@ -168,6 +168,23 @@ async function runTests() {
     assert(!JSON.stringify(turnPayload).includes('integration-only-turn-secret'));
     console.log('✓ Approved session receives expiring TURN credentials');
 
+    // With TURN disabled, the approved session should still get a STUN-only config.
+    const savedTurnUrl = process.env.TURN_SERVER_URL;
+    const savedTurnSecret = process.env.TURN_SHARED_SECRET;
+    delete process.env.TURN_SERVER_URL;
+    delete process.env.TURN_SHARED_SECRET;
+    const stunOnlyRes = await fetch('http://localhost:8099/api/v1/turn-credentials', {
+      headers: { Authorization: 'Bearer ' + controllerApproval.sessionToken }
+    });
+    assert.strictEqual(stunOnlyRes.status, 200, 'TURN absence must not block STUN fallback');
+    const stunOnlyPayload = await stunOnlyRes.json();
+    assert.strictEqual(stunOnlyPayload.turnConfigured, false);
+    assert(stunOnlyPayload.iceServers.some(server => String(server.urls).startsWith('stun:')));
+    assert.strictEqual(stunOnlyPayload.iceServers.some(server => String(server.urls).startsWith('turn:')), false);
+    process.env.TURN_SERVER_URL = savedTurnUrl;
+    process.env.TURN_SHARED_SECRET = savedTurnSecret;
+    console.log('✓ STUN-only fallback remains available when TURN is not deployed');
+
     console.log('✓ Pairing request is pending until explicit receiver approval');
     console.log('✓ Both participants receive separate signed tokens for one session');
 
