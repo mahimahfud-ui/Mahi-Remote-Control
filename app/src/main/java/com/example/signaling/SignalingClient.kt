@@ -40,6 +40,8 @@ class SignalingClient(
     private val onMessageReceived: (SignalingMessage) -> Unit
 ) {
     private val client = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .callTimeout(20, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .pingInterval(20, TimeUnit.SECONDS)
         .build()
@@ -66,6 +68,11 @@ class SignalingClient(
 
     fun setSessionToken(token: String?) {
         sessionToken = token?.takeIf { it.isNotBlank() }
+        if (sessionToken != null) {
+            _connectionStatus.value = ConnectionStatus.AUTHENTICATED
+        } else if (_serverUrl.value.isNotBlank() && webSocket != null) {
+            _connectionStatus.value = ConnectionStatus.CONNECTED
+        }
     }
 
     private var currentRole: String = "RECEIVER"
@@ -115,6 +122,7 @@ class SignalingClient(
                 configRequestInFlight = false
                 _connectionStatus.value = ConnectionStatus.ERROR
                 AuditLogger.log("CONFIG", "FETCH_FAILED", "Could not load backend runtime configuration: ${e.message}", AuditSeverity.WARNING)
+                scheduleConfigRetry()
             }
 
             override fun onResponse(call: okhttp3.Call, response: Response) {
@@ -147,6 +155,16 @@ class SignalingClient(
         })
     }
 
+    private fun scheduleConfigRetry() {
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            delay(5000L)
+            if (isActive && _serverUrl.value.isBlank() && !configRequestInFlight) {
+                loadRuntimeConfiguration()
+            }
+        }
+    }
+
     private fun connectWebSocket() {
         if (_connectionStatus.value == ConnectionStatus.CONNECTING ||
             _connectionStatus.value == ConnectionStatus.CONNECTED ||
@@ -173,8 +191,8 @@ class SignalingClient(
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
-                _connectionStatus.value = ConnectionStatus.AUTHENTICATED
-                AuditLogger.log("SIGNALING", "CONNECTED", "Connected to configured signaling server as ${deviceIdentity.deviceId}", AuditSeverity.INFO)
+                _connectionStatus.value = ConnectionStatus.CONNECTED
+                AuditLogger.log("SIGNALING", "CONNECTED", "WebSocket transport connected. Session authorization is still required.", AuditSeverity.INFO)
                 send("REGISTER", """{"deviceId":"${deviceIdentity.deviceId}","model":"${deviceIdentity.deviceName}"}""")
             }
 
