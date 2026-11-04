@@ -124,6 +124,10 @@ export class SignalingHub {
   }
 
   private handlePairByCode(sender: ClientConnection, msg: any, payload: Record<string, any>): void {
+    if (!['CONTROLLER', 'WINDOWS', 'BROWSER'].includes(sender.type)) {
+      this.send(sender, { type: 'PAIR_ERROR', error: 'Only a controller can submit a pairing code.' });
+      return;
+    }
     const rawCode = msg.code || msg.pairingCode || payload.code || payload.pairingCode;
     const code = String(rawCode || '').replace(/[^0-9]/g, '');
     const fingerprint = String(sender.fingerprint || msg.fingerprint || payload.fingerprint || '');
@@ -322,6 +326,10 @@ export class SignalingHub {
       return;
     }
     if (type === 'REGISTER_PAIRING_CODE') {
+      if (!['RECEIVER', 'ANDROID'].includes(sender.type)) {
+        this.send(sender, { type: 'PAIR_ERROR', error: 'Only a receiver can register a pairing code.' });
+        return;
+      }
       const code = String(msg.code || msg.pairingCode || payload.code || '').replace(/[^0-9]/g, '');
       const expiresAt = Number(msg.expiresAt || payload.expiresAt || (Date.now() + 5 * 60 * 1000));
       if (!/^\d{6}$/.test(code) || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
@@ -349,16 +357,19 @@ export class SignalingHub {
     const authorization = this.authorizeSessionMessage(sender, msg);
     if (!authorization) return;
     const target = this.clients.get(authorization.peerId);
-    if (!target) {
-      this.send(sender, { type: 'SESSION_ERROR', error: 'The other session participant is offline.' });
+
+    if (type === 'EMERGENCY_DISCONNECT') {
+      if (target) {
+        this.send(target, { type: 'EMERGENCY_DISCONNECT', sender: sender.id, sessionId: authorization.sessionId });
+        this.send(target, { type: 'SESSION_ENDED', sessionId: authorization.sessionId });
+      }
+      this.send(sender, { type: 'SESSION_ENDED', sessionId: authorization.sessionId });
+      DeviceService.endSession(authorization.sessionId);
       return;
     }
 
-    if (type === 'EMERGENCY_DISCONNECT') {
-      this.send(target, { type: 'EMERGENCY_DISCONNECT', sender: sender.id, sessionId: authorization.sessionId });
-      this.send(sender, { type: 'SESSION_ENDED', sessionId: authorization.sessionId });
-      this.send(target, { type: 'SESSION_ENDED', sessionId: authorization.sessionId });
-      DeviceService.endSession(authorization.sessionId);
+    if (!target) {
+      this.send(sender, { type: 'SESSION_ERROR', error: 'The other session participant is offline.' });
       return;
     }
 
