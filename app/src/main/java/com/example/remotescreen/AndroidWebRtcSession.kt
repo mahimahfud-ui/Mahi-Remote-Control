@@ -20,6 +20,11 @@ class AndroidWebRtcSession(
     context: Context,
     private val sendSignal: (String, String, String?) -> Boolean
 ) {
+    companion object {
+        @Volatile private var activeInstance: AndroidWebRtcSession? = null
+        fun stopActive() { activeInstance?.stop() }
+    }
+
     private val appContext = context.applicationContext
     private val executor = Executors.newSingleThreadExecutor()
     private val egl = EglBase.create()
@@ -48,6 +53,7 @@ class AndroidWebRtcSession(
     )
 
     init {
+        activeInstance = this
         try {
             PeerConnectionFactory.initialize(
                 PeerConnectionFactory.InitializationOptions.builder(appContext)
@@ -312,5 +318,6 @@ class AndroidWebRtcSession(
         stop()
         executor.execute { factory?.dispose(); factory = null; egl.release() }
         executor.shutdown()
+        if (activeInstance === this) activeInstance = null
     }
 }
