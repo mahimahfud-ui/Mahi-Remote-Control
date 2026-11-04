@@ -186,6 +186,7 @@ class WebRtcSessionManager(
     }
 
     fun initializeRenderer(renderer: SurfaceViewRenderer) {
+        if (remoteRenderer === renderer) return
         renderer.init(eglBase.eglBaseContext, null)
         renderer.setEnableHardwareScaler(true)
         renderer.setMirror(false)
@@ -403,6 +404,7 @@ class WebRtcSessionManager(
         }
         remoteVideoTrack = null
         firstFrameSink = null
+        remoteRenderer?.release()
         remoteRenderer = null
         localVideoTrack?.dispose()
         localVideoTrack = null
