@@ -22,7 +22,10 @@ apiRouter.get('/health', (_req: Request, res: Response) => {
     service: 'Mahi Remote Cloud Signaling & Auth',
     version: '1.1.0',
     publicAccessConfigured: /^https:\/\//i.test(process.env.PUBLIC_BASE_URL || ''),
-    turnConfigured: !!(process.env.TURN_URL && process.env.TURN_SECRET),
+    turnConfigured: !!(
+      (process.env.TURN_URL && process.env.TURN_SECRET) ||
+      (process.env.CLOUDFLARE_TURN_KEY_ID && process.env.CLOUDFLARE_TURN_API_TOKEN)
+    ),
     timestamp: new Date().toISOString(),
   });
 });
