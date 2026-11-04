@@ -15,8 +15,10 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?Set ALLOWED_ORIGINS to the allowed browser origins}
       DATABASE_URL: postgres://mahi_admin:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres-db:5432/mahi_remote
       JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET to a random value of at least 32 characters}
-      TURN_URL: ${TURN_URL:?Set TURN_URL to the public TURN URI(s)}
-      TURN_SECRET: ${TURN_SECRET:?Set TURN_SECRET to a random value of at least 32 characters}
+      TURN_URL: ${TURN_URL:-}
+      TURN_SECRET: ${TURN_SECRET:-}
+      CLOUDFLARE_TURN_KEY_ID: ${CLOUDFLARE_TURN_KEY_ID:-}
+      CLOUDFLARE_TURN_API_TOKEN: ${CLOUDFLARE_TURN_API_TOKEN:-}
       STUN_URL: ${STUN_URL:-stun:stun.l.google.com:19302}
     depends_on:
       postgres-db:
@@ -41,13 +43,14 @@ services:
     # Database is intentionally not published to the public host interface.
 
   coturn-server:
+    profiles: ["coturn"]
     image: coturn/coturn:latest
     container_name: mahi-coturn
     restart: unless-stopped
     network_mode: host
     environment:
-      TURN_SECRET: ${TURN_SECRET:?Set TURN_SECRET}
-      TURN_REALM: ${TURN_REALM:?Set TURN_REALM to the TURN DNS name}
+      TURN_SECRET: ${TURN_SECRET:-}
+      TURN_REALM: ${TURN_REALM:-}
     volumes:
       - ./coturn.conf:/etc/coturn/base.conf:ro
       - ./run-coturn.sh:/opt/mahi/run-coturn.sh:ro
