@@ -4,7 +4,7 @@
 
 ## Current implementation status
 
-**This repository is not yet a complete or release-ready remote-control product.** The latest GitHub snapshot did not contain a native Android WebRTC publisher/receiver. The current working branch deliberately fails closed after MediaProjection consent instead of pretending simulated metrics are live video. The browser client now has a real pairing/offer path, but it cannot receive actual screen frames until the native Android WebRTC media pipeline is implemented.
+**Native Android-to-Android WebRTC screen transport is now implemented in source on this working branch, but the branch is not yet verified as a release-ready product.** It includes a receiver-side MediaProjection publisher, a controller-side video receiver, SDP/ICE signaling, a real Android video renderer, owner-visible foreground sharing, and session-authorized remote input. Android CI/build results and two-physical-device end-to-end tests are still required before calling the feature complete.
 
 All work described here is on `work/anywhere-remote-control`. GitHub `main` has not been changed. The Google AI Studio Remix workspace was not available in this implementation session; compare this branch against that workspace before merging so newer workspace work is not overwritten.
 
@@ -18,13 +18,16 @@ All work described here is on `work/anywhere-remote-control`. GitHub `main` has 
 - Demo devices, fake default telemetry and synthetic screen-stream metrics removed.
 - Backend/Android CI workflow and honest implementation/deployment documentation added.
 
-### Critical remaining work
+### Remaining release blockers
 
-- Implement Android native WebRTC PeerConnection, MediaProjection video capture/encoding, SDP/ICE handling and remote video rendering.
-- Complete Android-to-Android and browser-to-Android end-to-end command/video paths.
-- Persist pairing/session state in PostgreSQL or another shared durable store; current backend maps are process memory.
-- Deploy and verify a public HTTPS/WSS backend and a real Coturn relay.
-- Run the new CI workflow, generate a signed release APK, and test with physical devices and external networks.
+- Verify GitHub Actions Android build/unit tests/lint; fix any compile or runtime issues found there.
+- Install the same APK on two physical Android phones and verify owner-approved pairing, real decoded video, tap/swipe/navigation, Stop/Disconnect, and reconnect.
+- Configure a reachable TURN relay (Coturn or Cloudflare Realtime managed TURN) for networks where direct STUN cannot connect.
+- Persist device, pending-pairing and active-session state; current backend registries are in-memory Maps and reset on process restart.
+- Verify browser-to-Android separately; the Windows desktop controller has not been completed or tested on this branch.
+- Generate a signed release APK after the physical-device tests pass.
+
+**Android consent and platform limits:** The receiving owner must approve pairing, accept Android's screen-sharing prompt, and manually enable Mahi Remote Input in Accessibility settings. Android protected screens (FLAG_SECURE), some system-owned dialogs, and OS restrictions cannot be bypassed. This is owner-approved remote support, not stealth or unrestricted system-level control.
 
 See [implementation status](docs/IMPLEMENTATION-STATUS.md) and [public remote deployment](docs/PUBLIC-REMOTE-DEPLOYMENT.md) before using or distributing this branch.
 
