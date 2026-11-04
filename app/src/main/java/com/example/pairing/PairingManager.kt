@@ -27,6 +27,10 @@ class PairingManager(private val context: Context) {
     private val _pendingRequest = MutableStateFlow<OperatorRequest?>(null)
     val pendingRequest: StateFlow<OperatorRequest?> = _pendingRequest.asStateFlow()
 
+    private val _approvalInProgress = MutableStateFlow(false)
+    val approvalInProgress: StateFlow<Boolean> = _approvalInProgress.asStateFlow()
+    private var approvalRequest: OperatorRequest? = null
+
     private val _trustedControllers = MutableStateFlow<List<TrustedController>>(emptyList())
     val trustedControllers: StateFlow<List<TrustedController>> = _trustedControllers.asStateFlow()
 
@@ -111,20 +115,36 @@ class PairingManager(private val context: Context) {
     }
 
     fun approveRequest(request: OperatorRequest) {
+        if (_pendingRequest.value?.requestId != request.requestId || _approvalInProgress.value) return
+        approvalRequest = request
+        _approvalInProgress.value = true
+        AuditLogger.log(
+            "PAIRING",
+            "APPROVAL_SENT",
+            "Owner approval was sent to the backend; waiting for a signed session authorization.",
+            AuditSeverity.SECURITY
+        )
+    }
+
+    fun markSessionAuthorized(sessionId: String): Boolean {
+        val request = approvalRequest ?: return false
+        if (sessionId.isBlank()) return false
+
         val session = ActiveSession(
-            sessionId = UUID.randomUUID().toString(),
+            sessionId = sessionId,
             operatorName = request.operatorName,
             operatorLocation = request.operatorLocation,
             controllerFingerprint = request.controllerFingerprint,
             startedAtMillis = System.currentTimeMillis(),
             controllerId = request.controllerId,
             isScreenStreaming = false,
-            isInputEnabled = false
+            isInputEnabled = true
         )
         _activeSession.value = session
         _pendingRequest.value = null
+        approvalRequest = null
+        _approvalInProgress.value = false
 
-        // Add or update trusted controller
         val existing = _trustedControllers.value.find { it.fingerprint == request.controllerFingerprint }
         val updatedList = if (existing != null) {
             _trustedControllers.value.map {
@@ -144,18 +164,26 @@ class PairingManager(private val context: Context) {
         }
         _trustedControllers.value = updatedList
 
-        AuditLogger.log("SESSION", "ESTABLISHED", "Session ${session.sessionId.take(8)} authorized for ${request.operatorName}", AuditSeverity.SECURITY)
+        AuditLogger.log(
+            "SESSION",
+            "ESTABLISHED",
+            "Backend authorized session ${session.sessionId.take(8)} for ${request.operatorName}.",
+            AuditSeverity.SECURITY
+        )
+        return true
     }
 
-    fun markSessionAuthorized(sessionId: String) {
-        _activeSession.value = _activeSession.value?.copy(
-            sessionId = sessionId,
-            isScreenStreaming = false,
-            isInputEnabled = true
-        )
+    fun failApproval(reason: String) {
+        if (approvalRequest == null && !_approvalInProgress.value) return
+        approvalRequest = null
+        _approvalInProgress.value = false
+        _pendingRequest.value = null
+        AuditLogger.log("PAIRING", "APPROVAL_FAILED", reason, AuditSeverity.WARNING)
     }
 
     fun rejectRequest(request: OperatorRequest) {
+        approvalRequest = null
+        _approvalInProgress.value = false
         _pendingRequest.value = null
         AuditLogger.log("PAIRING", "REJECTED_BY_USER", "Denied connection from ${request.operatorName}", AuditSeverity.WARNING)
     }
@@ -175,6 +203,8 @@ class PairingManager(private val context: Context) {
         val currentSession = _activeSession.value
         _activeSession.value = null
         _pendingRequest.value = null
+        approvalRequest = null
+        _approvalInProgress.value = false
         AuditLogger.log(
             category = "SECURITY",
             action = "EMERGENCY_DISCONNECT",
