@@ -132,9 +132,17 @@ fun RemoteServicesScreen(
                             )
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
+                        val isActive = streamState is ScreenStreamState.Active
+                        val isArmed = streamState is ScreenStreamState.WaitingForController
+                        val isError = streamState is ScreenStreamState.Error
                         Text(
-                            text = if (streamState is ScreenStreamState.Active) "STREAMING" else "IDLE",
-                            color = if (streamState is ScreenStreamState.Active) MintAccent else WarningAmber,
+                            text = when {
+                                isActive -> "STREAMING"
+                                isArmed -> "ARMED"
+                                isError -> "ERROR"
+                                else -> "IDLE"
+                            },
+                            color = if (isActive) MintAccent else if (isError) ErrorCoral else WarningAmber,
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -142,7 +150,7 @@ fun RemoteServicesScreen(
                 }
 
                 Text(
-                    text = "Hardware AVC/H.264 virtual display capture with adaptive bitrate transport over WebRTC. Protected screens (FLAG_SECURE) are safeguarded.",
+                    text = "Owner-approved Android screen capture streamed to the paired controller over WebRTC. Android protected screens (FLAG_SECURE) may remain blank.",
                     color = TextSecondary,
                     fontSize = 12.sp,
                     lineHeight = 16.sp
@@ -203,7 +211,7 @@ fun RemoteServicesScreen(
                 Button(
                     onClick = onRequestScreenShare,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (streamState is ScreenStreamState.Active) ErrorCoral else CyanAccent,
+                        containerColor = if (streamState is ScreenStreamState.Active || streamState is ScreenStreamState.WaitingForController) ErrorCoral else CyanAccent,
                         contentColor = DarkCharcoalBg
                     ),
                     shape = RoundedCornerShape(10.dp),
@@ -218,7 +226,7 @@ fun RemoteServicesScreen(
                     )
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = if (streamState is ScreenStreamState.Active) "Stop Screen Sharing" else "Start Screen Sharing Consent Flow",
+                        text = if (streamState is ScreenStreamState.Active || streamState is ScreenStreamState.WaitingForController) "Stop Screen Sharing" else "Start Screen Sharing Consent Flow",
                         fontWeight = FontWeight.Bold
                     )
                 }
