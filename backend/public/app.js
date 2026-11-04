@@ -139,79 +139,206 @@
   }
 
   // Handle incoming messages
+  function objectPayload(value) {
+    if (value && typeof value === 'object') return value;
+    if (typeof value === 'string') { try { return JSON.parse(value); } catch (_) { return {}; } }
+    return {};
+  }
+
   function handleSignalingMessage(msg) {
+    const payload = objectPayload(msg.payload);
     switch (msg.type) {
-      case 'PONG': {
-        const rtt = Date.now() - lastPingTimestamp;
-        el.latency.textContent = `${rtt} ms RTT`;
+      case 'PONG':
+        el.latency.textContent = String(Date.now() - lastPingTimestamp) + ' ms RTT';
         break;
-      }
-      case 'COMMAND_ACK': {
-        logAudit('ACK', `Command #${msg.sequence} confirmed by Noakhali phone (${msg.rtt}ms RTT)`);
+      case 'PAIR_PENDING':
+        el.badge.textContent = 'AWAITING APPROVAL';
+        el.badge.className = 'badge badge-warning';
+        logAudit('PAIRING', 'Request sent. Waiting for the receiver owner to approve.');
         break;
-      }
-      case 'APP_LIST_RESPONSE': {
-        renderAppList(JSON.parse(msg.payload || '[]'));
+      case 'PAIR_ACCEPT':
+        state.activeDeviceId = msg.sender || payload.receiverId || state.activeDeviceId;
+        state.pairedDevices = state.activeDeviceId ? [{ deviceId: state.activeDeviceId, deviceName: payload.receiverName || 'Android receiver' }] : [];
+        renderDevices();
+        logAudit('PAIRING', 'Receiver owner approved the request.', 'security');
         break;
-      }
-      case 'FILE_LIST_RESPONSE': {
-        renderFileList(JSON.parse(msg.payload || '[]'));
+      case 'SESSION_AUTHORIZED':
+        state.sessionToken = msg.sessionToken || payload.sessionToken || null;
+        state.activeDeviceId = msg.peerId || payload.peerId || state.activeDeviceId;
+        state.sessionActive = !!state.sessionToken;
+        if (state.sessionActive) {
+          logAudit('SECURITY', 'Owner-approved remote session established.', 'security');
+          startBrowserOffer().catch(error => logAudit('WEBRTC', 'Could not start WebRTC: ' + error.message, 'critical'));
+        }
         break;
-      }
-      case 'DIAGNOSTICS_RESULT': {
-        try {
-          const diag = JSON.parse(msg.payload);
-          if (diag.battery) el.diagBattery.textContent = `${diag.battery}% (Nominal)`;
-          if (diag.temp) el.diagTemp.textContent = `${diag.temp}°C`;
-          if (diag.storage) el.diagStorage.textContent = `${diag.storage} free`;
-          logAudit('DIAGNOSTICS', `Diagnostics telemetry update: Battery ${diag.battery}%, Temp ${diag.temp}°C`, 'security');
-        } catch (e) {}
+      case 'AUTHENTICATED':
+        state.sessionActive = true;
+        if (state.sessionToken && state.activeDeviceId) {
+          startBrowserOffer().catch(error => logAudit('WEBRTC', 'WebRTC setup failed: ' + error.message, 'critical'));
+        }
         break;
-      }
-      case 'SDP_ANSWER': {
-        handleSdpAnswer(msg.payload.sdp);
+      case 'AUTHENTICATION_FAILED':
+      case 'SESSION_REVOKED':
+      case 'DISCONNECTED':
+        state.sessionActive = false;
+        state.isVideoLive = false;
+        state.sessionToken = null;
+        state.activeDeviceId = null;
+        if (state.peerConnection) state.peerConnection.close();
+        state.peerConnection = null;
+        el.placeholder.style.display = 'flex';
+        el.badge.textContent = 'DISCONNECTED';
+        el.badge.className = 'badge badge-danger';
         break;
-      }
+      case 'PAIR_REJECT':
+      case 'PAIR_ERROR':
+        el.badge.textContent = 'PAIRING FAILED';
+        el.badge.className = 'badge badge-danger';
+        logAudit('PAIRING', msg.reason || msg.error || 'Pairing request was rejected.', 'critical');
+        break;
+      case 'COMMAND_ACK':
+        logAudit('ACK', 'Remote command acknowledged.');
+        break;
+      case 'APP_LIST_RESPONSE':
+        renderAppList(Array.isArray(payload.apps) ? payload.apps : []);
+        break;
+      case 'FILE_LIST_RESPONSE':
+        renderFileList(Array.isArray(payload.files) ? payload.files : []);
+        break;
+      case 'DIAGNOSTICS_RESULT':
+        if (payload.battery != null) el.diagBattery.textContent = String(payload.battery) + '%';
+        if (payload.temp != null) el.diagTemp.textContent = String(payload.temp) + '°C';
+        if (payload.storage != null) el.diagStorage.textContent = String(payload.storage);
+        break;
+      case 'SDP_ANSWER':
+        handleSdpAnswer(payload).catch(error => logAudit('WEBRTC', error.message, 'critical'));
+        break;
+      case 'ICE_CANDIDATE':
+        handleRemoteIceCandidate(payload).catch(error => logAudit('WEBRTC', error.message, 'critical'));
+        break;
+      case 'PEER_OFFLINE':
+        el.badge.textContent = 'PEER OFFLINE';
+        el.badge.className = 'badge badge-warning';
+        logAudit('WEBRTC', 'The approved receiver is temporarily offline.', 'critical');
+        break;
     }
   }
 
-  // WebRTC Setup
+  // Browser is the receive-only controller: video frames must come from the Android peer.
   async function initWebRTC() {
-    const config = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        {
-          urls: 'turn:turn.mahi-remote.cloud:3478',
-          username: 'mahi_operator',
-          credential: 'mahi-turn-shared-secret-auth-key'
-        }
-      ]
+    if (state.peerConnection) return state.peerConnection;
+    if (!state.sessionToken || !state.activeDeviceId) throw new Error('No approved session token is available.');
+    let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+    try {
+      const response = await fetch('/api/v1/turn/credentials', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + state.sessionToken }
+      });
+      if (!response.ok) throw new Error('TURN credentials unavailable (HTTP ' + response.status + ').');
+      const config = await response.json();
+      if (Array.isArray(config.iceServers) && config.iceServers.length) iceServers = config.iceServers;
+    } catch (error) {
+      logAudit('NETWORK', 'TURN relay is not configured. Direct STUN may fail behind carrier NAT: ' + error.message, 'critical');
+    }
+    const pc = new RTCPeerConnection({ iceServers });
+    state.peerConnection = pc;
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.ontrack = event => {
+      const stream = event.streams && event.streams[0] ? event.streams[0] : new MediaStream([event.track]);
+      el.video.srcObject = stream;
+      el.video.play().catch(() => {});
+      waitForActualVideoFrame();
+      logAudit('WEBRTC', 'Remote video track negotiated; waiting for a decoded frame.');
     };
-
-    state.peerConnection = new RTCPeerConnection(config);
-
-    state.peerConnection.ontrack = (event) => {
-      el.video.srcObject = event.streams[0];
-      el.placeholder.style.display = 'none';
-      logAudit('WEBRTC', 'Video track received. Hardware H.264 rendering started.', 'security');
+    pc.onicecandidate = event => {
+      if (event.candidate) sendWs({
+        type: 'ICE_CANDIDATE',
+        targetDeviceId: state.activeDeviceId,
+        payload: { candidate: event.candidate.toJSON() }
+      });
     };
-
-    state.peerConnection.onicecandidate = (event) => {
-      if (event.candidate) {
-        sendWs({
-          type: 'ICE_CANDIDATE',
-          candidate: event.candidate.candidate,
-          targetDeviceId: state.activeDeviceId
-        });
+    pc.onconnectionstatechange = () => {
+      const status = pc.connectionState;
+      if (status === 'failed' || status === 'disconnected') {
+        el.badge.textContent = status.toUpperCase();
+        el.badge.className = 'badge badge-warning';
+      } else if (status === 'connected' && !state.isVideoLive) {
+        el.badge.textContent = 'CONNECTED · WAITING FOR VIDEO';
+        el.badge.className = 'badge badge-warning';
       }
     };
+    return pc;
   }
 
-  async function handleSdpAnswer(sdp) {
+  function waitForActualVideoFrame() {
+    if (typeof el.video.requestVideoFrameCallback === 'function') {
+      const checkFrame = () => {
+        if (!state.sessionActive) return;
+        if (el.video.videoWidth > 0 && el.video.videoHeight > 0 && el.video.readyState >= 2) {
+          state.isVideoLive = true;
+          el.placeholder.style.display = 'none';
+          el.badge.textContent = 'LIVE';
+          el.badge.className = 'badge badge-success';
+          if (!state.liveFrameLogged) {
+            state.liveFrameLogged = true;
+            logAudit('WEBRTC', 'First decoded remote video frame received.', 'security');
+          }
+        } else {
+          el.video.requestVideoFrameCallback(checkFrame);
+        }
+      };
+      el.video.requestVideoFrameCallback(checkFrame);
+    } else {
+      el.video.addEventListener('loadeddata', () => {
+        if (el.video.videoWidth > 0 && el.video.videoHeight > 0) {
+          state.isVideoLive = true;
+          el.placeholder.style.display = 'none';
+          el.badge.textContent = 'LIVE';
+          el.badge.className = 'badge badge-success';
+          logAudit('WEBRTC', 'Decoded remote video data received.', 'security');
+        }
+      }, { once: true });
+    }
+  }
+
+  async function startBrowserOffer() {
+    if (!state.sessionActive || !state.activeDeviceId || state.peerConnection) return;
+    const pc = await initWebRTC();
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    if (!sendWs({
+      type: 'SDP_OFFER',
+      targetDeviceId: state.activeDeviceId,
+      payload: { type: offer.type, sdp: offer.sdp }
+    })) throw new Error('Signaling socket is not open.');
+    el.badge.textContent = 'NEGOTIATING';
+    el.badge.className = 'badge badge-warning';
+    logAudit('WEBRTC', 'Browser SDP offer sent to the approved receiver.');
+  }
+
+  async function handleSdpAnswer(payload) {
     if (!state.peerConnection) await initWebRTC();
-    await state.peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }));
+    const answer = typeof payload === 'string' ? { type: 'answer', sdp: payload } : payload;
+    if (!answer || !answer.sdp) throw new Error('Receiver SDP answer is empty.');
+    await state.peerConnection.setRemoteDescription(new RTCSessionDescription({
+      type: answer.type || 'answer',
+      sdp: answer.sdp
+    }));
   }
 
+  async function handleRemoteIceCandidate(payload) {
+    if (!state.peerConnection || !payload) return;
+    const candidate = payload.candidate || payload;
+    if (typeof candidate === 'string') {
+      await state.peerConnection.addIceCandidate(new RTCIceCandidate({
+        candidate,
+        sdpMid: payload.sdpMid || '0',
+        sdpMLineIndex: payload.sdpMLineIndex == null ? 0 : payload.sdpMLineIndex
+      }));
+    } else {
+      await state.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+  }
   // Mouse to Touch Translation Engine
   function setupCanvasMouse() {
     let isMouseDown = false;
