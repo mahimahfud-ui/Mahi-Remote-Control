@@ -311,7 +311,13 @@ export class SignalingHub {
       DIAGNOSTICS_RUN: 'DIAGNOSTICS',
       DIAGNOSTICS_RESULT: 'DIAGNOSTICS',
     };
-    const requiredScope = requiredScopeByMessage[type];
+    let requiredScope = requiredScopeByMessage[type];
+    if (type === 'FILE_COMMAND' && String(payload.action || '').toUpperCase() === 'DELETE') {
+      requiredScope = 'FILE_DELETE';
+    }
+    if (type === 'APP_COMMAND' && String(payload.action || '').toUpperCase() === 'UNINSTALL') {
+      requiredScope = 'APP_UNINSTALL';
+    }
     if (requiredScope && !activeSession.grantedScopes.includes(requiredScope)) {
       sendJson(sender, {
         type: 'SCOPE_REQUIRED',
