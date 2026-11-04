@@ -68,7 +68,7 @@ import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.WarningAmber
 
 @Composable
-fun PairingScreen(viewModel: MahiViewModel) {
+fun PairingScreen(viewModel: MahiViewModel, onRequestScreenShare: () -> Unit) {
     val context = LocalContext.current
     val currentCode by viewModel.pairingManager.currentPairingCode.collectAsState()
     val trustedControllers by viewModel.pairingManager.trustedControllers.collectAsState()
@@ -102,7 +102,7 @@ fun PairingScreen(viewModel: MahiViewModel) {
                 )
 
                 Text(
-                    text = "Share this 6-digit code with your authorized Windows desktop operator in Sylhet to establish end-to-end encrypted connection:",
+                    text = "Share this temporary six-digit code with the Android phone or browser that should request access:",
                     color = TextSecondary,
                     fontSize = 13.sp,
                     lineHeight = 18.sp
@@ -183,21 +183,18 @@ fun PairingScreen(viewModel: MahiViewModel) {
                     }
                 }
 
-                // Operator simulation button
-                TextButton(
-                    onClick = { viewModel.simulateOperatorConnection() },
-                    modifier = Modifier.testTag("simulate_operator_request_btn")
+                Button(
+                    onClick = onRequestScreenShare,
+                    modifier = Modifier.fillMaxWidth().testTag("start_screen_share_btn"),
+                    colors = ButtonDefaults.buttonColors(containerColor = MintAccent, contentColor = DarkCharcoalBg),
+                    shape = RoundedCornerShape(10.dp)
                 ) {
-                    Icon(Icons.Default.SupportAgent, contentDescription = null, tint = MintAccent, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Simulate Operator Connection Request (Sylhet)",
-                        color = MintAccent,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium
-                    )
+                    Icon(Icons.Default.CastConnected, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Start screen sharing", fontWeight = FontWeight.SemiBold)
                 }
             }
+        }
         }
 
         // Cryptographic Device Identity Card
