@@ -769,11 +769,6 @@ private fun RemoteDiagnosticsPane(viewModel: MahiViewModel) {
             }
         }
 
-        val battery = telemetry?.batteryPercent ?: 88
-        val temp = telemetry?.batteryTempC ?: 34.0f
-        val storage = telemetry?.storageFree ?: "38.2 GB"
-        val rtt = telemetry?.roundTripTimeMs ?: 32
-
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = DarkSurface),
@@ -784,17 +779,25 @@ private fun RemoteDiagnosticsPane(viewModel: MahiViewModel) {
                 modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                TelemetryMetricItem("Battery Health", "$battery% • ${if (battery > 20) "NORMAL" else "LOW"}")
-                LinearProgressIndicator(
-                    progress = { battery / 100f },
-                    modifier = Modifier.fillMaxWidth().height(6.dp),
-                    color = if (battery > 20) MintAccent else ErrorCoral,
-                    trackColor = DarkSurfaceElevated
-                )
-
-                TelemetryMetricItem("Thermal Subsystem", "$temp °C • OPTIMAL")
-                TelemetryMetricItem("Shared Storage Free", "$storage Available")
-                TelemetryMetricItem("Network Round-Trip Latency", "$rtt ms • WebRTC DataChannel Active")
+                if (telemetry == null) {
+                    Text(
+                        "No receiver diagnostics received yet. Run the test suite after the owner approves the diagnostics permission.",
+                        color = TextSecondary,
+                        fontSize = 12.sp
+                    )
+                } else {
+                    val battery = telemetry!!.batteryPercent
+                    TelemetryMetricItem("Battery", "$battery%")
+                    LinearProgressIndicator(
+                        progress = { (battery / 100f).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().height(6.dp),
+                        color = if (battery > 20) MintAccent else ErrorCoral,
+                        trackColor = DarkSurfaceElevated
+                    )
+                    TelemetryMetricItem("Battery Temperature", "${telemetry!!.batteryTempC} °C")
+                    TelemetryMetricItem("Free Storage", telemetry!!.storageFree)
+                    TelemetryMetricItem("Network Round-Trip Latency", "Not measured")
+                }
             }
         }
     }
