@@ -1,12 +1,14 @@
 package com.example.pairing
 
 import android.content.Context
+import android.net.Uri
 import com.example.security.AuditLogger
 import com.example.security.AuditSeverity
 import com.example.security.DeviceIdentity
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONObject
 import java.security.SecureRandom
 import java.util.UUID
 
@@ -14,6 +16,7 @@ class PairingManager(private val context: Context) {
 
     private val secureRandom = SecureRandom()
     private val identity = DeviceIdentity.getOrCreateIdentity(context)
+    @Volatile private var browserAccessUrl: String? = null
 
     private val _currentPairingCode = MutableStateFlow<PairingCodeData?>(null)
     val currentPairingCode: StateFlow<PairingCodeData?> = _currentPairingCode.asStateFlow()
@@ -37,16 +40,7 @@ class PairingManager(private val context: Context) {
         val formattedCode = "%03d-%03d".format(num / 1000, num % 1000)
         val expiresAt = System.currentTimeMillis() + (5 * 60 * 1000L) // 5 minutes
 
-        val qrPayload = """
-            {
-              "deviceId": "${identity.deviceId}",
-              "deviceName": "${identity.deviceName}",
-              "fingerprint": "${identity.fingerprint}",
-              "pairingCode": "$formattedCode",
-              "expiresAt": $expiresAt,
-              "v": 1
-            }
-        """.trimIndent()
+        val qrPayload = buildQrPayload(formattedCode, expiresAt)
 
         val data = PairingCodeData(
             code = formattedCode,
@@ -56,6 +50,43 @@ class PairingManager(private val context: Context) {
         _currentPairingCode.value = data
         AuditLogger.log("PAIRING", "CODE_GENERATED", "Generated 6-digit code: $formattedCode (expires in 5m)", AuditSeverity.INFO)
         return data
+    }
+
+    fun setBrowserAccessUrl(url: String?) {
+        val validated = url?.takeIf {
+            runCatching {
+                val parsed = Uri.parse(it)
+                parsed.scheme == "https" && !parsed.host.isNullOrBlank()
+            }.getOrDefault(false)
+        }?.trimEnd('/')
+        if (browserAccessUrl == validated) return
+        browserAccessUrl = validated
+        _currentPairingCode.value?.let { current ->
+            _currentPairingCode.value = current.copy(
+                qrPayloadJson = buildQrPayload(current.code, current.expiresAtMillis)
+            )
+        }
+    }
+
+    private fun buildQrPayload(code: String, expiresAt: Long): String {
+        val baseUrl = browserAccessUrl
+        if (!baseUrl.isNullOrBlank()) {
+            return Uri.parse(baseUrl)
+                .buildUpon()
+                .appendQueryParameter("code", code.filter(Char::isDigit))
+                .appendQueryParameter("expiresAt", expiresAt.toString())
+                .build()
+                .toString()
+        }
+
+        return JSONObject()
+            .put("deviceId", identity.deviceId)
+            .put("deviceName", identity.deviceName)
+            .put("fingerprint", identity.fingerprint)
+            .put("pairingCode", code)
+            .put("expiresAt", expiresAt)
+            .put("v", 1)
+            .toString()
     }
 
     fun recordIncomingOperatorRequest(
