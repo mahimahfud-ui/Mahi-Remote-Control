@@ -6,24 +6,20 @@
   const state = {
     ws: null,
     peerConnection: null,
-    operatorFingerprint: 'OP-WEB-' + Math.random().toString(36).substring(2, 10).toUpperCase(),
-    operatorName: 'Web Operator (Chrome/Windows)',
-    operatorLocation: 'Sylhet NOC',
-    activeDeviceId: 'MAHI-SAM-9B7C12F0',
-    pairedDevices: [
-      {
-        deviceId: 'MAHI-SAM-9B7C12F0',
-        deviceName: 'Samsung Galaxy S24 Ultra',
-        location: 'Noakhali, Bangladesh',
-        battery: 86,
-        isOnline: true
-      }
-    ],
+    operatorFingerprint: 'OP-WEB-' + Array.from(crypto.getRandomValues(new Uint8Array(12))).map(value => value.toString(16).padStart(2, '0')).join('').toUpperCase(),
+    operatorName: 'Browser Controller',
+    activeDeviceId: null,
+    sessionToken: null,
+    sessionActive: false,
+    isVideoLive: false,
+    liveFrameLogged: false,
+    pingTimer: null,
+    pairedDevices: [],
     commandSequence: 1,
     dragStart: null,
     lastClickTime: 0,
     clickCount: 0,
-    currentPath: '/storage/emulated/0/Documents'
+    currentPath: '/Documents'
   };
 
   // DOM Elements
@@ -76,7 +72,7 @@
     renderDevices();
     connectSignaling();
     startCanvasRenderLoop();
-    logAudit('INIT', `Browser Operator Console active. Fingerprint: ${state.operatorFingerprint}`, 'security');
+    logAudit('INIT', 'Browser controller ready. No device is assumed or preselected.', 'security');
   }
 
   // WebSocket Signaling Connection (Dynamically works with ANY IP or Cloudflare tunnel!)
@@ -96,9 +92,9 @@
         el.badge.className = 'badge badge-success';
         logAudit('SIGNALING', `Connected to signaling hub. Authenticated as ${state.operatorFingerprint}`, 'security');
         
-        // Initial ping for latency
-        sendPing();
-        setInterval(sendPing, 15000);
+        if (state.sessionToken) sendWs({ type: 'AUTHENTICATE', sessionToken: state.sessionToken });
+        else sendPing();
+        if (!state.pingTimer) state.pingTimer = setInterval(sendPing, 15000);
       };
 
       state.ws.onmessage = (event) => {
@@ -111,6 +107,9 @@
       };
 
       state.ws.onclose = () => {
+        if (state.peerConnection) { state.peerConnection.close(); state.peerConnection = null; }
+        state.isVideoLive = false;
+        el.placeholder.style.display = 'flex';
         el.badge.textContent = 'OFFLINE';
         el.badge.className = 'badge badge-danger';
         logAudit('SIGNALING', 'Socket disconnected. Retrying in 5 seconds...', 'critical');
@@ -531,14 +530,23 @@
 
   function renderDevices() {
     el.deviceList.innerHTML = '';
-    state.pairedDevices.forEach(d => {
+    if (!state.pairedDevices.length) {
+      const empty = document.createElement('div');
+      empty.className = 'device-empty-state';
+      empty.textContent = 'No active receiver session';
+      el.deviceList.appendChild(empty);
+      return;
+    }
+    state.pairedDevices.forEach(device => {
       const card = document.createElement('div');
       card.className = 'device-card active';
-      card.innerHTML = `
-        <div class="device-card-title">${d.deviceName}</div>
-        <div class="device-card-id">${d.deviceId}</div>
-        <div class="device-card-meta">${d.location} • <span class="text-mint">${d.battery}% Batt</span></div>
-      `;
+      const title = document.createElement('div');
+      title.className = 'device-card-title';
+      title.textContent = device.deviceName || 'Android receiver';
+      const id = document.createElement('div');
+      id.className = 'device-card-id';
+      id.textContent = device.deviceId;
+      card.append(title, id);
       el.deviceList.appendChild(card);
     });
   }
