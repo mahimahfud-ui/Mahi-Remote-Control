@@ -63,24 +63,44 @@ export class SignalingHub {
       }
 
       const deviceId = req.headers['x-device-id'] as string | undefined;
-      const operatorFp = req.headers['x-operator-fingerprint'] as string | undefined;
+      const operatorFpHeader = req.headers['x-operator-fingerprint'] as string | undefined;
       const clientRole = (req.headers['x-client-role'] as string | undefined)?.toUpperCase();
+      const requestUrl = new URL(req.url || '/ws', 'http://localhost');
+      const browserFingerprint = requestUrl.searchParams.get('controllerFingerprint') || '';
+      const operatorFp = String(operatorFpHeader || browserFingerprint || '');
 
       let clientId: string;
       let clientType: ClientType;
+      let connectionFingerprint = '';
       if (deviceId) {
         clientId = deviceId;
         clientType = clientRole === 'CONTROLLER' ? 'CONTROLLER' : 'RECEIVER';
+        connectionFingerprint = String(req.headers['x-device-fingerprint'] || '');
         DeviceService.registerDevice(
           deviceId,
           (req.headers['x-device-name'] as string) || 'Android Phone',
-          (req.headers['x-device-fingerprint'] as string) || 'UNKNOWN'
+          connectionFingerprint || 'UNKNOWN'
         );
-      } else if (operatorFp) {
-        clientId = `operator_${crypto.randomUUID()}`;
+      } else if (operatorFpHeader) {
+        if (!/^[A-Za-z0-9:_-]{8,256}$/.test(operatorFpHeader)) {
+          ws.close(1008, 'Invalid controller fingerprint');
+          return;
+        }
+        // Keep the controller entity stable across WebSocket reconnects.
+        clientId = `operator_${operatorFpHeader}`;
         clientType = 'WINDOWS';
+        connectionFingerprint = operatorFpHeader;
+      } else if (browserFingerprint) {
+        if (!/^[A-Za-z0-9:_-]{8,256}$/.test(browserFingerprint)) {
+          ws.close(1008, 'Invalid controller fingerprint');
+          return;
+        }
+        // Browser cannot set custom WebSocket headers; use a validated query
+        // parameter so its server-side entity remains stable on reconnect.
+        clientId = `browser_${browserFingerprint}`;
+        clientType = 'BROWSER';
+        connectionFingerprint = browserFingerprint;
       } else {
-        // Browser identity is completed by its first PAIR_BY_CODE message.
         clientId = `browser_${crypto.randomUUID()}`;
         clientType = 'BROWSER';
       }
@@ -89,7 +109,7 @@ export class SignalingHub {
         ws,
         id: clientId,
         type: clientType,
-        fingerprint: (req.headers['x-device-fingerprint'] || operatorFp || '') as string,
+        fingerprint: connectionFingerprint,
         remoteAddress: req.socket.remoteAddress || 'unknown',
       };
       const previousClient = this.clients.get(clientId);
