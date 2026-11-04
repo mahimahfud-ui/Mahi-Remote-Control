@@ -588,8 +588,8 @@
     };
     el.btnCloseModal.onclick = () => { el.pairModal.style.display = 'none'; };
     el.btnSubmitPair.onclick = () => {
-      const code = el.inputPairCode.value.replace(/\\D/g, '');
-      if (!/^\\d{6}$/.test(code)) {
+      const code = el.inputPairCode.value.replace(/\D/g, '');
+      if (!/^\d{6}$/.test(code)) {
         el.inputPairCode.setCustomValidity('Enter exactly six digits.');
         el.inputPairCode.reportValidity();
         return;
