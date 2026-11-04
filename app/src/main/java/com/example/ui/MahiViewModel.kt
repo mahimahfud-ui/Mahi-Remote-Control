@@ -235,6 +235,10 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                     "SDP_ANSWER" -> {
                         if (_appRole.value == AppRole.CONTROLLER) {
                             val root = JSONObject(msg.payload)
+                            val activeSessionId = _activeControllerSession.value?.sessionId
+                            if (activeSessionId.isNullOrBlank() || root.optString("sessionId") != activeSessionId) {
+                                return@launch
+                            }
                             val payload = root.optJSONObject("payload") ?: root
                             val sdp = payload.optString("sdp", root.optString("sdp"))
                             if (sdp.isNotBlank()) controllerWebRtcSession?.handleAnswer(sdp)
@@ -246,8 +250,10 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                     "ICE_CANDIDATE" -> {
+                        val root = JSONObject(msg.payload)
+                        val packetSessionId = root.optString("sessionId")
                         if (_appRole.value == AppRole.CONTROLLER && controllerWebRtcSession != null) {
-                            val root = JSONObject(msg.payload)
+                            if (packetSessionId != _activeControllerSession.value?.sessionId) return@launch
                             val payload = root.optJSONObject("payload") ?: root
                             controllerWebRtcSession?.handleIceCandidate(payload)
                         } else if (_appRole.value == AppRole.RECEIVER) {
@@ -896,6 +902,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                     putExtra(ScreenCaptureService.EXTRA_PRESET, _videoPreset.value.name)
                     putExtra(ScreenCaptureService.EXTRA_ICE_CONFIG, iceConfig)
                     putExtra(ScreenCaptureService.EXTRA_TARGET_DEVICE_ID, session.controllerId)
+                    putExtra(ScreenCaptureService.EXTRA_SESSION_ID, session.sessionId)
                 }
                 androidx.core.content.ContextCompat.startForegroundService(getApplication(), serviceIntent)
             },
