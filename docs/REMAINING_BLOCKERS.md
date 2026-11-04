@@ -1,46 +1,27 @@
-# Mahi Remote Control — Remaining Blockers & Platform Requirements
+# Remaining Blockers — Mahi Remote Control
 
-This document enumerates the external prerequisites, platform restrictions, and hardware verification dependencies that cannot be resolved strictly within the cloud container environment.
+## Release blockers
 
----
+1. Native Android WebRTC publisher and receiver are missing. Implement `PeerConnectionFactory`, `PeerConnection`, screen capture with `ScreenCapturerAndroid`/MediaProjection, SDP offer/answer, ICE exchange, and remote video rendering. The current service intentionally fails closed.
+2. Android commands and files must run only over a verified active session. Recheck every action handler against the session token and approved scopes; current backend session-gates signaling but Android command handling still needs end-to-end security validation.
+3. Persist device presence, pairing code hashes, pending requests, active sessions, revocation and audit records in a shared database. Current backend `DeviceService` uses in-memory Maps.
+4. Public DNS, reverse proxy, HTTPS/WSS and Coturn must be deployed and externally verified.
+5. Android release build needs the owner's signing keystore and credentials. Do not commit them.
+6. Windows controller must be adapted to the current protocol and built on Windows with .NET 10.
+7. Run Android tests, backend integration tests, browser syntax/UI tests and all physical-device/network tests.
 
-## 1. Physical Android Hardware Verification
+## Workspace/source-of-truth blocker
 
-- **Requirement**: Two physical Android handsets (one acting as Controller, one as Receiver).
-- **Blocker Reason**: The cloud container lacks physical Android hardware and ADB interfaces. While automated Robolectric unit tests and Node.js integration tests pass (`5/5` and `7/7`), end-to-end hardware validation requires two physical phones.
-- **Action Needed**:
-  1. Transfer `dist/MahiRemote-debug.apk` to both physical Android devices.
-  2. Follow the verification runbook in `docs/ANDROID_TO_ANDROID_SETUP.md`.
+The latest Google AI Studio Remix workspace was not attached or accessible during this work. This branch starts from the GitHub `main` snapshot. Compare/port changes with the AI Studio workspace before using this branch as merge source.
 
----
+## Environment values the owner must supply
 
-## 2. Manual User Permissions on Target Device
+- `PUBLIC_BASE_URL`: public HTTPS browser/backend origin.
+- `ALLOWED_ORIGINS`: exact browser origin allowlist.
+- `JWT_SECRET`: random server-only secret, at least 32 characters.
+- `TURN_SECRET`: random shared Coturn/backend HMAC secret, at least 32 characters.
+- `TURN_URL`, `TURN_REALM`, `STUN_URL`.
+- `POSTGRES_PASSWORD` for the included database container.
+- Android build value `MAHI_PUBLIC_BASE_URL` set to the public HTTPS origin.
+- Release signing keystore and passwords supplied only through secure environment/secrets.
 
-The Android OS strictly forbids applications from granting sensitive permissions to themselves:
-
-1. **Accessibility Service Activation**:
-   - The user must manually navigate to `Settings > Accessibility > Mahi Remote Input Service` and toggle the service to **ON**.
-   - Standard Android applications cannot programmatically enable accessibility without root (Magisk) or device owner enrollment.
-2. **MediaProjection Screen Capture Consent**:
-   - Every screen sharing session requires the user on the receiver phone to tap **Start now** on the official Android system projection prompt.
-3. **Android 12+ Overlay Restrictions**:
-   - Accessibility touches cannot click "Allow" on system runtime permission dialogs (clickjacking defense).
-
----
-
-## 3. Public Coturn TURN Relay for Symmetric Cellular Networks
-
-- **Requirement**: A running Coturn instance hosted on a public IPv4 address with UDP ports `3478` and `49152–65535` exposed.
-- **Blocker Reason**: When both phones connect via cellular data across symmetric carrier NATs (e.g. Grameenphone 4G to Banglalink 4G), direct STUN UDP hole-punching fails. Cloudflare Quick Tunnels proxy HTTP and WebSockets only, not raw WebRTC UDP media packets.
-- **Action Needed**:
-  - Deploy Coturn on a cloud VPS (AWS, DigitalOcean, Hetzner) following `docs/IP-DEPLOYMENT.md` and populate TURN credentials in `backend/.env`.
-
----
-
-## 4. Windows Desktop .NET 10 Workstation Compilation
-
-- **Requirement**: Building `windows-controller/MahiRemote.sln` requires the .NET 10 SDK and Windows Desktop Workload (WPF).
-- **Blocker Reason**: The containerized Linux agent environment contains OpenJDK and Node.js, but does not provide Microsoft .NET Windows Desktop SDKs.
-- **Action Needed**:
-  - Windows operators can build the desktop app on their Windows workstation using `.\scripts\build-windows.ps1`.
-  - Alternatively, operators can use the zero-install **Web Browser Controller** (`http://<PUBLIC_IP>:8080`) or Cloudflare Tunnel (`https://*.trycloudflare.com`) on any modern browser without compiling native desktop code.
