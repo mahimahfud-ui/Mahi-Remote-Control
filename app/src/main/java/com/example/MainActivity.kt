@@ -186,7 +186,8 @@ fun MainAppScaffold(
     val statusColor = when {
         activeSession != null || activeControllerSession != null -> MintAccent
         streamState is ScreenStreamState.Active -> CyanAccent
-        signalingStatus == com.example.signaling.ConnectionStatus.AUTHENTICATED -> CyanAccent
+        signalingStatus == com.example.signaling.ConnectionStatus.AUTHENTICATED ||
+            signalingStatus == com.example.signaling.ConnectionStatus.CONNECTED -> CyanAccent
         else -> WarningAmber
     }
 
@@ -348,7 +349,8 @@ fun MainAppScaffold(
                         Spacer(Modifier.width(8.dp))
                         Text(
                             text = when (signalingStatus) {
-                                com.example.signaling.ConnectionStatus.AUTHENTICATED -> "Connected to signaling server"
+                                com.example.signaling.ConnectionStatus.AUTHENTICATED -> "Approved remote session authenticated"
+                                com.example.signaling.ConnectionStatus.CONNECTED -> "Connected to signaling server"
                                 com.example.signaling.ConnectionStatus.CONNECTING -> "Connecting to remote service…"
                                 com.example.signaling.ConnectionStatus.ERROR -> "Remote service configuration or connection error"
                                 else -> "Remote service not connected"
