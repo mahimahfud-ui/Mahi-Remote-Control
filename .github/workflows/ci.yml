@@ -79,3 +79,17 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+  windows-controller:
+    name: Windows controller build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore Windows solution
+        run: dotnet restore windows-controller/MahiRemote.sln
+      - name: Build Windows controller
+        run: dotnet build windows-controller/MahiRemote.sln --configuration Release --no-restore
