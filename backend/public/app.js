@@ -246,14 +246,40 @@
     }
   }
 
-  // WebRTC Setup
-  async function initWebRTC() {
-    // ICE configuration and short-lived TURN credentials are retrieved from
-    // the same-origin backend. Shared TURN secrets never enter this browser.
-    const configuredIceServers = state.runtimeConfig && Array.isArray(state.runtimeConfig.iceServers)
+  async function loadSessionIceServers() {
+    const fallback = state.runtimeConfig && Array.isArray(state.runtimeConfig.iceServers)
       ? state.runtimeConfig.iceServers
       : [{ urls: 'stun:stun.l.google.com:19302' }];
-    state.peerConnection = new RTCPeerConnection({ iceServers: configuredIceServers });
+
+    if (!state.sessionToken || !state.runtimeConfig || !state.runtimeConfig.turnConfigured) {
+      return fallback;
+    }
+
+    try {
+      const response = await fetch('/api/v1/turn-credentials', {
+        method: 'GET',
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: { Authorization: 'Bearer ' + state.sessionToken }
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const result = await response.json();
+      if (!Array.isArray(result.iceServers) || result.iceServers.length < 2) {
+        throw new Error('TURN server returned no ICE relay configuration.');
+      }
+      logAudit('NETWORK', 'Session-scoped, short-lived TURN credentials received.', 'security');
+      return result.iceServers;
+    } catch (error) {
+      logAudit('NETWORK', 'TURN credentials could not be loaded: ' + error.message + '. Direct ICE may still work; restrictive NAT may block this session.', 'critical');
+      return fallback;
+    }
+  }
+
+  // WebRTC Setup
+  async function initWebRTC(iceServers) {
+    // TURN credentials are fetched only after the owner-approved session exists.
+    // The shared TURN secret never enters this browser.
+    state.peerConnection = new RTCPeerConnection({ iceServers });
 
     state.peerConnection.addTransceiver('video', { direction: 'recvonly' });
     state.peerConnection.ontrack = (event) => {
@@ -300,7 +326,8 @@
 
   async function startControllerOffer() {
     if (!state.activeDeviceId || !state.sessionToken) throw new Error('No approved session.');
-    await initWebRTC();
+    const iceServers = await loadSessionIceServers();
+    await initWebRTC(iceServers);
     const offer = await state.peerConnection.createOffer();
     await state.peerConnection.setLocalDescription(offer);
     sendWs({
