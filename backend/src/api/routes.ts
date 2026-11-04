@@ -18,43 +18,28 @@ apiRouter.get('/devices', (req: Request, res: Response) => {
   res.json({ devices });
 });
 
-apiRouter.post('/pair/register-code', (req: Request, res: Response) => {
-  const { deviceId, code, expiresAt } = req.body;
-  if (!deviceId || !code) {
-    return res.status(400).json({ error: 'Missing deviceId or pairing code' });
-  }
-  const expiry = expiresAt || (Date.now() + 5 * 60 * 1000);
-  DeviceService.storePairingCode(deviceId, code, expiry);
-  return res.json({ success: true, message: 'Pairing code registered', code, expiresAt: expiry });
+// Pairing codes are registered over an identified WebSocket connection.
+// This unauthenticated legacy endpoint is deliberately disabled.
+apiRouter.post('/pair/register-code', (_req: Request, res: Response) => {
+  return res.status(410).json({ error: 'Use the authenticated WebSocket pairing registration flow.' });
 });
 
-apiRouter.post('/pair/verify', (req: Request, res: Response) => {
-  const { code, operatorFingerprint, operatorName, operatorLocation } = req.body;
-  if (!code || !operatorFingerprint) {
-    return res.status(400).json({ error: 'Missing pairing parameters' });
-  }
-
-  const deviceId = DeviceService.validateAndConsumePairingCode(code);
-  if (!deviceId) {
-    return res.status(401).json({ error: 'Invalid or expired 6-digit pairing code' });
-  }
-
-  const token = AuthService.generateSessionToken({
-    entityId: operatorFingerprint,
-    entityType: 'OPERATOR',
-    fingerprint: operatorFingerprint,
-  });
-
-  return res.json({
-    success: true,
-    deviceId,
-    sessionToken: token,
-    signalingUrl: 'wss://signaling.mahi-remote.cloud/ws',
-  });
+// Never issue a session token merely because a six-digit code is valid.
+// The receiver must approve the pending WebSocket request first.
+apiRouter.post('/pair/verify', (_req: Request, res: Response) => {
+  return res.status(410).json({ error: 'Direct code verification is disabled. Request pairing over WebSocket and wait for receiver approval.' });
 });
 
 apiRouter.post('/sessions/:id/terminate', (req: Request, res: Response) => {
   const { id } = req.params;
-  DeviceService.endSession(id);
-  res.json({ success: true, message: `Session ${id} terminated` });
+  const bearer = req.header('Authorization') || '';
+  const token = bearer.startsWith('Bearer ') ? bearer.slice(7) : '';
+  const auth = token ? AuthService.verifySessionToken(token) : null;
+  if (!auth?.sessionId || auth.sessionId !== id ||
+      !DeviceService.isSessionParticipant(id, auth.entityId, auth.fingerprint)) {
+    return res.status(401).json({ error: 'A valid participant session token is required.' });
+  }
+  const ended = DeviceService.endSession(id);
+  if (!ended) return res.status(404).json({ error: 'Session not found or already ended.' });
+  return res.json({ success: true, message: 'Session terminated' });
 });
