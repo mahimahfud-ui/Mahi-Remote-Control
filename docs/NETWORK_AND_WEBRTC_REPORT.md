@@ -1,88 +1,29 @@
-# Mahi Remote Control — Network & WebRTC Integration Report
+# Network and WebRTC — Current Status
 
-This report analyzes the network architecture, signaling protocols, WebRTC media flow, NAT traversal, and internet relay configurations of Mahi Remote Control.
+## Intended topology
 
----
+Different Internet connections are supported by design. Both endpoints connect to a public HTTPS/WSS signaling origin. WebRTC ICE attempts direct host/server-reflexive connectivity and uses TURN relay when direct connectivity is blocked. A shared Wi-Fi network is not required.
 
-## 1. Network Architecture Overview
+## Current code status
 
-Mahi Remote Control establishes real-time peer-to-peer communication between Android devices across heterogeneous networks:
+- The backend can create short-lived, HMAC-based TURN credentials after verifying an owner-approved session token.
+- `/api/v1/config` returns a browser HTTPS URL and WSS signaling URL only when `PUBLIC_BASE_URL` is configured.
+- Browser code has SDP offer creation, answer handling, ICE candidate exchange and receive-only video negotiation.
+- The signaling server restricts sensitive session messages to the two approved session participants.
+- Docker/Coturn configuration takes the TURN shared secret from runtime environment variables rather than tracked source.
 
-```
-[ Phone A — Controller ]                               [ Phone B — Receiver ]
-(e.g., Sylhet / Wi-Fi)                                (e.g., Noakhali / 4G)
-          │                                                       │
-          │ ─── 1. WSS Signaling (SDP Offer/Answer & ICE) ──────> │
-          │                                                       │
-          ▼                                                       ▼
-   [ STUN Server ]                                         [ STUN Server ]
-(Discover Public IP/Port)                               (Discover Public IP/Port)
-          │                                                       │
-          └───────────────────────────┬───────────────────────────┘
-                                      │
-                         [ Direct UDP P2P Possible? ]
-                                      │
-                    ┌─────────────────┴─────────────────┐
-                    │ YES                               │ NO (Symmetric / Carrier-Grade NAT)
-                    ▼                                   ▼
-          [ Direct UDP Flow ]                 [ Coturn TURN Relay ]
-     (Low Latency 20–45ms RTT)             (Relay Audio, Video, Data)
-```
+## Critical implementation gap
 
----
+The Android receiver currently does not publish a WebRTC video track. `ScreenCaptureService` deliberately fails closed after the system MediaProjection consent result and does not create a fake `LIVE` state. There is no native Android PeerConnection manager that handles SDP/ICE and adds the captured screen track. Therefore the browser offer cannot yet receive actual video, and Android-to-Android WebRTC media is not complete.
 
-## 2. Signaling Layer (Node.js & WebSocket)
+## Network limitations
 
-- **Endpoint**: `/ws` on port `8080` (or proxied over Cloudflare Quick Tunnel / HTTPS).
-- **Transport**: WSS (WebSocket over TLS).
-- **Header Authentication**:
-  - `X-Device-Id`: Unique device identifier.
-  - `X-Client-Role`: `CONTROLLER` or `RECEIVER`.
-  - `X-Device-Fingerprint`: SHA-256 identity key fingerprint.
-- **Message Types**:
-  - `REGISTER`: Registers device presence with `DeviceService`.
-  - `REGISTER_PAIRING_CODE`: Registers a generated 6-digit code with its 5-minute expiration timestamp.
-  - `PAIR_BY_CODE`: Controller requests connection to receiver via 6-digit code.
-  - `PAIR_REQUEST`: Dispatched to receiver for explicit owner approval.
-  - `PAIR_ACCEPT`: Sent by receiver upon authorization.
-  - `SDP_OFFER` & `SDP_ANSWER`: WebRTC session description exchange.
-  - `ICE_CANDIDATE`: Candidate gathering exchange (Host, Server Reflexive, Relay).
-  - `INPUT_EVENT`: Touch, gesture, keyboard, volume, and global navigation packets.
-  - `APP_COMMAND` & `FILE_COMMAND`: Remote device management.
-  - `EMERGENCY_DISCONNECT`: Instant session teardown.
+- Public HTTPS/WSS hosting, DNS, TLS and firewall configuration are still deployment tasks.
+- Coturn must be deployed on a publicly reachable host. Open UDP/TCP 3478 and the configured UDP relay range 49152–65535.
+- The sample does not configure a TURN TLS certificate; do not advertise `turns:` until certificates are configured.
+- Cloudflare HTTP tunnel can proxy the browser and WebSocket signaling route but does not relay raw WebRTC UDP media.
+- Backend pairing/session/device data is currently process memory. Multiple backend replicas or restarts require durable shared storage before production.
 
----
+## Verification
 
-## 3. WebRTC Media & Data Pipeline
-
-- **Video Track**: Hardware-accelerated H.264 stream originating from `MediaProjection`.
-- **Bitrate Presets**:
-  - High: 1080p @ 60 FPS (4,000 kbps)
-  - Balanced: 720p @ 30 FPS (2,000 kbps)
-  - Efficiency: 480p @ 15 FPS (800 kbps)
-- **DataChannel**: SCTP DataChannel (`mahi-control-channel`) with unordered delivery for ultra-low latency gesture transmission.
-
----
-
-## 4. NAT Traversal & Connectivity Scenarios
-
-| Scenario | Network A (Controller) | Network B (Receiver) | Path | Expected Latency | Status |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Local Network** | Home Wi-Fi (192.168.1.10) | Same Home Wi-Fi (192.168.1.20) | Host ICE Candidates (Direct LAN) | 5–15 ms | **Verified** |
-| **Broadband to Broadband** | Fiber ISP (Sylhet) | Fiber ISP (Dhaka) | STUN Hole-Punching (Srflx Candidate) | 25–45 ms | **Verified** |
-| **Mobile Data to Wi-Fi** | Grameenphone 4G (Sylhet) | Broadband Wi-Fi (Noakhali) | STUN / Hole-Punching | 35–65 ms | **Verified** |
-| **Symmetric / CGNAT** | Banglalink 4G | Robi 4G | Coturn TURN Relay (Relay Candidate) | 45–80 ms | **Verified with Coturn** |
-
----
-
-## 5. Cloudflare Tunnel vs WebRTC Boundary
-
-It is vital to distinguish between HTTP/WebSocket tunneling and WebRTC media transport:
-- **Cloudflare Quick Tunnels (`trycloudflare.com`)**:
-  - Proxies **TCP HTTP and WebSockets** (ports 80 and 443).
-  - Provides instant trusted TLS certificates without purchasing a domain.
-  - Successfully routes signaling (`/ws`) and the Web Controller SPA.
-- **WebRTC UDP Media**:
-  - Cloudflare Quick Tunnels **do not** proxy raw peer-to-peer UDP media packets.
-  - Peer media packets flow directly between Phone A and Phone B over UDP (or through Coturn TURN on port 3478).
-  - Therefore, running a TURN server is mandatory when both phones are trapped behind strict symmetric carrier NATs.
+No real same-Wi-Fi, cross-Wi-Fi, mobile-data, CGNAT, or TURN relay test has been run for this branch. The existence of a Coturn configuration or the `turnConfigured` boolean is not proof of network reachability. Test actual selected ICE candidate type and decoded video frames on physical devices.

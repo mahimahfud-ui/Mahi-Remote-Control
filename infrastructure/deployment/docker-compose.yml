@@ -1,53 +1,69 @@
-version: '3.8'
-
 services:
   signaling-backend:
     build:
       context: ../../backend
       dockerfile: Dockerfile
     container_name: mahi-signaling-backend
+    restart: unless-stopped
     ports:
       - "8080:8080"
     environment:
-      - PORT=8080
-      - DATABASE_URL=postgres://mahi_admin:SecureMahiPass2026@postgres-db:5432/mahi_remote
-      - JWT_SECRET=mahi-remote-production-ecdsa-jwt-secret-key-32b
-      - TURN_SERVER_URL=turn:turn.mahi-remote.cloud:3478
-      - TURN_SECRET=mahi-turn-shared-secret-auth-key
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 8080
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL to the HTTPS public origin}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:?Set ALLOWED_ORIGINS to the allowed browser origins}
+      DATABASE_URL: postgres://mahi_admin:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres-db:5432/mahi_remote
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET to a random value of at least 32 characters}
+      TURN_URL: ${TURN_URL:-}
+      TURN_SECRET: ${TURN_SECRET:-}
+      CLOUDFLARE_TURN_KEY_ID: ${CLOUDFLARE_TURN_KEY_ID:-}
+      CLOUDFLARE_TURN_API_TOKEN: ${CLOUDFLARE_TURN_API_TOKEN:-}
+      STUN_URL: ${STUN_URL:-stun:stun.l.google.com:19302}
     depends_on:
-      - postgres-db
-    restart: always
+      postgres-db:
+        condition: service_healthy
 
   postgres-db:
     image: postgres:16-alpine
     container_name: mahi-postgres
-    ports:
-      - "5432:5432"
+    restart: unless-stopped
     environment:
-      - POSTGRES_USER=mahi_admin
-      - POSTGRES_PASSWORD=SecureMahiPass2026
-      - POSTGRES_DB=mahi_remote
+      POSTGRES_USER: mahi_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_DB: mahi_remote
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mahi_admin -d mahi_remote"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     volumes:
       - mahi-postgres-data:/var/lib/postgresql/data
-      - ../database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
-    restart: always
+      - ../database/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    # Database is intentionally not published to the public host interface.
 
   coturn-server:
+    profiles: ["coturn"]
     image: coturn/coturn:latest
     container_name: mahi-coturn
-    network_mode: "host"
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      TURN_SECRET: ${TURN_SECRET:-}
+      TURN_REALM: ${TURN_REALM:-}
     volumes:
-      - ./coturn.conf:/etc/coturn/turnserver.conf:ro
-    restart: always
+      - ./coturn.conf:/etc/coturn/base.conf:ro
+      - ./run-coturn.sh:/opt/mahi/run-coturn.sh:ro
+    entrypoint: ["/bin/sh", "/opt/mahi/run-coturn.sh"]
 
   prometheus:
     image: prom/prometheus:latest
     container_name: mahi-prometheus
+    restart: unless-stopped
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    restart: always
 
 volumes:
   mahi-postgres-data:

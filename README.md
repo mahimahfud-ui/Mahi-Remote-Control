@@ -1,24 +1,35 @@
 # Mahi Remote Control
 
-> Production-grade, secure remote Android device support and control platform connecting Windows desktop operators to Android phones over the internet.
+> Owner-approved remote support architecture for Android-to-Android and browser-to-Android connections. Same-Wi-Fi is not a design requirement; both endpoints need Internet access and a reachable public signaling service plus STUN/TURN for difficult NAT paths.
 
----
+## Current implementation status
 
-## 🌟 Overview
+**Native Android-to-Android WebRTC screen transport is now implemented in source on this working branch, but the branch is not yet verified as a release-ready product.** It includes a receiver-side MediaProjection publisher, a controller-side video receiver, SDP/ICE signaling, a real Android video renderer, owner-visible foreground sharing, and session-authorized remote input. Android CI/build results and two-physical-device end-to-end tests are still required before calling the feature complete.
 
-**Mahi Remote Control** allows an authorized Windows desktop operator (e.g. located in **Sylhet, Bangladesh**) to securely view, diagnose, and troubleshoot an Android phone (e.g. located in **Noakhali, Bangladesh**) across different cellular or Wi-Fi networks without physical USB connections, shared local networks, or rooting requirements.
+All work described here is on `work/anywhere-remote-control`. GitHub `main` has not been changed. The Google AI Studio Remix workspace was not available in this implementation session; compare this branch against that workspace before merging so newer workspace work is not overwritten.
 
-### Key Capabilities
-- **Non-Root by Design:** Works immediately on stock, unrooted Android 8.0+ devices using official **MediaProjection** and **AccessibilityService** APIs.
-- **WebRTC Screen Mirroring:** Hardware-accelerated H.264 video pipeline with adaptive bitrate (1080p 60fps, 720p 30fps, 480p 15fps) and automatic orientation handling.
-- **Touch & Gesture Interaction:** Mouse clicks translate to taps, drags translate to swipes, scroll wheels translate to vertical scrolls, and physical keyboards input text into focused fields.
-- **Automated Diagnostics:** One-click automated diagnostics for Internet connectivity, DNS latency, Google Play Services status, storage capacity, battery subsystem health, system clock sync, and remote permissions.
-- **Scoped File Manager:** Secure browsing of internal and external Documents/Downloads directories with download, upload, rename, and confirmation-gated file deletion.
-- **Application Management:** Query installed packages, inspect version/target SDK details, launch applications, open application settings, or request system uninstallation prompts.
-- **Cryptographic Security:** Ed25519 / ECDSA device identity, 6-digit expiring pairing codes, QR-code pairing, zero-trust command allowlists, persistent user notifications, and an instant emergency killswitch.
-- **Optional Magisk Integration:** Automatic detection of Magisk on rooted phones. If present, privileged mode is strictly opt-in and restricted to signed allowlists.
+### Current branch improvements
 
----
+- Receiver-approved pairing request lifecycle with hashed, short-lived codes.
+- Session-bound tokens and peer-only signaling relay; no broadcast fallback for remote commands.
+- Dynamic TURN credential endpoint and explicit public HTTPS/WSS configuration.
+- Browser controller no longer uses a fake demo device or synthetic phone screen.
+- Simplified Android home screen with two primary actions and a More menu.
+- Demo devices, fake default telemetry and synthetic screen-stream metrics removed.
+- Backend/Android CI workflow and honest implementation/deployment documentation added.
+
+### Remaining release blockers
+
+- Verify GitHub Actions Android build/unit tests/lint; fix any compile or runtime issues found there.
+- Install the same APK on two physical Android phones and verify owner-approved pairing, real decoded video, tap/swipe/navigation, Stop/Disconnect, and reconnect.
+- Configure a reachable TURN relay (Coturn or Cloudflare Realtime managed TURN) for networks where direct STUN cannot connect.
+- Persist device, pending-pairing and active-session state; current backend registries are in-memory Maps and reset on process restart.
+- Verify browser-to-Android separately; the Windows desktop controller has not been completed or tested on this branch.
+- Generate a signed release APK after the physical-device tests pass.
+
+**Android consent and platform limits:** The receiving owner must approve pairing, accept Android's screen-sharing prompt, and manually enable Mahi Remote Input in Accessibility settings. Android protected screens (FLAG_SECURE), some system-owned dialogs, and OS restrictions cannot be bypassed. This is owner-approved remote support, not stealth or unrestricted system-level control.
+
+See [implementation status](docs/IMPLEMENTATION-STATUS.md) and [public remote deployment](docs/PUBLIC-REMOTE-DEPLOYMENT.md) before using or distributing this branch.
 
 ## 📐 Architecture & Monorepo Structure
 

@@ -2,7 +2,6 @@ package com.example.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -66,15 +65,18 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.viewinterop.AndroidView
+import org.webrtc.RendererCommon
+import org.webrtc.SurfaceViewRenderer
+import org.webrtc.VideoTrack
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
@@ -101,11 +103,10 @@ import com.example.ui.theme.WarningAmber
 fun ControllerViewerScreen(viewModel: MahiViewModel) {
     val session = viewModel.activeControllerSession.collectAsState().value ?: return
     val selectedViewerTab by viewModel.remoteViewerTab.collectAsState()
-    val remoteMetrics by viewModel.remoteMetrics.collectAsState()
+    val remoteWebRtcStatus by viewModel.remoteWebRtcStatus.collectAsState()
     val remoteTelemetry by viewModel.remoteTelemetry.collectAsState()
 
     var keyboardInput by remember { mutableStateOf("") }
-    val touchRipples = remember { mutableStateListOf<Offset>() }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -130,7 +131,7 @@ fun ControllerViewerScreen(viewModel: MahiViewModel) {
                             )
                         }
                         Text(
-                            text = "${remoteMetrics.roundTripTimeMs} ms • ${remoteMetrics.currentFps} FPS • ${remoteMetrics.bitrateKbps / 1000f} Mbps",
+                            text = remoteWebRtcStatus,
                             color = CyanAccent,
                             fontSize = 10.sp,
                             fontFamily = FontFamily.Monospace
@@ -208,8 +209,6 @@ fun ControllerViewerScreen(viewModel: MahiViewModel) {
                 RemoteViewerTab.SCREEN -> {
                     RemoteScreenViewport(
                         viewModel = viewModel,
-                        sessionResolution = session.screenResolution,
-                        touchRipples = touchRipples,
                         keyboardInput = keyboardInput,
                         onKeyboardInputChanged = { keyboardInput = it },
                         onSendText = {
@@ -237,12 +236,22 @@ fun ControllerViewerScreen(viewModel: MahiViewModel) {
 @Composable
 private fun RemoteScreenViewport(
     viewModel: MahiViewModel,
-    sessionResolution: String,
-    touchRipples: MutableList<Offset>,
     keyboardInput: String,
     onKeyboardInputChanged: (String) -> Unit,
     onSendText: () -> Unit
 ) {
+    val remoteVideoTrack by viewModel.remoteVideoTrack.collectAsState()
+    val remoteWebRtcStatus by viewModel.remoteWebRtcStatus.collectAsState()
+    val hasRemoteVideoFrame by viewModel.hasRemoteVideoFrame.collectAsState()
+    val remoteVideoResolution by viewModel.remoteVideoResolution.collectAsState()
+
+    LaunchedEffect(remoteVideoTrack) {
+        viewModel.setRemoteVideoFrameRendered(false)
+        if (remoteVideoTrack == null) {
+            viewModel.setRemoteVideoResolution(0, 0, 0)
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -250,120 +259,111 @@ private fun RemoteScreenViewport(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.SpaceBetween
     ) {
-        // Live Screen Canvas Container with 9:16 aspect ratio
+        // Real decoded screen video from the approved receiver session.
         BoxWithConstraints(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
             contentAlignment = Alignment.Center
         ) {
-            val canvasWidth = this.maxWidth
-            val canvasHeight = this.maxHeight
+            val frameWidth = remoteVideoResolution?.first ?: 9
+            val frameHeight = remoteVideoResolution?.second ?: 16
+            val frameAspect = frameWidth.toFloat() / frameHeight.coerceAtLeast(1).toFloat()
+            val availableAspect = maxWidth.value / maxHeight.value.coerceAtLeast(1f)
+            val frameSizeModifier = if (frameAspect > availableAspect) {
+                Modifier.fillMaxWidth().aspectRatio(frameAspect)
+            } else {
+                Modifier.fillMaxHeight().aspectRatio(frameAspect)
+            }
 
             Box(
-                modifier = Modifier
-                    .aspectRatio(9f / 16f)
-                    .fillMaxHeight()
+                modifier = frameSizeModifier
                     .clip(RoundedCornerShape(16.dp))
                     .background(Color.Black)
                     .border(2.dp, CyanAccent.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
                     .testTag("remote_screen_canvas")
-                    .pointerInput(Unit) {
-                        detectTapGestures(
-                            onTap = { offset ->
-                                touchRipples.add(offset)
-                                if (touchRipples.size > 5) touchRipples.removeAt(0)
-                                viewModel.sendRemoteTap(offset.x, offset.y, size.width.toFloat(), size.height.toFloat())
-                            },
-                            onDoubleTap = { offset ->
-                                touchRipples.add(offset)
-                                viewModel.sendRemoteDoubleTap(offset.x, offset.y, size.width.toFloat(), size.height.toFloat())
-                            },
-                            onLongPress = { offset ->
-                                touchRipples.add(offset)
-                                viewModel.sendRemoteLongPress(offset.x, offset.y, size.width.toFloat(), size.height.toFloat())
-                            }
-                        )
+                    .pointerInput(hasRemoteVideoFrame) {
+                        if (hasRemoteVideoFrame) {
+                            detectTapGestures(
+                                onTap = { viewModel.sendRemoteTap(it.x, it.y, size.width.toFloat(), size.height.toFloat()) },
+                                onDoubleTap = { viewModel.sendRemoteDoubleTap(it.x, it.y, size.width.toFloat(), size.height.toFloat()) },
+                                onLongPress = { viewModel.sendRemoteLongPress(it.x, it.y, size.width.toFloat(), size.height.toFloat()) }
+                            )
+                        }
                     }
-                    .pointerInput(Unit) {
-                        var startX = 0f
-                        var startY = 0f
-                        var startMillis = 0L
-
-                        detectDragGestures(
-                            onDragStart = { offset ->
-                                startX = offset.x
-                                startY = offset.y
-                                startMillis = System.currentTimeMillis()
-                            },
-                            onDragEnd = {
-                                // Handled
-                            },
-                            onDrag = { change, dragAmount ->
-                                change.consume()
-                                val currentX = change.position.x
-                                val currentY = change.position.y
-                                val duration = (System.currentTimeMillis() - startMillis).coerceIn(100L, 800L)
-                                viewModel.sendRemoteSwipe(startX, startY, currentX, currentY, duration, size.width.toFloat(), size.height.toFloat())
-                                startX = currentX
-                                startY = currentY
-                            }
-                        )
+                    .pointerInput(hasRemoteVideoFrame) {
+                        if (hasRemoteVideoFrame) {
+                            var start = androidx.compose.ui.geometry.Offset.Zero
+                            var end = androidx.compose.ui.geometry.Offset.Zero
+                            var startedAt = 0L
+                            detectDragGestures(
+                                onDragStart = {
+                                    start = it
+                                    end = it
+                                    startedAt = System.currentTimeMillis()
+                                },
+                                onDragEnd = {
+                                    val duration = (System.currentTimeMillis() - startedAt).coerceIn(100L, 1200L)
+                                    viewModel.sendRemoteSwipe(start.x, start.y, end.x, end.y, duration, size.width.toFloat(), size.height.toFloat())
+                                },
+                                onDrag = { change, _ ->
+                                    end = change.position
+                                    change.consume()
+                                }
+                            )
+                        }
                     }
             ) {
-                // Background visual representation of receiver's active UI
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    // Simulated status bar
-                    drawRect(
-                        color = Color(0xFF1E293B),
-                        size = androidx.compose.ui.geometry.Size(size.width, 24.dp.toPx())
-                    )
+                RemoteVideoSurface(viewModel = viewModel, track = remoteVideoTrack)
 
-                    // Visual touch ripples
-                    touchRipples.forEach { ripple ->
-                        drawCircle(
-                            color = CyanAccent.copy(alpha = 0.6f),
-                            radius = 28.dp.toPx(),
-                            center = ripple
+                if (!hasRemoteVideoFrame) {
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.ScreenShare,
+                            contentDescription = null,
+                            tint = CyanAccent.copy(alpha = 0.8f),
+                            modifier = Modifier.size(44.dp)
                         )
-                        drawCircle(
-                            color = Color.White.copy(alpha = 0.8f),
-                            radius = 12.dp.toPx(),
-                            center = ripple
+                        Text(
+                            text = "WAITING FOR REAL REMOTE VIDEO",
+                            color = CyanAccent,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.8.sp
+                        )
+                        Text(
+                            text = if (remoteVideoTrack == null) remoteWebRtcStatus else "Video track negotiated; waiting for the first decoded frame",
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+                        Text(
+                            text = "On the receiving phone, approve the Android screen-sharing prompt. Touch and navigation remain disabled until a real decoded frame is visible.",
+                            color = TextMuted,
+                            fontSize = 10.sp,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
                     }
-                }
-
-                // Center Live Screen Status overlay
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        Icons.Default.ScreenShare,
-                        contentDescription = null,
-                        tint = CyanAccent.copy(alpha = 0.7f),
-                        modifier = Modifier.size(48.dp)
-                    )
+                } else {
                     Text(
-                        text = "LIVE REMOTE SCREEN STREAMING",
-                        color = CyanAccent,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.sp
-                    )
-                    Text(
-                        text = "Touch, swipe, or drag inside this window to control the receiver phone directly.",
-                        color = TextSecondary,
+                        text = "LIVE • OWNER-APPROVED",
+                        color = MintAccent,
                         fontSize = 10.sp,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(10.dp)
+                            .background(DarkSurface.copy(alpha = 0.85f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 5.dp)
                     )
                 }
 
-                // Volume & Quick System Controls overlay in top-right of canvas
                 Row(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
@@ -507,6 +507,51 @@ private fun NavActionItem(
         Icon(icon, contentDescription = label, tint = CyanAccent, modifier = Modifier.size(20.dp))
         Text(text = label, color = TextSecondary, fontSize = 9.sp)
     }
+}
+
+private class RemoteVideoRendererBinding {
+    var renderer: SurfaceViewRenderer? = null
+    var track: VideoTrack? = null
+}
+
+@Composable
+private fun RemoteVideoSurface(viewModel: MahiViewModel, track: VideoTrack?) {
+    val binding = remember { RemoteVideoRendererBinding() }
+
+    AndroidView(
+        modifier = Modifier.fillMaxSize(),
+        factory = { context ->
+            SurfaceViewRenderer(context).apply {
+                init(viewModel.remoteWebRtcSession.eglContext, object : RendererCommon.RendererEvents {
+                    override fun onFirstFrameRendered() {
+                        viewModel.setRemoteVideoFrameRendered(true)
+                    }
+                    override fun onFrameResolutionChanged(videoWidth: Int, videoHeight: Int, rotation: Int) {
+                        viewModel.setRemoteVideoResolution(videoWidth, videoHeight, rotation)
+                    }
+                })
+                setEnableHardwareScaler(true)
+                setZOrderMediaOverlay(true)
+                setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
+                setMirror(false)
+                binding.renderer = this
+            }
+        },
+        update = { renderer ->
+            if (binding.track !== track) {
+                binding.track?.removeSink(renderer)
+                binding.track = track
+                track?.addSink(renderer)
+            }
+        },
+        onRelease = { renderer ->
+            binding.track?.removeSink(renderer)
+            binding.track = null
+            binding.renderer = null
+            viewModel.setRemoteVideoFrameRendered(false)
+            renderer.release()
+        }
+    )
 }
 
 @Composable
@@ -739,11 +784,6 @@ private fun RemoteDiagnosticsPane(viewModel: MahiViewModel) {
             }
         }
 
-        val battery = telemetry?.batteryPercent ?: 88
-        val temp = telemetry?.batteryTempC ?: 34.0f
-        val storage = telemetry?.storageFree ?: "38.2 GB"
-        val rtt = telemetry?.roundTripTimeMs ?: 32
-
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = DarkSurface),
@@ -754,17 +794,25 @@ private fun RemoteDiagnosticsPane(viewModel: MahiViewModel) {
                 modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                TelemetryMetricItem("Battery Health", "$battery% • ${if (battery > 20) "NORMAL" else "LOW"}")
-                LinearProgressIndicator(
-                    progress = { battery / 100f },
-                    modifier = Modifier.fillMaxWidth().height(6.dp),
-                    color = if (battery > 20) MintAccent else ErrorCoral,
-                    trackColor = DarkSurfaceElevated
-                )
-
-                TelemetryMetricItem("Thermal Subsystem", "$temp °C • OPTIMAL")
-                TelemetryMetricItem("Shared Storage Free", "$storage Available")
-                TelemetryMetricItem("Network Round-Trip Latency", "$rtt ms • WebRTC DataChannel Active")
+                if (telemetry == null) {
+                    Text(
+                        "No receiver diagnostics received yet. Run the test suite after the owner approves the diagnostics permission.",
+                        color = TextSecondary,
+                        fontSize = 12.sp
+                    )
+                } else {
+                    val battery = telemetry!!.batteryPercent
+                    TelemetryMetricItem("Battery", "$battery%")
+                    LinearProgressIndicator(
+                        progress = { (battery / 100f).coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth().height(6.dp),
+                        color = if (battery > 20) MintAccent else ErrorCoral,
+                        trackColor = DarkSurfaceElevated
+                    )
+                    TelemetryMetricItem("Battery Temperature", "${telemetry!!.batteryTempC} °C")
+                    TelemetryMetricItem("Free Storage", telemetry!!.storageFree)
+                    TelemetryMetricItem("Network Round-Trip Latency", "Not measured")
+                }
             }
         }
     }

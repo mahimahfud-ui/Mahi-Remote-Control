@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.CastConnected
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Laptop
@@ -68,11 +69,13 @@ import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.WarningAmber
 
 @Composable
-fun PairingScreen(viewModel: MahiViewModel) {
+fun PairingScreen(viewModel: MahiViewModel, onRequestScreenShare: () -> Unit) {
     val context = LocalContext.current
     val currentCode by viewModel.pairingManager.currentPairingCode.collectAsState()
     val trustedControllers by viewModel.pairingManager.trustedControllers.collectAsState()
     val showQr by viewModel.showQrDialog.collectAsState()
+    val browserUrl by viewModel.browserAccessUrl.collectAsState()
+    val backendStatus by viewModel.publicBackendStatus.collectAsState()
 
     Column(
         modifier = Modifier
@@ -102,7 +105,7 @@ fun PairingScreen(viewModel: MahiViewModel) {
                 )
 
                 Text(
-                    text = "Share this 6-digit code with your authorized Windows desktop operator in Sylhet to establish end-to-end encrypted connection:",
+                    text = "Share this temporary six-digit code with the Android phone or browser that should request access:",
                     color = TextSecondary,
                     fontSize = 13.sp,
                     lineHeight = 18.sp
@@ -183,19 +186,44 @@ fun PairingScreen(viewModel: MahiViewModel) {
                     }
                 }
 
-                // Operator simulation button
-                TextButton(
-                    onClick = { viewModel.simulateOperatorConnection() },
-                    modifier = Modifier.testTag("simulate_operator_request_btn")
+                Button(
+                    onClick = onRequestScreenShare,
+                    modifier = Modifier.fillMaxWidth().testTag("start_screen_share_btn"),
+                    colors = ButtonDefaults.buttonColors(containerColor = MintAccent, contentColor = DarkCharcoalBg),
+                    shape = RoundedCornerShape(10.dp)
                 ) {
-                    Icon(Icons.Default.SupportAgent, contentDescription = null, tint = MintAccent, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Simulate Operator Connection Request (Sylhet)",
-                        color = MintAccent,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium
-                    )
+                    Icon(Icons.Default.CastConnected, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Start screen sharing", fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+
+        // Browser access is shown only when the backend confirms its public HTTPS URL.
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = DarkSurface),
+            border = androidx.compose.foundation.BorderStroke(1.dp, DarkSurfaceBorder),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Browser access", color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                if (!browserUrl.isNullOrBlank()) {
+                    Text(browserUrl!!, color = CyanAccent, fontSize = 12.sp)
+                    OutlinedButton(
+                        onClick = {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("Mahi Remote browser URL", browserUrl))
+                            Toast.makeText(context, "Browser URL copied", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Copy browser URL")
+                    }
+                } else {
+                    Text(backendStatus, color = TextSecondary, fontSize = 12.sp)
                 }
             }
         }

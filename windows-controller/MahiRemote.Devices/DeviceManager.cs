@@ -5,24 +5,8 @@ namespace MahiRemote.Devices;
 
 public class DeviceManager
 {
+    // The list starts empty and is populated only by server-confirmed pairings.
     public ObservableCollection<DeviceInfo> PairedDevices { get; } = new();
-
-    public DeviceManager()
-    {
-        // Seed default device for demonstration / immediate operator testing
-        PairedDevices.Add(new DeviceInfo
-        {
-            DeviceId = "MAHI-SAM-9B7C12F0",
-            DeviceName = "Samsung Galaxy S24 Ultra",
-            Fingerprint = "7A:B2:34:CD:5E:6F:10:99:88:77:66:55:44:33:22:11",
-            AndroidVersion = "Android 14 (API 34)",
-            BatteryPercent = 86,
-            IsCharging = true,
-            NetworkType = "Wi-Fi 6 (Noakhali)",
-            IpAddress = "103.145.112.45",
-            IsOnline = true
-        });
-    }
 
     public void AddDevice(DeviceInfo device)
     {

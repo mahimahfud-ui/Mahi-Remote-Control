@@ -1,7 +1,9 @@
 package com.example.ui
 
 import android.app.Application
+import com.example.BuildConfig
 import android.content.Context
+import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.appmanager.AppItem
@@ -18,6 +20,7 @@ import com.example.filetransfer.FileManager
 import com.example.pairing.OperatorRequest
 import com.example.pairing.PairingManager
 import com.example.remoteinput.MahiAccessibilityService
+import com.example.remotescreen.AndroidWebRtcSession
 import com.example.remotescreen.ScreenCaptureService
 import com.example.remotescreen.ScreenStreamState
 import com.example.remotescreen.StreamMetrics
@@ -32,10 +35,18 @@ import com.example.signaling.SignalingMessage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import org.webrtc.PeerConnection
+import org.webrtc.VideoTrack
 import java.util.UUID
+import java.net.HttpURLConnection
+import java.net.URL
 
 enum class MainTab(val title: String) {
     DASHBOARD("Dashboard"),
@@ -91,6 +102,12 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     val screenStreamState: StateFlow<ScreenStreamState> = ScreenCaptureService.streamState
     val auditEvents = AuditLogger.events
 
+    private val _browserAccessUrl = MutableStateFlow<String?>(null)
+    val browserAccessUrl: StateFlow<String?> = _browserAccessUrl.asStateFlow()
+
+    private val _publicBackendStatus = MutableStateFlow("Public backend is not configured for this build.")
+    val publicBackendStatus: StateFlow<String> = _publicBackendStatus.asStateFlow()
+
     // Controller Mode State
     private val _isControllerConnecting = MutableStateFlow(false)
     val isControllerConnecting: StateFlow<Boolean> = _isControllerConnecting.asStateFlow()
@@ -101,18 +118,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     private val _activeControllerSession = MutableStateFlow<ControllerSession?>(null)
     val activeControllerSession: StateFlow<ControllerSession?> = _activeControllerSession.asStateFlow()
 
-    private val _recentTargetDevices = MutableStateFlow<List<KnownTargetDevice>>(
-        listOf(
-            KnownTargetDevice(
-                deviceId = "MAHI-NOAKHALI-01",
-                name = "Phone B — Receiver (Noakhali)",
-                model = "Pixel 8 Pro (Android 14)",
-                fingerprint = "7A:B3:99:C2:54:E1:88:20:D1:66:33:F0:91:AA:BB:CC",
-                lastConnectedAtMillis = System.currentTimeMillis() - 7200000L,
-                isOnline = true
-            )
-        )
-    )
+    private val _recentTargetDevices = MutableStateFlow<List<KnownTargetDevice>>(emptyList())
     val recentTargetDevices: StateFlow<List<KnownTargetDevice>> = _recentTargetDevices.asStateFlow()
 
     private val _remoteViewerTab = MutableStateFlow(RemoteViewerTab.SCREEN)
@@ -124,11 +130,21 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     private val _remoteAppList = MutableStateFlow<List<AppItem>>(emptyList())
     val remoteAppList: StateFlow<List<AppItem>> = _remoteAppList.asStateFlow()
 
-    private val _remoteTelemetry = MutableStateFlow<RemoteTelemetry?>(RemoteTelemetry())
+    private val _remoteTelemetry = MutableStateFlow<RemoteTelemetry?>(null)
     val remoteTelemetry: StateFlow<RemoteTelemetry?> = _remoteTelemetry.asStateFlow()
 
-    private val _remoteMetrics = MutableStateFlow(StreamMetrics(roundTripTimeMs = 32, currentFps = 60, bitrateKbps = 2400))
+    private val _remoteMetrics = MutableStateFlow(StreamMetrics())
     val remoteMetrics: StateFlow<StreamMetrics> = _remoteMetrics.asStateFlow()
+
+    private val _hasRemoteVideoFrame = MutableStateFlow(false)
+    val hasRemoteVideoFrame: StateFlow<Boolean> = _hasRemoteVideoFrame.asStateFlow()
+
+    private val _remoteVideoResolution = MutableStateFlow<Pair<Int, Int>?>(null)
+    val remoteVideoResolution: StateFlow<Pair<Int, Int>?> = _remoteVideoResolution.asStateFlow()
+
+    val remoteWebRtcSession: AndroidWebRtcSession
+    val remoteVideoTrack: StateFlow<VideoTrack?> get() = remoteWebRtcSession.remoteVideo
+    val remoteWebRtcStatus: StateFlow<String> get() = remoteWebRtcSession.status
 
     val signalingClient: SignalingClient
 
@@ -136,14 +152,27 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         signalingClient = SignalingClient(identity) { msg ->
             handleIncomingSignalingMessage(msg)
         }
-        signalingClient.connect()
+        remoteWebRtcSession = AndroidWebRtcSession(application) { type, payload, recipient ->
+            signalingClient.send(type, payload, recipient)
+        }
+        loadPublicBackendConfig()
 
-        // Register initial pairing code with backend signaling server
-        pairingManager.currentPairingCode.value?.let { pCode ->
-            signalingClient.send(
-                "REGISTER_PAIRING_CODE",
-                """{"code":"${pCode.code}","expiresAt":${pCode.expiresAtMillis}}"""
-            )
+        // Register the current receiver code after every successful signaling connection.
+        // This also covers reconnects and code rotation; sending before WebSocket onOpen loses the packet.
+        viewModelScope.launch {
+            combine(signalingClient.connectionStatus, pairingManager.currentPairingCode, appRole) { status, code, role ->
+                if (status == ConnectionStatus.AUTHENTICATED &&
+                    role == AppRole.RECEIVER &&
+                    pairingManager.activeSession.value == null
+                ) code else null
+            }.collect { code ->
+                code?.let { activeCode ->
+                    signalingClient.send(
+                        "REGISTER_PAIRING_CODE",
+                        """{"code":"${activeCode.code}","expiresAt":${activeCode.expiresAtMillis}}"""
+                    )
+                }
+            }
         }
 
         refreshFiles()
@@ -154,24 +183,121 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private suspend fun fetchIceServers(token: String): List<PeerConnection.IceServer> = withContext(Dispatchers.IO) {
+        val servers = mutableListOf(
+            PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
+        )
+        val base = BuildConfig.MAHI_PUBLIC_BASE_URL.trim().trimEnd('/')
+        if (base.isBlank() || token.isBlank()) return@withContext servers
+        var connection: HttpURLConnection? = null
+        try {
+            connection = (URL(base + "/api/v1/turn/credentials").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 8000
+                readTimeout = 8000
+                doOutput = true
+                setRequestProperty("Authorization", "Bearer " + token)
+                setRequestProperty("Content-Type", "application/json")
+            }
+            connection.outputStream.use { it.write("{}".toByteArray(Charsets.UTF_8)) }
+            if (connection.responseCode !in 200..299) return@withContext servers
+            val response = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+            val array = response.optJSONArray("iceServers") ?: return@withContext servers
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                val urlsValue = item.opt("urls")
+                val urls = when (urlsValue) {
+                    is JSONArray -> (0 until urlsValue.length()).mapNotNull { urlsValue.optString(it).takeIf(String::isNotBlank) }
+                    is String -> listOf(urlsValue).filter(String::isNotBlank)
+                    else -> emptyList()
+                }
+                if (urls.isEmpty()) continue
+                val builder = PeerConnection.IceServer.builder(urls)
+                item.optString("username").takeIf(String::isNotBlank)?.let(builder::setUsername)
+                item.optString("credential").takeIf(String::isNotBlank)?.let(builder::setPassword)
+                servers.add(builder.createIceServer())
+            }
+        } catch (_: Exception) {
+            AuditLogger.log("WEBRTC", "TURN_UNAVAILABLE", "Using STUN-only connectivity; relay credentials are unavailable", AuditSeverity.WARNING)
+        } finally {
+            connection?.disconnect()
+        }
+        servers
+    }
+
+    private fun loadPublicBackendConfig() {
+        val baseUrl = BuildConfig.MAHI_PUBLIC_BASE_URL.trim().trimEnd('/')
+        if (!baseUrl.startsWith("https://", ignoreCase = true)) {
+            _publicBackendStatus.value = "Browser access is disabled. Build with MAHI_PUBLIC_BASE_URL=https://your-domain."
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val connection = (URL(baseUrl + "/api/v1/config").openConnection() as HttpURLConnection).apply {
+                        requestMethod = "GET"
+                        connectTimeout = 8000
+                        readTimeout = 8000
+                        setRequestProperty("Accept", "application/json")
+                    }
+                    try {
+                        if (connection.responseCode !in 200..299) {
+                            throw IllegalStateException("Backend configuration returned HTTP " + connection.responseCode)
+                        }
+                        JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+                    } finally {
+                        connection.disconnect()
+                    }
+                }
+
+                if (!result.optBoolean("publicAccessConfigured")) {
+                    _publicBackendStatus.value = result.optString(
+                        "message",
+                        "Backend has not enabled public browser access."
+                    )
+                    return@launch
+                }
+
+                val browserUrl = result.optString("browserUrl")
+                val signalingUrl = result.optString("signalingUrl")
+                if (!browserUrl.startsWith("https://") || !signalingUrl.startsWith("wss://")) {
+                    throw IllegalStateException("Backend returned invalid public HTTPS/WSS URLs.")
+                }
+
+                _browserAccessUrl.value = browserUrl
+                _publicBackendStatus.value = if (result.optBoolean("turnConfigured")) {
+                    "Public access configured. TURN credentials endpoint is available."
+                } else {
+                    "Public signaling configured. TURN relay is not configured; some mobile networks may not connect."
+                }
+                signalingClient.updateServerUrl(signalingUrl)
+            } catch (error: Exception) {
+                _publicBackendStatus.value = "Backend configuration unavailable: " + (error.message ?: "network error")
+                AuditLogger.log("CONFIG", "PUBLIC_CONFIG_ERROR", error.message ?: "Could not load public backend configuration", AuditSeverity.WARNING)
+            }
+        }
+    }
     private fun handleIncomingSignalingMessage(msg: SignalingMessage) {
         viewModelScope.launch {
             try {
                 when (msg.type) {
                     "PAIR_REQUEST" -> {
-                        val root = JSONObject(msg.payload)
-                        val opName = root.optString("operatorName", root.optString("controllerName", "Mahi Remote Controller"))
-                        val opLoc = root.optString("operatorLocation", "Remote Android Controller")
-                        val opFp = root.optString("fingerprint", root.optString("controllerFingerprint", "UNKNOWN-FP"))
-                        val cId = root.optString("controllerId", msg.sender)
-                        val scopesJson = root.optJSONArray("requestedScopes")
+                        val envelope = JSONObject(msg.payload)
+                        val root = envelope.optJSONObject("payload") ?: envelope
+                        val opName = envelope.optString("operatorName",
+                            root.optString("operatorName", envelope.optString("controllerName", root.optString("controllerName", "Remote controller"))))
+                        val opLoc = envelope.optString("operatorLocation", root.optString("operatorLocation", "Remote controller"))
+                        val opFp = envelope.optString("fingerprint",
+                            root.optString("fingerprint", envelope.optString("controllerFingerprint", "UNKNOWN-FP")))
+                        val cId = envelope.optString("controllerId", root.optString("controllerId", msg.sender))
+                        val scopesJson = envelope.optJSONArray("requestedScopes") ?: root.optJSONArray("requestedScopes")
                         val scopes = mutableListOf<String>()
                         if (scopesJson != null) {
-                            for (i in 0 until scopesJson.length()) {
-                                scopes.add(scopesJson.getString(i))
-                            }
+                            for (i in 0 until scopesJson.length()) scopes.add(scopesJson.getString(i))
                         } else {
-                            scopes.addAll(listOf("Screen Mirroring", "Remote Interaction", "File Transfer", "Diagnostics"))
+                            scopes.addAll(listOf("Screen Mirroring", "Remote Interaction"))
                         }
                         pairingManager.recordIncomingOperatorRequest(
                             controllerId = cId,
@@ -182,24 +308,23 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                     "PAIR_ACCEPT" -> {
-                        // Handled on Controller side: target device approved!
-                        val root = JSONObject(msg.payload)
-                        val sessionId = root.optString("sessionId", UUID.randomUUID().toString())
-                        val receiverName = root.optString("receiverName", "Android Receiver Phone")
-                        val targetFp = root.optString("fingerprint", "TARGET-FP")
-                        val session = ControllerSession(
+                        // This confirms receiver approval; the server sends a separate session token.
+                        val envelope = JSONObject(msg.payload)
+                        val root = envelope.optJSONObject("payload") ?: envelope
+                        val sessionId = root.optString("sessionId", "")
+                        val receiverName = root.optString("receiverName", "Android Receiver")
+                        val targetFp = root.optString("fingerprint", "")
+                        _activeControllerSession.value = ControllerSession(
                             sessionId = sessionId,
                             targetDeviceId = msg.sender,
                             targetDeviceName = receiverName,
                             targetFingerprint = targetFp,
-                            sessionToken = UUID.randomUUID().toString(),
+                            sessionToken = "",
                             connectedAtMillis = System.currentTimeMillis()
                         )
-                        _activeControllerSession.value = session
-                        _isControllerConnecting.value = false
-                        _controllerErrorMessage.value = null
+                        _isControllerConnecting.value = true
+                        _controllerErrorMessage.value = "Approved. Authenticating secure session…"
 
-                        // Add to recent target devices
                         val updated = _recentTargetDevices.value.filter { it.deviceId != msg.sender } +
                             KnownTargetDevice(
                                 deviceId = msg.sender,
@@ -210,12 +335,45 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                                 isOnline = true
                             )
                         _recentTargetDevices.value = updated
-
-                        AuditLogger.log("CONTROLLER", "SESSION_ESTABLISHED", "Connected to remote phone: $receiverName", AuditSeverity.SECURITY)
-
-                        // Request initial remote app and file catalog
-                        fetchRemoteApps()
-                        fetchRemoteFiles()
+                    }
+                    "SESSION_AUTHORIZED" -> {
+                        val envelope = JSONObject(msg.payload)
+                        val sessionId = envelope.optString("sessionId", "")
+                        val token = envelope.optString("sessionToken", "")
+                        if (token.isNotBlank() && sessionId.isNotBlank()) {
+                            val controllerSession = _activeControllerSession.value
+                            viewModelScope.launch {
+                                val iceServers = fetchIceServers(token)
+                                if (controllerSession != null && appRole.value == AppRole.CONTROLLER) {
+                                    val authenticated = controllerSession.copy(sessionId = sessionId, sessionToken = token)
+                                    _activeControllerSession.value = authenticated
+                                    _isControllerConnecting.value = false
+                                    _controllerErrorMessage.value = null
+                                    remoteWebRtcSession.startController(sessionId, authenticated.targetDeviceId, iceServers)
+                                    AuditLogger.log("CONTROLLER", "SESSION_AUTHENTICATED", "Approved session authenticated; starting video negotiation", AuditSeverity.SECURITY)
+                                } else {
+                                    remoteWebRtcSession.setIceServers(iceServers)
+                                    AuditLogger.log("RECEIVER", "SESSION_AUTHENTICATED", "Approved controller session authenticated", AuditSeverity.SECURITY)
+                                }
+                            }
+                        }
+                    }
+                    "SDP_OFFER", "SDP_ANSWER", "ICE_CANDIDATE", "STREAM_STATUS" -> {
+                        val envelope = JSONObject(msg.payload)
+                        remoteWebRtcSession.onSignal(msg.type, msg.sender, envelope.optString("sessionId", ""), messagePayload(msg))
+                    }
+                    "SESSION_REVOKED", "DISCONNECTED" -> {
+                        val receiverWasSharing = appRole.value == AppRole.RECEIVER && ScreenCaptureService.isStreaming()
+                        remoteWebRtcSession.endFromServer()
+                        if (appRole.value == AppRole.RECEIVER) {
+                            pairingManager.emergencyDisconnect("The approved remote session was revoked by a participant")
+                            if (receiverWasSharing) {
+                                ScreenCaptureService.stopAfterSessionRevoked(getApplication())
+                            }
+                        }
+                        _activeControllerSession.value = null
+                        _isControllerConnecting.value = false
+                        _controllerErrorMessage.value = "Remote session was disconnected."
                     }
                     "PAIR_REJECT" -> {
                         _isControllerConnecting.value = false
@@ -227,10 +385,21 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         _isControllerConnecting.value = false
                         _controllerErrorMessage.value = root.optString("error", "Pairing error occurred.")
                     }
-                    "APP_LIST_RESPONSE" -> {
+                    "SCOPE_REQUIRED" -> {
                         val root = JSONObject(msg.payload)
-                        val raw = root.optString("payload", msg.payload)
-                        val jsonArr = if (raw.startsWith("[")) JSONArray(raw) else root.optJSONArray("apps") ?: JSONArray()
+                        _controllerErrorMessage.value = root.optString(
+                            "error",
+                            "The receiver did not approve: " + root.optString("requiredScope", "requested permission")
+                        )
+                    }
+                    "APP_LIST_RESPONSE" -> {
+                        val envelope = JSONObject(msg.payload)
+                        val payloadObject = envelope.optJSONObject("payload")
+                        val raw = envelope.optString("payload", "")
+                        val jsonArr = payloadObject?.optJSONArray("apps")
+                            ?: envelope.optJSONArray("apps")
+                            ?: envelope.optJSONArray("payload")
+                            ?: if (raw.startsWith("[")) JSONArray(raw) else JSONArray()
                         val list = mutableListOf<AppItem>()
                         for (i in 0 until jsonArr.length()) {
                             val obj = jsonArr.getJSONObject(i)
@@ -248,9 +417,13 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         _remoteAppList.value = list
                     }
                     "FILE_LIST_RESPONSE" -> {
-                        val root = JSONObject(msg.payload)
-                        val raw = root.optString("payload", msg.payload)
-                        val jsonArr = if (raw.startsWith("[")) JSONArray(raw) else root.optJSONArray("files") ?: JSONArray()
+                        val envelope = JSONObject(msg.payload)
+                        val payloadObject = envelope.optJSONObject("payload")
+                        val raw = envelope.optString("payload", "")
+                        val jsonArr = payloadObject?.optJSONArray("files")
+                            ?: envelope.optJSONArray("files")
+                            ?: envelope.optJSONArray("payload")
+                            ?: if (raw.startsWith("[")) JSONArray(raw) else JSONArray()
                         val list = mutableListOf<FileEntry>()
                         for (i in 0 until jsonArr.length()) {
                             val obj = jsonArr.getJSONObject(i)
@@ -270,16 +443,15 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         _remoteFileList.value = list
                     }
                     "DIAGNOSTICS_RESULT" -> {
-                        val root = JSONObject(msg.payload)
-                        val payloadObj = if (root.has("payload") && root.get("payload") is JSONObject) root.getJSONObject("payload") else root
-                        val battery = payloadObj.optInt("battery", 85)
-                        val temp = payloadObj.optDouble("temp", 33.5).toFloat()
-                        val storage = payloadObj.optString("storage", "38.2 GB")
+                        val payloadObj = messagePayload(msg)
+                        val battery = payloadObj.optInt("battery", 0)
+                        val temp = payloadObj.optDouble("temp", 0.0).toFloat()
+                        val storage = payloadObj.optString("storage", "unavailable")
                         _remoteTelemetry.value = RemoteTelemetry(
                             batteryPercent = battery,
                             batteryTempC = temp,
                             storageFree = storage,
-                            roundTripTimeMs = 30
+                            roundTripTimeMs = 0
                         )
                     }
                     "INPUT_EVENT" -> {
@@ -314,51 +486,70 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun messagePayload(msg: SignalingMessage): JSONObject {
+        val envelope = JSONObject(msg.payload)
+        return envelope.optJSONObject("payload") ?: envelope
+    }
+
     private fun handleInputEvent(msg: SignalingMessage) {
-        val root = JSONObject(msg.payload)
+        if (ScreenCaptureService.streamState.value !is ScreenStreamState.Active) {
+            AuditLogger.log("INPUT", "BLOCKED_NO_ACTIVE_SCREEN", "Remote input ignored until the receiver has an active, owner-approved screen stream", AuditSeverity.WARNING)
+            return
+        }
+        val root = messagePayload(msg)
         val cmd = if (root.has("command")) root.getJSONObject("command") else root
         val type = cmd.optString("type", "")
 
-        val screenW = 1080
-        val screenH = 1920
+        val display = getApplication<Application>().resources.displayMetrics
+        val screenW = display.widthPixels.coerceAtLeast(1)
+        val screenH = display.heightPixels.coerceAtLeast(1)
+        fun mapX(value: Float): Float? {
+            if (!value.isFinite() || value < 0f || value > 1080f) return null
+            return (value / 1080f * screenW).coerceIn(0f, (screenW - 1).toFloat())
+        }
+        fun mapY(value: Float): Float? {
+            if (!value.isFinite() || value < 0f || value > 1920f) return null
+            return (value / 1920f * screenH).coerceIn(0f, (screenH - 1).toFloat())
+        }
 
         when (type.uppercase()) {
             "TAP" -> {
-                val x = cmd.optDouble("x", -1.0).toFloat()
-                val y = cmd.optDouble("y", -1.0).toFloat()
+                val x = mapX(cmd.optDouble("x", -1.0).toFloat()) ?: return
+                val y = mapY(cmd.optDouble("y", -1.0).toFloat()) ?: return
                 MahiAccessibilityService.performTap(x, y, screenW, screenH)
             }
             "DOUBLETAP", "DOUBLE_TAP" -> {
-                val x = cmd.optDouble("x", -1.0).toFloat()
-                val y = cmd.optDouble("y", -1.0).toFloat()
+                val x = mapX(cmd.optDouble("x", -1.0).toFloat()) ?: return
+                val y = mapY(cmd.optDouble("y", -1.0).toFloat()) ?: return
                 MahiAccessibilityService.performDoubleTap(x, y, screenW, screenH)
             }
             "LONGPRESS", "LONG_PRESS" -> {
-                val x = cmd.optDouble("x", -1.0).toFloat()
-                val y = cmd.optDouble("y", -1.0).toFloat()
+                val x = mapX(cmd.optDouble("x", -1.0).toFloat()) ?: return
+                val y = mapY(cmd.optDouble("y", -1.0).toFloat()) ?: return
                 MahiAccessibilityService.performLongPress(x, y, screenW, screenH)
             }
             "SWIPE" -> {
-                val x1 = cmd.optDouble("x", -1.0).toFloat()
-                val y1 = cmd.optDouble("y", -1.0).toFloat()
-                val x2 = cmd.optDouble("x2", -1.0).toFloat()
-                val y2 = cmd.optDouble("y2", -1.0).toFloat()
+                val x1 = mapX(cmd.optDouble("x", -1.0).toFloat()) ?: return
+                val y1 = mapY(cmd.optDouble("y", -1.0).toFloat()) ?: return
+                val x2 = mapX(cmd.optDouble("x2", -1.0).toFloat()) ?: return
+                val y2 = mapY(cmd.optDouble("y2", -1.0).toFloat()) ?: return
                 val duration = cmd.optLong("durationMs", 300L)
                 MahiAccessibilityService.performSwipe(x1, y1, x2, y2, duration, screenW, screenH)
             }
             "DRAG" -> {
-                val x1 = cmd.optDouble("x", -1.0).toFloat()
-                val y1 = cmd.optDouble("y", -1.0).toFloat()
-                val x2 = cmd.optDouble("x2", -1.0).toFloat()
-                val y2 = cmd.optDouble("y2", -1.0).toFloat()
+                val x1 = mapX(cmd.optDouble("x", -1.0).toFloat()) ?: return
+                val y1 = mapY(cmd.optDouble("y", -1.0).toFloat()) ?: return
+                val x2 = mapX(cmd.optDouble("x2", -1.0).toFloat()) ?: return
+                val y2 = mapY(cmd.optDouble("y2", -1.0).toFloat()) ?: return
                 val duration = cmd.optLong("durationMs", 600L)
                 MahiAccessibilityService.performDrag(x1, y1, x2, y2, duration, screenW, screenH)
             }
             "SCROLL" -> {
                 val action = cmd.optString("action", "DOWN")
-                val startY = if (action.equals("UP", ignoreCase = true)) 1400f else 600f
-                val endY = if (action.equals("UP", ignoreCase = true)) 600f else 1400f
-                MahiAccessibilityService.performSwipe(540f, startY, 540f, endY, 250L, screenW, screenH)
+                val startY = mapY(if (action.equals("UP", ignoreCase = true)) 1400f else 600f) ?: return
+                val endY = mapY(if (action.equals("UP", ignoreCase = true)) 600f else 1400f) ?: return
+                val centerX = mapX(540f) ?: return
+                MahiAccessibilityService.performSwipe(centerX, startY, centerX, endY, 250L, screenW, screenH)
             }
             "GLOBALACTION", "GLOBAL_ACTION" -> {
                 val action = cmd.optString("action", "BACK")
@@ -376,17 +567,22 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun handleAppCommand(msg: SignalingMessage) {
-        val root = JSONObject(msg.payload)
+        val root = messagePayload(msg)
         val action = root.optString("action", "LIST")
         val pkg = root.optString("packageName", "")
 
         when (action.uppercase()) {
             "LIST" -> {
-                val apps = appManager.getInstalledApps(false)
-                val jsonArr = apps.take(50).joinToString(",") {
-                    """{"name":"${it.appName}","pkg":"${it.packageName}","ver":"${it.versionName}"}"""
+                val response = JSONArray()
+                appManager.getInstalledApps(false).take(50).forEach { app ->
+                    response.put(
+                        JSONObject()
+                            .put("name", app.appName)
+                            .put("pkg", app.packageName)
+                            .put("ver", app.versionName)
+                    )
                 }
-                signalingClient.send("APP_LIST_RESPONSE", "[$jsonArr]", msg.sender)
+                signalingClient.send("APP_LIST_RESPONSE", JSONObject().put("apps", response).toString(), msg.sender)
             }
             "LAUNCH" -> {
                 if (pkg.isNotEmpty()) appManager.launchApp(pkg)
@@ -401,46 +597,104 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun handleFileCommand(msg: SignalingMessage) {
-        val root = JSONObject(msg.payload)
+        val root = messagePayload(msg)
         val action = root.optString("action", "LIST")
         val path = root.optString("path", getApplication<Application>().filesDir.absolutePath)
 
         when (action.uppercase()) {
             "LIST" -> {
-                val files = fileManager.listFiles(path)
-                val jsonArr = files.joinToString(",") {
-                    """{"name":"${it.name}","path":"${it.path}","isDir":${it.isDirectory},"size":${it.sizeBytes}}"""
+                val response = JSONArray()
+                fileManager.listFiles(path).forEach { file ->
+                    response.put(
+                        JSONObject()
+                            .put("name", file.name)
+                            .put("path", file.path)
+                            .put("isDir", file.isDirectory)
+                            .put("size", file.sizeBytes)
+                            .put("mimeType", file.mimeType)
+                    )
                 }
-                signalingClient.send("FILE_LIST_RESPONSE", "[$jsonArr]", msg.sender)
+                signalingClient.send("FILE_LIST_RESPONSE", JSONObject().put("files", response).toString(), msg.sender)
             }
             "DELETE" -> {
-                fileManager.deleteFile(path, true)
-                refreshFiles()
+                val success = fileManager.deleteFile(path, true)
+                signalingClient.send(
+                    "COMMAND_ACK",
+                    JSONObject().put("command", "DELETE").put("success", success).toString(),
+                    msg.sender
+                )
+                if (success) refreshFiles()
             }
             "CREATE_FOLDER" -> {
                 val name = root.optString("name", "NewFolder")
-                fileManager.createFolder(path, name)
-                refreshFiles()
+                val success = fileManager.createFolder(path, name)
+                signalingClient.send(
+                    "COMMAND_ACK",
+                    JSONObject().put("command", "CREATE_FOLDER").put("success", success).toString(),
+                    msg.sender
+                )
+                if (success) refreshFiles()
             }
             "READ_CHUNK" -> {
                 val offset = root.optLong("offset", 0L)
-                val len = root.optInt("length", 32768)
-                val bytes = fileManager.readFileChunk(path, offset, len)
-                val base64 = if (bytes != null) android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP) else ""
-                signalingClient.send("FILE_CHUNK_RESPONSE", """{"path":"$path","offset":$offset,"data":"$base64"}""", msg.sender)
+                val length = root.optInt("length", 32768)
+                val bytes = fileManager.readFileChunk(path, offset, length)
+                if (bytes == null) {
+                    signalingClient.send(
+                        "COMMAND_ACK",
+                        JSONObject().put("command", "READ_CHUNK").put("success", false).toString(),
+                        msg.sender
+                    )
+                } else {
+                    val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                    val response = JSONObject()
+                        .put("path", path)
+                        .put("offset", offset)
+                        .put("data", base64)
+                    signalingClient.send("FILE_CHUNK_RESPONSE", response.toString(), msg.sender)
+                }
+            }
+            "CREATE_EMPTY_FILE" -> {
+                val success = fileManager.createEmptyFile(path)
+                signalingClient.send(
+                    "COMMAND_ACK",
+                    JSONObject().put("command", "CREATE_EMPTY_FILE").put("success", success).toString(),
+                    msg.sender
+                )
+                if (success) refreshFiles()
             }
             "WRITE_CHUNK" -> {
-                val base64 = root.optString("data", "")
-                val append = root.optBoolean("append", true)
-                val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
-                fileManager.writeFileChunk(path, bytes, append)
-                refreshFiles()
+                try {
+                    val base64 = root.optString("data", "")
+                    val append = root.optBoolean("append", true)
+                    val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
+                    val success = fileManager.writeFileChunk(path, bytes, append)
+                    signalingClient.send(
+                        "COMMAND_ACK",
+                        JSONObject().put("command", "WRITE_CHUNK").put("success", success).toString(),
+                        msg.sender
+                    )
+                    if (success) refreshFiles()
+                } catch (_: IllegalArgumentException) {
+                    signalingClient.send(
+                        "COMMAND_ACK",
+                        JSONObject().put("command", "WRITE_CHUNK").put("success", false).toString(),
+                        msg.sender
+                    )
+                }
             }
         }
     }
 
     // Role switcher
     fun setAppRole(role: AppRole) {
+        if (role == _appRole.value) return
+        if (role == AppRole.CONTROLLER && ScreenCaptureService.isStreaming()) {
+            ScreenCaptureService.stop(getApplication())
+        }
+        if (role == AppRole.RECEIVER && _activeControllerSession.value != null) {
+            disconnectControllerSession()
+        }
         _appRole.value = role
         signalingClient.setRole(role.name)
         AuditLogger.log("ROLE", "ROLE_SWITCHED", "Switched application mode to ${role.title}", AuditSeverity.INFO)
@@ -459,7 +713,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
               "controllerName": "${identity.deviceName}",
               "controllerModel": "${android.os.Build.MODEL}",
               "fingerprint": "${identity.fingerprint}",
-              "requestedScopes": ["Screen Mirroring", "Remote Interaction", "File Transfer", "Diagnostics"]
+              "requestedScopes": ["Screen Mirroring", "Remote Interaction", "File Transfer", "App Management", "Diagnostics"]
             }
         """.trimIndent()
 
@@ -495,7 +749,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
               "operatorName": "${identity.deviceName}",
               "operatorLocation": "Remote Android Controller",
               "fingerprint": "${identity.fingerprint}",
-              "requestedScopes": ["Screen Mirroring", "Remote Interaction", "File Transfer", "Diagnostics"]
+              "requestedScopes": ["Screen Mirroring", "Remote Interaction", "File Transfer", "App Management", "Diagnostics"]
             }
         """.trimIndent()
 
@@ -509,13 +763,38 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     fun disconnectControllerSession() {
         val session = _activeControllerSession.value
         if (session != null) {
+            remoteWebRtcSession.stop()
             signalingClient.send("EMERGENCY_DISCONNECT", """{"reason":"Controller disconnected"}""", session.targetDeviceId)
             _activeControllerSession.value = null
             AuditLogger.log("CONTROLLER", "DISCONNECTED", "Disconnected from ${session.targetDeviceName}", AuditSeverity.INFO)
         }
     }
 
+    fun setRemoteVideoFrameRendered(rendered: Boolean) {
+        _hasRemoteVideoFrame.value = rendered && remoteWebRtcSession.remoteVideo.value != null
+    }
+
+    fun setRemoteVideoResolution(width: Int, height: Int, rotation: Int) {
+        if (width <= 0 || height <= 0) {
+            _remoteVideoResolution.value = null
+            return
+        }
+        val normalizedRotation = ((rotation % 360) + 360) % 360
+        _remoteVideoResolution.value = if (normalizedRotation == 90 || normalizedRotation == 270) {
+            height to width
+        } else {
+            width to height
+        }
+    }
+
+    private fun remoteInputReady(): Boolean {
+        if (_hasRemoteVideoFrame.value && remoteWebRtcSession.remoteVideo.value != null) return true
+        _controllerErrorMessage.value = "Waiting for a real decoded remote screen frame. Remote input is disabled until video is rendering."
+        return false
+    }
+
     fun sendRemoteTap(x: Float, y: Float, canvasW: Float, canvasH: Float) {
+        if (!remoteInputReady()) return
         val session = _activeControllerSession.value ?: return
         val targetX = (x / canvasW) * 1080f
         val targetY = (y / canvasH) * 1920f
@@ -534,6 +813,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendRemoteDoubleTap(x: Float, y: Float, canvasW: Float, canvasH: Float) {
+        if (!remoteInputReady()) return
         val session = _activeControllerSession.value ?: return
         val targetX = (x / canvasW) * 1080f
         val targetY = (y / canvasH) * 1920f
@@ -552,6 +832,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendRemoteLongPress(x: Float, y: Float, canvasW: Float, canvasH: Float) {
+        if (!remoteInputReady()) return
         val session = _activeControllerSession.value ?: return
         val targetX = (x / canvasW) * 1080f
         val targetY = (y / canvasH) * 1920f
@@ -570,6 +851,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendRemoteSwipe(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long, canvasW: Float, canvasH: Float) {
+        if (!remoteInputReady()) return
         val session = _activeControllerSession.value ?: return
         val targetX1 = (x1 / canvasW) * 1080f
         val targetY1 = (y1 / canvasH) * 1920f
@@ -593,6 +875,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendRemoteGlobalAction(action: String) {
+        if (!remoteInputReady()) return
         val session = _activeControllerSession.value ?: return
         val payload = """
             {
@@ -607,6 +890,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendRemoteTextInput(text: String) {
+        if (!remoteInputReady()) return
         val session = _activeControllerSession.value ?: return
         val safeText = JSONObject.quote(text)
         val payload = """
@@ -622,6 +906,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendRemoteVolume(direction: String) {
+        if (!remoteInputReady()) return
         val session = _activeControllerSession.value ?: return
         val payload = """
             {
@@ -696,6 +981,11 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setVideoPreset(preset: VideoPreset) {
         _videoPreset.value = preset
+        remoteWebRtcSession.updatePreset(preset)
+    }
+
+    fun setScreenCaptureConsent(resultCode: Int, resultData: Intent) {
+        remoteWebRtcSession.setScreenConsent(resultCode, resultData, _videoPreset.value)
     }
 
     fun setAppSearchQuery(query: String) {
@@ -749,23 +1039,32 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun emergencyDisconnect() {
-        pairingManager.emergencyDisconnect("Emergency killswitch activated by user")
+        // Revoke the server-side peer session first, then stop any owner-visible capture service.
+        signalingClient.send(
+            "EMERGENCY_DISCONNECT",
+            """{"reason":"Emergency Stop activated by receiver owner"}"""
+        )
+        pairingManager.emergencyDisconnect("Emergency Stop activated by receiver owner")
+        remoteWebRtcSession.stop()
         ScreenCaptureService.stop(getApplication())
+        _activeControllerSession.value?.let { session ->
+            signalingClient.send(
+                "EMERGENCY_DISCONNECT",
+                """{"reason":"Emergency Stop activated by controller"}""",
+                session.targetDeviceId
+            )
+        }
+        _activeControllerSession.value = null
         _showDisconnectDialog.value = false
-    }
-
-    fun simulateOperatorConnection() {
-        pairingManager.simulateIncomingOperatorRequest()
     }
 
     fun approveIncomingRequest(req: OperatorRequest) {
         pairingManager.approveRequest(req)
         // If request originated from an Android or Windows controller, send PAIR_ACCEPT back
         if (req.controllerId.isNotBlank()) {
-            val sessionId = UUID.randomUUID().toString()
             signalingClient.send(
                 "PAIR_ACCEPT",
-                """{"sessionId":"$sessionId","receiverName":"${identity.deviceName}","status":"APPROVED","fingerprint":"${identity.fingerprint}"}""",
+                """{"receiverName":"${identity.deviceName}","status":"APPROVED","fingerprint":"${identity.fingerprint}"}""",
                 req.controllerId
             )
         }
@@ -791,6 +1090,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        remoteWebRtcSession.close()
         signalingClient.disconnect()
         super.onCleared()
     }

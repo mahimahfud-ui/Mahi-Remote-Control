@@ -1,19 +1,15 @@
 package com.example.security
 
-object AllowlistValidator {
+import java.io.File
 
+object AllowlistValidator {
     sealed class ValidationResult {
         object Valid : ValidationResult()
         data class Rejected(val reason: String) : ValidationResult()
     }
 
     private val ALLOWED_GLOBAL_ACTIONS = setOf(
-        "BACK",
-        "HOME",
-        "RECENTS",
-        "NOTIFICATIONS",
-        "QUICK_SETTINGS",
-        "LOCK_SCREEN"
+        "BACK", "HOME", "RECENTS", "NOTIFICATIONS", "QUICK_SETTINGS", "LOCK_SCREEN"
     )
 
     fun validateTap(x: Float, y: Float, screenWidth: Int, screenHeight: Int): ValidationResult {
@@ -26,11 +22,8 @@ object AllowlistValidator {
     }
 
     fun validateSwipe(
-        x1: Float, y1: Float,
-        x2: Float, y2: Float,
-        durationMs: Long,
-        screenWidth: Int,
-        screenHeight: Int
+        x1: Float, y1: Float, x2: Float, y2: Float,
+        durationMs: Long, screenWidth: Int, screenHeight: Int
     ): ValidationResult {
         if (x1 < 0 || x1 > screenWidth || y1 < 0 || y1 > screenHeight ||
             x2 < 0 || x2 > screenWidth || y2 < 0 || y2 > screenHeight) {
@@ -64,15 +57,24 @@ object AllowlistValidator {
         return ValidationResult.Valid
     }
 
+    // Canonical paths enforce directory boundaries and resolve symbolic links.
     fun validateFilePath(path: String, allowedRoots: List<String>): ValidationResult {
-        if (path.contains("..")) {
-            val reason = "Directory traversal pattern '..' detected in path: $path"
-            AuditLogger.log("FILE", "ACCESS_DENIED", reason, AuditSeverity.CRITICAL)
-            return ValidationResult.Rejected(reason)
+        val candidate = try { File(path).canonicalFile } catch (_: Exception) { null }
+        val isAllowed = candidate != null && allowedRoots.any { root ->
+            try {
+                val canonicalRoot = File(root).canonicalFile
+                val rootPath = canonicalRoot.path.trimEnd(File.separatorChar)
+                val candidatePath = candidate.path
+                candidatePath == canonicalRoot.path ||
+                    candidatePath.startsWith(
+                        if (rootPath.isEmpty()) File.separator else rootPath + File.separator
+                    )
+            } catch (_: Exception) {
+                false
+            }
         }
-        val isAllowed = allowedRoots.any { root -> path.startsWith(root) }
         if (!isAllowed) {
-            val reason = "Attempted access outside permitted scoped directory: $path"
+            val reason = "Attempted access outside permitted scoped directory."
             AuditLogger.log("FILE", "ACCESS_DENIED", reason, AuditSeverity.CRITICAL)
             return ValidationResult.Rejected(reason)
         }
@@ -80,7 +82,6 @@ object AllowlistValidator {
     }
 
     fun validateRawCommand(command: String): ValidationResult {
-        // Strict prohibition of arbitrary network shell commands
         val reason = "Arbitrary shell command execution is prohibited by security policy: '$command'"
         AuditLogger.log("SECURITY", "SHELL_EXECUTION_BLOCKED", reason, AuditSeverity.CRITICAL)
         return ValidationResult.Rejected(reason)

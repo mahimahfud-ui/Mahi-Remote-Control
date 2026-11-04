@@ -43,6 +43,10 @@ data class TransferProgress(
 
 class FileManager(private val context: Context) {
 
+    companion object {
+        const val MAX_TRANSFER_CHUNK_BYTES = 256 * 1024
+    }
+
     private val timeFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
 
     private val _activeTransfers = MutableStateFlow<List<TransferProgress>>(emptyList())
@@ -55,6 +59,14 @@ class FileManager(private val context: Context) {
         val roots = mutableListOf<File>()
         roots.add(context.filesDir)
         context.getExternalFilesDir(null)?.let { roots.add(it) }
+
+        // Wider shared-storage browsing is available only after the owner explicitly
+        // grants Android's special "All files access" permission in system settings.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R &&
+            Environment.isExternalStorageManager()
+        ) {
+            roots.add(Environment.getExternalStorageDirectory())
+        }
 
         val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
         if (downloads != null && downloads.exists()) roots.add(downloads)
@@ -120,72 +132,117 @@ class FileManager(private val context: Context) {
     }
 
     fun renameFile(oldPath: String, newName: String): Boolean {
+        val safeName = newName.trim()
+        if (safeName.isEmpty() || safeName.length > 128 || safeName == "." || safeName == ".." ||
+            safeName.contains("/") || safeName.contains("\\") || safeName.contains("\u0000")) return false
+
         val oldFile = File(oldPath)
+        if (!oldFile.exists()) return false
         val roots = getPermittedRootFolders().map { it.absolutePath }
-        if (AllowlistValidator.validateFilePath(oldFile.absolutePath, roots) !is AllowlistValidator.ValidationResult.Valid) {
+        if (AllowlistValidator.validateFilePath(oldFile.path, roots) !is AllowlistValidator.ValidationResult.Valid) {
             return false
         }
         val parent = oldFile.parentFile ?: return false
-        val newFile = File(parent, newName)
+        val newFile = File(parent, safeName)
+        if (newFile.exists() ||
+            AllowlistValidator.validateFilePath(newFile.path, roots) !is AllowlistValidator.ValidationResult.Valid) {
+            return false
+        }
         val success = oldFile.renameTo(newFile)
-        AuditLogger.log("FILE", "RENAMED", "Renamed ${oldFile.name} -> $newName (success=$success)", AuditSeverity.INFO)
+        AuditLogger.log("FILE", "RENAMED", "Renamed ${oldFile.name} -> ${newFile.name} (success=$success)", AuditSeverity.INFO)
         return success
     }
 
     fun moveFile(sourcePath: String, targetDir: String): Boolean {
         val src = File(sourcePath)
-        val dest = File(targetDir, src.name)
+        val destinationDirectory = File(targetDir)
+        if (!src.exists() || !destinationDirectory.isDirectory) return false
+
         val roots = getPermittedRootFolders().map { it.absolutePath }
-        if (AllowlistValidator.validateFilePath(src.absolutePath, roots) !is AllowlistValidator.ValidationResult.Valid ||
-            AllowlistValidator.validateFilePath(dest.absolutePath, roots) !is AllowlistValidator.ValidationResult.Valid) {
+        val dest = File(destinationDirectory, src.name)
+        if (AllowlistValidator.validateFilePath(src.path, roots) !is AllowlistValidator.ValidationResult.Valid ||
+            AllowlistValidator.validateFilePath(dest.path, roots) !is AllowlistValidator.ValidationResult.Valid ||
+            dest.exists()) {
             return false
         }
         val success = src.renameTo(dest)
-        AuditLogger.log("FILE", "MOVED", "Moved ${src.name} to $targetDir (success=$success)", AuditSeverity.INFO)
+        AuditLogger.log(
+            "FILE",
+            "MOVED",
+            "Moved ${src.name} to ${destinationDirectory.name} (success=$success)",
+            AuditSeverity.INFO
+        )
         return success
     }
 
     fun readFileChunk(path: String, offset: Long, length: Int): ByteArray? {
+        if (offset < 0 || length !in 1..MAX_TRANSFER_CHUNK_BYTES) return null
         val roots = getPermittedRootFolders().map { it.absolutePath }
         if (AllowlistValidator.validateFilePath(path, roots) !is AllowlistValidator.ValidationResult.Valid) {
             return null
         }
         val file = File(path)
-        if (!file.exists() || !file.canRead()) return null
+        if (!file.isFile || !file.canRead()) return null
 
         return try {
             RandomAccessFile(file, "r").use { raf ->
                 raf.seek(offset)
                 val buffer = ByteArray(length)
                 val bytesRead = raf.read(buffer)
-                if (bytesRead <= 0) return ByteArray(0)
-                if (bytesRead < length) buffer.copyOf(bytesRead) else buffer
+                if (bytesRead <= 0) ByteArray(0)
+                else if (bytesRead < length) buffer.copyOf(bytesRead)
+                else buffer
             }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }
 
-    fun writeFileChunk(path: String, data: ByteArray, append: Boolean): Boolean {
+    fun createEmptyFile(path: String): Boolean {
         val roots = getPermittedRootFolders().map { it.absolutePath }
         if (AllowlistValidator.validateFilePath(path, roots) !is AllowlistValidator.ValidationResult.Valid) {
             return false
         }
         return try {
             val file = File(path)
-            file.parentFile?.mkdirs()
-            FileOutputStream(file, append).use { fos ->
-                fos.write(data)
+            val parent = file.parentFile ?: return false
+            if (file.exists() || !parent.isDirectory || !parent.canWrite()) return false
+            val created = file.createNewFile()
+            if (created) {
+                AuditLogger.log("FILE", "EMPTY_FILE_CREATED", "Created empty file: ${file.name}", AuditSeverity.INFO)
             }
+            created
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun writeFileChunk(path: String, data: ByteArray, append: Boolean): Boolean {
+        if (data.isEmpty() || data.size > MAX_TRANSFER_CHUNK_BYTES) return false
+        val roots = getPermittedRootFolders().map { it.absolutePath }
+        if (AllowlistValidator.validateFilePath(path, roots) !is AllowlistValidator.ValidationResult.Valid) {
+            return false
+        }
+        return try {
+            val file = File(path)
+            if (file.exists() && !file.isFile) return false
+            val parent = file.parentFile ?: return false
+            if (!parent.exists() && !parent.mkdirs()) return false
+            if (!parent.isDirectory) return false
+            FileOutputStream(file, append).use { fos -> fos.write(data) }
             true
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             false
         }
     }
 
     fun calculateSha256(path: String): String? {
+        val roots = getPermittedRootFolders().map { it.absolutePath }
+        if (AllowlistValidator.validateFilePath(path, roots) !is AllowlistValidator.ValidationResult.Valid) {
+            return null
+        }
         val file = File(path)
-        if (!file.exists() || file.isDirectory) return null
+        if (!file.isFile || !file.canRead()) return null
         return try {
             val digest = MessageDigest.getInstance("SHA-256")
             FileInputStream(file).use { fis ->
@@ -196,7 +253,7 @@ class FileManager(private val context: Context) {
                 }
             }
             digest.digest().joinToString("") { "%02x".format(it) }
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             null
         }
     }

@@ -1,3 +1,5 @@
+> **SUPERSEDED — 2026-11-04:** Historical generated report; not reproduced or revalidated against this branch. Old `VERIFIED`/`PASSED`/real-device claims are not current test evidence. See [docs/IMPLEMENTATION-STATUS.md](../docs/IMPLEMENTATION-STATUS.md) and [docs/ANDROID_TO_ANDROID_TEST_REPORT.md](../docs/ANDROID_TO_ANDROID_TEST_REPORT.md).
+>
 # Mahi Remote Control — Real Android Device Testing & Verification Report
 
 **Evaluation Date:** 2026-11-03 01:27 UTC  

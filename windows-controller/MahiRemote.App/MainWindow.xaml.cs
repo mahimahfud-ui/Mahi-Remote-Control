@@ -34,13 +34,24 @@ public partial class MainWindow : Window
         _videoReceiver = new WebRtcVideoReceiver();
 
         LstDevices.ItemsSource = _deviceManager.PairedDevices;
-        if (_deviceManager.PairedDevices.Count > 0)
-        {
-            LstDevices.SelectedIndex = 0;
-        }
 
-        // Initialize real screen surface
+        _signaling.OnPairedDevice += device => Dispatcher.Invoke(() =>
+        {
+            _deviceManager.AddDevice(device);
+            LstDevices.SelectedItem = device;
+            LogAudit($"PAIRING: Receiver approved and registered: {device.DeviceName} ({device.DeviceId}).");
+        });
+
+        _videoReceiver.OnStatusChanged += status => Dispatcher.Invoke(() =>
+        {
+            TxtStreamMetrics.Text = status;
+            LogAudit("VIDEO: " + status);
+        });
+
+        // The current repository does not yet contain a native Windows WebRTC receiver.
+        // Keep the canvas blank and clearly report that no live frames are available.
         _videoReceiver.InitializeSurface(1080, 1920);
+        TxtStreamMetrics.Text = "Waiting for real remote video frames";
 
         _videoReceiver.OnFrameBitmapReady += bitmap =>
         {
@@ -48,6 +59,7 @@ public partial class MainWindow : Window
             {
                 ImgStreamSurface.Source = bitmap;
                 PnlStreamPlaceholder.Visibility = Visibility.Collapsed;
+                TxtStreamMetrics.Text = "Live receiver frame received";
             });
         };
 
@@ -112,14 +124,26 @@ public partial class MainWindow : Window
             });
         };
 
-        LogAudit($"INITIALIZED: Windows Operator Workstation (Sylhet NOC). Fingerprint: {_crypto.OperatorFingerprint}");
+        LogAudit($"INITIALIZED: Windows operator controller. Fingerprint: {_crypto.OperatorFingerprint}");
 
-        // Connect to signaling
-        _ = _signaling.ConnectAsync("wss://signaling.mahi-remote.cloud/ws", "Sylhet NOC Operator #1", "Sylhet, Bangladesh");
+        var signalingUrl = Environment.GetEnvironmentVariable("MAHI_REMOTE_SIGNALING_URL");
+        if (string.IsNullOrWhiteSpace(signalingUrl))
+            signalingUrl = "wss://signaling.mahi-remote.cloud/ws";
+
+        var operatorName = Environment.GetEnvironmentVariable("MAHI_REMOTE_OPERATOR_NAME");
+        if (string.IsNullOrWhiteSpace(operatorName))
+            operatorName = Environment.UserName;
+
+        var operatorLocation = Environment.GetEnvironmentVariable("MAHI_REMOTE_OPERATOR_LOCATION");
+        if (string.IsNullOrWhiteSpace(operatorLocation))
+            operatorLocation = "Not shared";
+
+        _ = _signaling.ConnectAsync(signalingUrl, operatorName, operatorLocation);
     }
 
     private void PhoneScreen_MouseDown(object sender, MouseButtonEventArgs e)
     {
+        if (!EnsureLiveVideoForInput()) return;
         _dragStartPoint = e.GetPosition(PhoneScreenCanvas);
         _dragStartTime = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         _isDragging = true;
@@ -242,6 +266,7 @@ public partial class MainWindow : Window
 
     private void PhoneScreen_MouseWheel(object sender, MouseWheelEventArgs e)
     {
+        if (!EnsureLiveVideoForInput()) return;
         int delta = e.Delta;
         SendRemoteCommand(new CommandPacket
         {
@@ -259,8 +284,17 @@ public partial class MainWindow : Window
     private void BtnNavRecents_Click(object sender, RoutedEventArgs e) => SendGlobalAction("RECENTS");
     private void BtnNavNotifs_Click(object sender, RoutedEventArgs e) => SendGlobalAction("NOTIFICATIONS");
 
+    private bool EnsureLiveVideoForInput()
+    {
+        if (_videoReceiver.HasLiveVideo) return true;
+        LogAudit("INPUT: Ignored remote control input because no real receiver video frame is available.");
+        TxtStatusBar.Text = "Remote input is disabled until a real receiver video frame is available.";
+        return false;
+    }
+
     private void SendGlobalAction(string action)
     {
+        if (!EnsureLiveVideoForInput()) return;
         SendRemoteCommand(new CommandPacket
         {
             CommandId = Guid.NewGuid().ToString(),
@@ -317,14 +351,20 @@ public partial class MainWindow : Window
         };
         btnSubmit.Click += async (s, args) =>
         {
-            string code = txtCode.Text.Trim();
-            if (code.Length >= 6)
+            string code = new string(txtCode.Text.Where(char.IsDigit).ToArray());
+            if (code.Length != 6)
             {
-                inputDlg.Close();
-                LogAudit($"PAIRING: Submitting authorization request with 6-digit code {code} to device in Noakhali...");
-                await _signaling.SendPairRequestAsync("TARGET_DEVICE", code, new[] { "Screen", "Input", "Files", "Diagnostics" });
-                MessageBox.Show($"Pairing challenge sent to phone in Noakhali. Device owner must tap 'Authorize Session'.", "Mahi Remote", MessageBoxButton.OK, MessageBoxImage.Information);
+                MessageBox.Show("Enter all 6 digits from the receiver.", "Mahi Remote", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
             }
+
+            inputDlg.Close();
+            LogAudit("PAIRING: Submitting a short-lived authorization request. Waiting for receiver approval.");
+            await _signaling.SendPairRequestAsync(
+                "PAIR_BY_CODE",
+                code,
+                new[] { "SCREEN_VIEW", "REMOTE_INPUT", "FILE_TRANSFER", "APP_MANAGEMENT", "DIAGNOSTICS" }
+            );
         };
         sp.Children.Add(btnSubmit);
 
@@ -332,28 +372,24 @@ public partial class MainWindow : Window
         inputDlg.ShowDialog();
     }
 
-    private void BtnEmergencyKill_Click(object sender, RoutedEventArgs e)
+    private async void BtnEmergencyKill_Click(object sender, RoutedEventArgs e)
     {
         var confirm = MessageBox.Show(
-            "Terminate active remote session and immediately disconnect from phone in Noakhali?",
+            "Revoke the active remote session and disconnect the remote peer?",
             "Emergency Disconnect",
             MessageBoxButton.YesNo,
             MessageBoxImage.Warning
         );
 
-        if (confirm == MessageBoxResult.Yes)
-        {
-            SendRemoteCommand(new CommandPacket
-            {
-                CommandId = Guid.NewGuid().ToString(),
-                Type = CommandType.EmergencyDisconnect,
-                SessionId = "active_session",
-                Signature = _crypto.SignPayload("EMERGENCY_DISCONNECT")
-            });
-            _ = _signaling.DisconnectAsync();
-            LogAudit("SECURITY: EMERGENCY DISCONNECT SENT. Session wiped.");
-            TxtStatusBar.Text = "Emergency disconnect executed. Session terminated.";
-        }
+        if (confirm != MessageBoxResult.Yes) return;
+
+        await _signaling.EmergencyDisconnectAsync("Emergency disconnect activated by the operator.");
+        _videoReceiver.Stop();
+        ImgStreamSurface.Source = null;
+        PnlStreamPlaceholder.Visibility = Visibility.Visible;
+        TxtStatusBar.Text = "Remote session revoked and signaling disconnected.";
+        TxtStreamMetrics.Text = "Disconnected";
+        LogAudit("SECURITY: Emergency disconnect requested; session revocation sent to the server.");
     }
 
     private void BtnRunRemoteDiag_Click(object sender, RoutedEventArgs e)
@@ -382,24 +418,15 @@ public partial class MainWindow : Window
     {
         if (LstDevices.SelectedItem is DeviceInfo dev)
         {
-            LogAudit($"DEVICE: Selected {dev.DeviceName} ({dev.DeviceId}) in Noakhali.");
+            LogAudit($"DEVICE: Selected {dev.DeviceName} ({dev.DeviceId}).");
         }
     }
 
     private void CmbQuality_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (CmbQuality.SelectedIndex == 0)
-        {
-            _videoReceiver.UpdateMetrics(60, 4000, 24);
-        }
-        else if (CmbQuality.SelectedIndex == 1)
-        {
-            _videoReceiver.UpdateMetrics(30, 2048, 28);
-        }
-        else
-        {
-            _videoReceiver.UpdateMetrics(15, 800, 36);
-        }
+        // Quality presets are intentionally inactive until a real WebRTC media pipeline exists.
+        if (TxtStreamMetrics != null)
+            TxtStreamMetrics.Text = "Video quality controls are unavailable until live streaming is implemented.";
     }
 
     private void LogAudit(string message)

@@ -6,19 +6,15 @@
   const state = {
     ws: null,
     peerConnection: null,
-    operatorFingerprint: 'OP-WEB-' + Math.random().toString(36).substring(2, 10).toUpperCase(),
-    operatorName: 'Web Operator (Chrome/Windows)',
-    operatorLocation: 'Sylhet NOC',
-    activeDeviceId: 'MAHI-SAM-9B7C12F0',
-    pairedDevices: [
-      {
-        deviceId: 'MAHI-SAM-9B7C12F0',
-        deviceName: 'Samsung Galaxy S24 Ultra',
-        location: 'Noakhali, Bangladesh',
-        battery: 86,
-        isOnline: true
-      }
-    ],
+    operatorFingerprint: 'OP-WEB-' + Array.from(crypto.getRandomValues(new Uint8Array(12))).map(value => value.toString(16).padStart(2, '0')).join('').toUpperCase(),
+    operatorName: 'Browser Controller',
+    activeDeviceId: null,
+    sessionToken: null,
+    sessionActive: false,
+    isVideoLive: false,
+    liveFrameLogged: false,
+    pingTimer: null,
+    pairedDevices: [],
     commandSequence: 1,
     dragStart: null,
     lastClickTime: 0,
@@ -76,7 +72,7 @@
     renderDevices();
     connectSignaling();
     startCanvasRenderLoop();
-    logAudit('INIT', `Browser Operator Console active. Fingerprint: ${state.operatorFingerprint}`, 'security');
+    logAudit('INIT', 'Browser controller ready. No device is assumed or preselected.', 'security');
   }
 
   // WebSocket Signaling Connection (Dynamically works with ANY IP or Cloudflare tunnel!)
@@ -96,9 +92,9 @@
         el.badge.className = 'badge badge-success';
         logAudit('SIGNALING', `Connected to signaling hub. Authenticated as ${state.operatorFingerprint}`, 'security');
         
-        // Initial ping for latency
-        sendPing();
-        setInterval(sendPing, 15000);
+        if (state.sessionToken) sendWs({ type: 'AUTHENTICATE', sessionToken: state.sessionToken });
+        else sendPing();
+        if (!state.pingTimer) state.pingTimer = setInterval(sendPing, 15000);
       };
 
       state.ws.onmessage = (event) => {
@@ -111,6 +107,10 @@
       };
 
       state.ws.onclose = () => {
+        rejectPendingCommandAck('Signaling connection closed during file transfer.');
+        if (state.peerConnection) { state.peerConnection.close(); state.peerConnection = null; }
+        state.isVideoLive = false;
+        el.placeholder.style.display = 'flex';
         el.badge.textContent = 'OFFLINE';
         el.badge.className = 'badge badge-danger';
         logAudit('SIGNALING', 'Socket disconnected. Retrying in 5 seconds...', 'critical');
@@ -139,80 +139,247 @@
     sendWs({ type: 'PING', timestamp: lastPingTimestamp });
   }
 
+  let pendingCommandAck = null;
+
+  function rejectPendingCommandAck(reason) {
+    if (!pendingCommandAck) return;
+    const pending = pendingCommandAck;
+    pendingCommandAck = null;
+    clearTimeout(pending.timer);
+    pending.reject(new Error(reason));
+  }
+
+  function waitForCommandAck(command, timeoutMs = 15000) {
+    if (pendingCommandAck) {
+      return Promise.reject(new Error('Another remote command is still awaiting acknowledgement.'));
+    }
+    return new Promise((resolve, reject) => {
+      const pending = { command, resolve, reject, timer: null };
+      pending.timer = setTimeout(() => {
+        if (pendingCommandAck === pending) pendingCommandAck = null;
+        reject(new Error('Remote device did not acknowledge ' + command + ' within ' + timeoutMs + 'ms.'));
+      }, timeoutMs);
+      pendingCommandAck = pending;
+    });
+  }
+
   // Handle incoming messages
+  function objectPayload(value) {
+    if (value && typeof value === 'object') return value;
+    if (typeof value === 'string') { try { return JSON.parse(value); } catch (_) { return {}; } }
+    return {};
+  }
+
   function handleSignalingMessage(msg) {
+    const payload = objectPayload(msg.payload);
     switch (msg.type) {
-      case 'PONG': {
-        const rtt = Date.now() - lastPingTimestamp;
-        el.latency.textContent = `${rtt} ms RTT`;
+      case 'PONG':
+        el.latency.textContent = String(Date.now() - lastPingTimestamp) + ' ms RTT';
         break;
-      }
+      case 'PAIR_PENDING':
+        el.badge.textContent = 'AWAITING APPROVAL';
+        el.badge.className = 'badge badge-warning';
+        logAudit('PAIRING', 'Request sent. Waiting for the receiver owner to approve.');
+        break;
+      case 'PAIR_ACCEPT':
+        state.activeDeviceId = msg.sender || payload.receiverId || state.activeDeviceId;
+        state.pairedDevices = state.activeDeviceId ? [{ deviceId: state.activeDeviceId, deviceName: payload.receiverName || 'Android receiver' }] : [];
+        renderDevices();
+        logAudit('PAIRING', 'Receiver owner approved the request.', 'security');
+        break;
+      case 'SESSION_AUTHORIZED':
+        state.sessionToken = msg.sessionToken || payload.sessionToken || null;
+        state.activeDeviceId = msg.peerId || payload.peerId || state.activeDeviceId;
+        state.sessionActive = false;
+        if (state.sessionToken) {
+          logAudit('SECURITY', 'Receiver approved. Authenticating the browser session.');
+          sendWs({ type: 'AUTHENTICATE', sessionToken: state.sessionToken });
+        }
+        break;
+      case 'AUTHENTICATED':
+        state.sessionActive = true;
+        if (state.sessionToken && state.activeDeviceId) {
+          startBrowserOffer().catch(error => logAudit('WEBRTC', 'WebRTC setup failed: ' + error.message, 'critical'));
+        }
+        break;
+      case 'AUTHENTICATION_FAILED':
+      case 'SESSION_REVOKED':
+      case 'DISCONNECTED':
+        rejectPendingCommandAck('Remote session ended during file transfer.');
+        state.sessionActive = false;
+        state.isVideoLive = false;
+        state.sessionToken = null;
+        state.activeDeviceId = null;
+        if (state.peerConnection) state.peerConnection.close();
+        state.peerConnection = null;
+        el.placeholder.style.display = 'flex';
+        el.badge.textContent = 'DISCONNECTED';
+        el.badge.className = 'badge badge-danger';
+        break;
+      case 'PAIR_REJECT':
+      case 'PAIR_ERROR':
+        el.badge.textContent = 'PAIRING FAILED';
+        el.badge.className = 'badge badge-danger';
+        logAudit('PAIRING', msg.reason || msg.error || 'Pairing request was rejected.', 'critical');
+        break;
+      case 'SCOPE_REQUIRED':
+        rejectPendingCommandAck('Receiver did not approve the ' + (msg.requiredScope || 'requested') + ' permission.');
+        el.badge.textContent = 'PERMISSION LIMITED';
+        el.badge.className = 'badge badge-warning';
+        logAudit('SECURITY', 'The receiver did not approve this operation: ' + (msg.requiredScope || 'permission'), 'critical');
+        break;
       case 'COMMAND_ACK': {
-        logAudit('ACK', `Command #${msg.sequence} confirmed by Noakhali phone (${msg.rtt}ms RTT)`);
+        const command = String(payload.command || '').toUpperCase();
+        if (pendingCommandAck && pendingCommandAck.command === command) {
+          const pending = pendingCommandAck;
+          pendingCommandAck = null;
+          clearTimeout(pending.timer);
+          if (payload.success === true) pending.resolve(payload);
+          else pending.reject(new Error('Remote device rejected ' + command + '.'));
+        }
+        logAudit('ACK', command + ': ' + (payload.success === false ? 'rejected' : 'confirmed'), payload.success === false ? 'critical' : 'security');
         break;
       }
-      case 'APP_LIST_RESPONSE': {
-        renderAppList(JSON.parse(msg.payload || '[]'));
+      case 'APP_LIST_RESPONSE':
+        renderAppList(Array.isArray(payload.apps) ? payload.apps : []);
         break;
-      }
-      case 'FILE_LIST_RESPONSE': {
-        renderFileList(JSON.parse(msg.payload || '[]'));
+      case 'FILE_LIST_RESPONSE':
+        renderFileList(Array.isArray(payload.files) ? payload.files : []);
         break;
-      }
-      case 'DIAGNOSTICS_RESULT': {
-        try {
-          const diag = JSON.parse(msg.payload);
-          if (diag.battery) el.diagBattery.textContent = `${diag.battery}% (Nominal)`;
-          if (diag.temp) el.diagTemp.textContent = `${diag.temp}°C`;
-          if (diag.storage) el.diagStorage.textContent = `${diag.storage} free`;
-          logAudit('DIAGNOSTICS', `Diagnostics telemetry update: Battery ${diag.battery}%, Temp ${diag.temp}°C`, 'security');
-        } catch (e) {}
+      case 'DIAGNOSTICS_RESULT':
+        if (payload.battery != null) el.diagBattery.textContent = String(payload.battery) + '%';
+        if (payload.temp != null) el.diagTemp.textContent = String(payload.temp) + '°C';
+        if (payload.storage != null) el.diagStorage.textContent = String(payload.storage);
         break;
-      }
-      case 'SDP_ANSWER': {
-        handleSdpAnswer(msg.payload.sdp);
+      case 'SDP_ANSWER':
+        handleSdpAnswer(payload).catch(error => logAudit('WEBRTC', error.message, 'critical'));
         break;
-      }
+      case 'ICE_CANDIDATE':
+        handleRemoteIceCandidate(payload).catch(error => logAudit('WEBRTC', error.message, 'critical'));
+        break;
+      case 'PEER_OFFLINE':
+        el.badge.textContent = 'PEER OFFLINE';
+        el.badge.className = 'badge badge-warning';
+        logAudit('WEBRTC', 'The approved receiver is temporarily offline.', 'critical');
+        break;
     }
   }
 
-  // WebRTC Setup
+  // Browser is the receive-only controller: video frames must come from the Android peer.
   async function initWebRTC() {
-    const config = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        {
-          urls: 'turn:turn.mahi-remote.cloud:3478',
-          username: 'mahi_operator',
-          credential: 'mahi-turn-shared-secret-auth-key'
-        }
-      ]
+    if (state.peerConnection) return state.peerConnection;
+    if (!state.sessionToken || !state.activeDeviceId) throw new Error('No approved session token is available.');
+    let iceServers = [{ urls: 'stun:stun.l.google.com:19302' }];
+    try {
+      const response = await fetch('/api/v1/turn/credentials', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + state.sessionToken }
+      });
+      if (!response.ok) throw new Error('TURN credentials unavailable (HTTP ' + response.status + ').');
+      const config = await response.json();
+      if (Array.isArray(config.iceServers) && config.iceServers.length) iceServers = config.iceServers;
+    } catch (error) {
+      logAudit('NETWORK', 'TURN relay is not configured. Direct STUN may fail behind carrier NAT: ' + error.message, 'critical');
+    }
+    const pc = new RTCPeerConnection({ iceServers });
+    state.peerConnection = pc;
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.ontrack = event => {
+      const stream = event.streams && event.streams[0] ? event.streams[0] : new MediaStream([event.track]);
+      el.video.srcObject = stream;
+      el.video.play().catch(() => {});
+      waitForActualVideoFrame();
+      logAudit('WEBRTC', 'Remote video track negotiated; waiting for a decoded frame.');
     };
-
-    state.peerConnection = new RTCPeerConnection(config);
-
-    state.peerConnection.ontrack = (event) => {
-      el.video.srcObject = event.streams[0];
-      el.placeholder.style.display = 'none';
-      logAudit('WEBRTC', 'Video track received. Hardware H.264 rendering started.', 'security');
+    pc.onicecandidate = event => {
+      if (event.candidate) sendWs({
+        type: 'ICE_CANDIDATE',
+        targetDeviceId: state.activeDeviceId,
+        payload: { candidate: event.candidate.toJSON() }
+      });
     };
-
-    state.peerConnection.onicecandidate = (event) => {
-      if (event.candidate) {
-        sendWs({
-          type: 'ICE_CANDIDATE',
-          candidate: event.candidate.candidate,
-          targetDeviceId: state.activeDeviceId
-        });
+    pc.onconnectionstatechange = () => {
+      const status = pc.connectionState;
+      if (status === 'failed' || status === 'disconnected') {
+        el.badge.textContent = status.toUpperCase();
+        el.badge.className = 'badge badge-warning';
+      } else if (status === 'connected' && !state.isVideoLive) {
+        el.badge.textContent = 'CONNECTED · WAITING FOR VIDEO';
+        el.badge.className = 'badge badge-warning';
       }
     };
+    return pc;
   }
 
-  async function handleSdpAnswer(sdp) {
+  function waitForActualVideoFrame() {
+    if (typeof el.video.requestVideoFrameCallback === 'function') {
+      const checkFrame = () => {
+        if (!state.sessionActive) return;
+        if (el.video.videoWidth > 0 && el.video.videoHeight > 0 && el.video.readyState >= 2) {
+          state.isVideoLive = true;
+          el.placeholder.style.display = 'none';
+          el.badge.textContent = 'LIVE';
+          el.badge.className = 'badge badge-success';
+          if (!state.liveFrameLogged) {
+            state.liveFrameLogged = true;
+            logAudit('WEBRTC', 'First decoded remote video frame received.', 'security');
+          }
+        } else {
+          el.video.requestVideoFrameCallback(checkFrame);
+        }
+      };
+      el.video.requestVideoFrameCallback(checkFrame);
+    } else {
+      el.video.addEventListener('loadeddata', () => {
+        if (el.video.videoWidth > 0 && el.video.videoHeight > 0) {
+          state.isVideoLive = true;
+          el.placeholder.style.display = 'none';
+          el.badge.textContent = 'LIVE';
+          el.badge.className = 'badge badge-success';
+          logAudit('WEBRTC', 'Decoded remote video data received.', 'security');
+        }
+      }, { once: true });
+    }
+  }
+
+  async function startBrowserOffer() {
+    if (!state.sessionActive || !state.activeDeviceId || state.peerConnection) return;
+    const pc = await initWebRTC();
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    if (!sendWs({
+      type: 'SDP_OFFER',
+      targetDeviceId: state.activeDeviceId,
+      payload: { type: offer.type, sdp: offer.sdp }
+    })) throw new Error('Signaling socket is not open.');
+    el.badge.textContent = 'NEGOTIATING';
+    el.badge.className = 'badge badge-warning';
+    logAudit('WEBRTC', 'Browser SDP offer sent to the approved receiver.');
+  }
+
+  async function handleSdpAnswer(payload) {
     if (!state.peerConnection) await initWebRTC();
-    await state.peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }));
+    const answer = typeof payload === 'string' ? { type: 'answer', sdp: payload } : payload;
+    if (!answer || !answer.sdp) throw new Error('Receiver SDP answer is empty.');
+    await state.peerConnection.setRemoteDescription(new RTCSessionDescription({
+      type: answer.type || 'answer',
+      sdp: answer.sdp
+    }));
   }
 
+  async function handleRemoteIceCandidate(payload) {
+    if (!state.peerConnection || !payload) return;
+    const candidate = payload.candidate || payload;
+    if (typeof candidate === 'string') {
+      await state.peerConnection.addIceCandidate(new RTCIceCandidate({
+        candidate,
+        sdpMid: payload.sdpMid || '0',
+        sdpMLineIndex: payload.sdpMLineIndex == null ? 0 : payload.sdpMLineIndex
+      }));
+    } else {
+      await state.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+    }
+  }
   // Mouse to Touch Translation Engine
   function setupCanvasMouse() {
     let isMouseDown = false;
@@ -314,6 +481,14 @@
   }
 
   function sendCommand(type, params) {
+    if (!state.sessionActive || !state.activeDeviceId) {
+      logAudit('INPUT', 'No approved receiver session is active.', 'critical');
+      return false;
+    }
+    if (!state.isVideoLive) {
+      logAudit('INPUT', 'Remote input is disabled until a real receiver video frame is decoded.', 'critical');
+      return false;
+    }
     const seq = state.commandSequence++;
     const payload = {
       type: 'INPUT_EVENT',
@@ -326,52 +501,19 @@
         ...params
       }
     };
-    sendWs(payload);
+    return sendWs(payload);
   }
 
   // Canvas Render Loop
   function startCanvasRenderLoop() {
     function render() {
-      if (el.video.srcObject && el.video.readyState >= 2) {
-        ctx.drawImage(el.video, 0, 0, el.canvas.width, el.canvas.height);
+      // Render only real decoded receiver video; never synthesize placeholder phone content.
+      if (state.isVideoLive && el.video.readyState >= 2 && el.video.videoWidth > 0) {
+        try { ctx.drawImage(el.video, 0, 0, el.canvas.width, el.canvas.height); }
+        catch (_) { state.isVideoLive = false; el.placeholder.style.display = 'flex'; }
       } else {
-        // Draw crisp modern UI frame on canvas
         ctx.fillStyle = '#0E1116';
         ctx.fillRect(0, 0, el.canvas.width, el.canvas.height);
-
-        // Status Header
-        ctx.fillStyle = '#161B22';
-        ctx.fillRect(0, 0, el.canvas.width, 100);
-
-        ctx.fillStyle = '#F0F6FC';
-        ctx.font = 'bold 36px Inter, sans-serif';
-        ctx.fillText('10:42', 60, 68);
-
-        ctx.fillStyle = '#00E676';
-        ctx.fillRect(el.canvas.width - 140, 42, 60, 26);
-        ctx.fillStyle = '#000';
-        ctx.font = 'bold 20px monospace';
-        ctx.fillText('86%', el.canvas.width - 130, 62);
-
-        // Grid lines
-        ctx.strokeStyle = '#21262D';
-        ctx.lineWidth = 2;
-        for (let i = 200; i < el.canvas.height - 200; i += 200) {
-          ctx.beginPath();
-          ctx.moveTo(40, i);
-          ctx.lineTo(el.canvas.width - 40, i);
-          ctx.stroke();
-        }
-
-        // Navigation bar
-        ctx.fillStyle = '#161B22';
-        ctx.fillRect(0, el.canvas.height - 120, el.canvas.width, 120);
-
-        ctx.fillStyle = '#8B949E';
-        ctx.font = '32px sans-serif';
-        ctx.fillText('◄', el.canvas.width * 0.25, el.canvas.height - 50);
-        ctx.fillText('●', el.canvas.width * 0.50, el.canvas.height - 50);
-        ctx.fillText('■', el.canvas.width * 0.75, el.canvas.height - 50);
       }
       requestAnimationFrame(render);
     }
@@ -388,12 +530,9 @@
     document.getElementById('btnVolDown').onclick = () => sendCommand('Volume', { action: 'DOWN' });
     document.getElementById('btnVolUp').onclick = () => sendCommand('Volume', { action: 'UP' });
 
-    el.qualitySelect.onchange = () => {
-      const q = el.qualitySelect.value;
-      const stats = q === '1080p' ? '60 FPS | 4000 Kbps' : q === '720p' ? '30 FPS | 2048 Kbps' : '15 FPS | 800 Kbps';
-      el.streamStats.textContent = stats;
-      logAudit('STREAM', `Video profile switched to ${q} (${stats})`);
-    };
+    el.qualitySelect.disabled = true;
+    el.streamStats.textContent = 'Waiting for a real remote video stream';
+    el.qualitySelect.title = 'Quality presets are unavailable until the native video pipeline is implemented';
 
     el.btnEmergencyKill.onclick = () => {
       if (confirm('Sever connection and terminate all remote sessions on the phone immediately?')) {
@@ -435,51 +574,104 @@
 
   // File Upload Handling
   function setupFileUpload() {
-    el.btnTriggerUpload.onclick = () => el.fileUploadInput.click();
+    el.btnTriggerUpload.onclick = () => {
+      if (!state.sessionActive || !state.activeDeviceId) {
+        logAudit('FILES', 'Pair and approve a receiver before uploading files.', 'critical');
+        return;
+      }
+      el.fileUploadInput.click();
+    };
 
-    el.fileUploadInput.onchange = (e) => {
-      const file = e.target.files[0];
+    el.fileUploadInput.onchange = async (event) => {
+      const file = event.target.files && event.target.files[0];
       if (!file) return;
 
-      const reader = new FileReader();
+      const fileName = String(file.name || '').trim();
+      if (!fileName || fileName.length > 128 || fileName === '.' || fileName === '..' ||
+          fileName.includes('/') || fileName.includes(String.fromCharCode(92)) ||
+          fileName.includes(String.fromCharCode(0))) {
+        logAudit('FILES', 'The selected file name is not safe for remote storage.', 'critical');
+        event.target.value = '';
+        return;
+      }
+      if (!state.sessionActive || !state.activeDeviceId) {
+        logAudit('FILES', 'No approved receiver session is active.', 'critical');
+        event.target.value = '';
+        return;
+      }
+
+      const basePath = state.currentPath.endsWith('/') ? state.currentPath.slice(0, -1) : state.currentPath;
+      const remotePath = basePath + '/' + fileName;
+      const chunkSize = 32768;
+      let offset = 0;
+      el.btnTriggerUpload.disabled = true;
+      el.fileUploadInput.disabled = true;
       el.fileUploadProgress.style.display = 'block';
-      el.progressText.textContent = `Uploading ${file.name} (0%)...`;
       el.progressBarFill.style.width = '0%';
+      el.progressText.textContent = 'Uploading ' + fileName + ' (0%)...';
 
-      reader.onload = async (evt) => {
-        const arrayBuffer = evt.target.result;
-        const totalBytes = arrayBuffer.byteLength;
-        const chunkSize = 32768; // 32KB
-        let offset = 0;
-
-        while (offset < totalBytes) {
-          const slice = arrayBuffer.slice(offset, offset + chunkSize);
-          const base64 = btoa(String.fromCharCode.apply(null, new Uint8Array(slice)));
-
-          sendWs({
-            type: 'FILE_COMMAND',
-            action: 'WRITE_CHUNK',
-            path: `${state.currentPath}/${file.name}`,
-            data: base64,
-            append: offset > 0,
-            targetDeviceId: state.activeDeviceId
-          });
-
-          offset += chunkSize;
-          const percent = Math.min(100, Math.round((offset / totalBytes) * 100));
-          el.progressBarFill.style.width = `${percent}%`;
-          el.progressText.textContent = `Uploading ${file.name} (${percent}%)...`;
-
-          // Small throttle to avoid socket congestion
-          await new Promise(r => setTimeout(r, 20));
+      const arrayBufferToBase64 = (buffer) => {
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
         }
-
-        el.progressText.textContent = `Upload completed: ${file.name}`;
-        logAudit('FILES', `Uploaded file ${file.name} (${totalBytes} bytes) successfully.`, 'security');
-        setTimeout(() => { el.fileUploadProgress.style.display = 'none'; }, 2000);
+        return btoa(binary);
       };
 
-      reader.readAsArrayBuffer(file);
+      const sendAndConfirm = async (command, message) => {
+        const acknowledgement = waitForCommandAck(command);
+        if (!sendWs(message)) {
+          rejectPendingCommandAck('Signaling socket is not open.');
+          throw new Error('Signaling socket is not open.');
+        }
+        await acknowledgement;
+      };
+
+      try {
+        if (file.size === 0) {
+          await sendAndConfirm('CREATE_EMPTY_FILE', {
+            type: 'FILE_COMMAND',
+            action: 'CREATE_EMPTY_FILE',
+            path: remotePath,
+            targetDeviceId: state.activeDeviceId
+          });
+        } else {
+          while (offset < file.size) {
+            if (!state.sessionActive || !state.activeDeviceId) {
+              throw new Error('Remote session was disconnected.');
+            }
+            const end = Math.min(offset + chunkSize, file.size);
+            const chunk = await file.slice(offset, end).arrayBuffer();
+            const base64 = arrayBufferToBase64(chunk);
+            await sendAndConfirm('WRITE_CHUNK', {
+              type: 'FILE_COMMAND',
+              action: 'WRITE_CHUNK',
+              path: remotePath,
+              data: base64,
+              append: offset > 0,
+              targetDeviceId: state.activeDeviceId
+            });
+            offset = end;
+            const percent = Math.min(100, Math.round((offset / file.size) * 100));
+            el.progressBarFill.style.width = percent + '%';
+            el.progressText.textContent = 'Uploading ' + fileName + ' (' + percent + '% confirmed)...';
+          }
+        }
+
+        el.progressBarFill.style.width = '100%';
+        el.progressText.textContent = 'Upload verified: ' + fileName;
+        logAudit('FILES', 'Receiver confirmed upload of ' + fileName + ' (' + file.size + ' bytes).', 'security');
+        sendWs({ type: 'FILE_COMMAND', action: 'LIST', path: state.currentPath, targetDeviceId: state.activeDeviceId });
+      } catch (error) {
+        el.progressText.textContent = 'Upload failed: ' + error.message;
+        logAudit('FILES', 'Upload failed for ' + fileName + ': ' + error.message, 'critical');
+      } finally {
+        el.btnTriggerUpload.disabled = false;
+        el.fileUploadInput.disabled = false;
+        event.target.value = '';
+        setTimeout(() => { el.fileUploadProgress.style.display = 'none'; }, 5000);
+      }
     };
   }
 
@@ -489,24 +681,33 @@
       el.pairModal.style.display = 'flex';
       el.inputPairCode.focus();
     };
-
     el.btnCloseModal.onclick = () => { el.pairModal.style.display = 'none'; };
-
     el.btnSubmitPair.onclick = () => {
-      const code = el.inputPairCode.value.trim();
-      if (code.length >= 6) {
-        el.pairModal.style.display = 'none';
-        logAudit('PAIRING', `Submitting 6-digit pairing code: ${code}...`, 'security');
-        sendWs({
-          type: 'PAIR_REQUEST',
-          pairingCode: code,
-          targetDeviceId: state.activeDeviceId,
-          operatorFingerprint: state.operatorFingerprint,
-          operatorName: state.operatorName,
-          operatorLocation: state.operatorLocation
-        });
-        alert('Pairing challenge sent to phone in Noakhali. Device owner must tap "Authorize Session".');
+      const code = el.inputPairCode.value.replace(/\D/g, '');
+      if (!/^\d{6}$/.test(code)) {
+        el.inputPairCode.setCustomValidity('Enter exactly six digits.');
+        el.inputPairCode.reportValidity();
+        return;
       }
+      el.inputPairCode.setCustomValidity('');
+      if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+        logAudit('PAIRING', 'Signaling server is offline. Pairing request was not sent.', 'critical');
+        return;
+      }
+      el.pairModal.style.display = 'none';
+      state.sessionActive = false;
+      state.activeDeviceId = null;
+      state.isVideoLive = false;
+      logAudit('PAIRING', 'Sending six-digit pairing request.', 'security');
+      sendWs({
+        type: 'PAIR_BY_CODE',
+        code,
+        fingerprint: state.operatorFingerprint,
+        controllerName: state.operatorName,
+        requestedScopes: ['SCREEN_VIEW', 'REMOTE_INPUT', 'APP_MANAGEMENT', 'FILE_TRANSFER', 'DIAGNOSTICS']
+      });
+      el.badge.textContent = 'PAIRING';
+      el.badge.className = 'badge badge-warning';
     };
   }
 
@@ -531,14 +732,23 @@
 
   function renderDevices() {
     el.deviceList.innerHTML = '';
-    state.pairedDevices.forEach(d => {
+    if (!state.pairedDevices.length) {
+      const empty = document.createElement('div');
+      empty.className = 'device-empty-state';
+      empty.textContent = 'No active receiver session';
+      el.deviceList.appendChild(empty);
+      return;
+    }
+    state.pairedDevices.forEach(device => {
       const card = document.createElement('div');
       card.className = 'device-card active';
-      card.innerHTML = `
-        <div class="device-card-title">${d.deviceName}</div>
-        <div class="device-card-id">${d.deviceId}</div>
-        <div class="device-card-meta">${d.location} • <span class="text-mint">${d.battery}% Batt</span></div>
-      `;
+      const title = document.createElement('div');
+      title.className = 'device-card-title';
+      title.textContent = device.deviceName || 'Android receiver';
+      const id = document.createElement('div');
+      id.className = 'device-card-id';
+      id.textContent = device.deviceId;
+      card.append(title, id);
       el.deviceList.appendChild(card);
     });
   }

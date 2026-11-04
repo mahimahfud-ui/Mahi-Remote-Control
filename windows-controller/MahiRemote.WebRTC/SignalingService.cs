@@ -1,5 +1,6 @@
 using System.Net.WebSockets;
 using System.Text;
+using System.IO;
 using System.Text.Json;
 using MahiRemote.Core.Models;
 using MahiRemote.Security;
@@ -15,6 +16,7 @@ public class SignalingService
     private string? _lastServerUrl;
     private string? _lastOperatorName;
     private string? _lastLocation;
+    private string? _sessionToken;
 
     public event Action<string>? OnStatusChanged;
     public event Action<string, string>? OnSdpReceived;
@@ -25,6 +27,7 @@ public class SignalingService
     public event Action<string, long, string>? OnRemoteFileChunkReceived;
     public event Action<string>? OnDiagnosticsReportReceived;
     public event Action<int, int, string>? OnResolutionSyncReceived;
+    public event Action<DeviceInfo>? OnPairedDevice;
 
     public bool IsConnected => _ws?.State == WebSocketState.Open;
 
@@ -46,6 +49,7 @@ public class SignalingService
         _ws.Options.SetRequestHeader("X-Operator-Fingerprint", _crypto.OperatorFingerprint);
         _ws.Options.SetRequestHeader("X-Operator-Name", operatorName);
         _ws.Options.SetRequestHeader("X-Operator-Location", location);
+        _ws.Options.SetRequestHeader("X-Device-Name", operatorName);
 
         OnStatusChanged?.Invoke($"Connecting to signaling server at {serverUrl}...");
 
@@ -56,6 +60,10 @@ public class SignalingService
 
             _ = ReceiveLoopAsync(_cts.Token);
             _ = HeartbeatLoopAsync(_cts.Token);
+            if (!string.IsNullOrWhiteSpace(_sessionToken))
+            {
+                await SendJsonAsync(new { type = "AUTHENTICATE", sessionToken = _sessionToken });
+            }
         }
         catch (Exception ex)
         {
@@ -70,8 +78,12 @@ public class SignalingService
         {
             type = "PAIR_REQUEST",
             targetDeviceId,
+            code = pairingCode,
             pairingCode,
+            fingerprint = _crypto.OperatorFingerprint,
             operatorFingerprint = _crypto.OperatorFingerprint,
+            controllerName = _lastOperatorName ?? "Windows controller",
+            operatorName = _lastOperatorName ?? "Windows controller",
             requestedScopes = scopes,
             timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
         };
@@ -144,17 +156,37 @@ public class SignalingService
         {
             try
             {
-                var result = await _ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
-                if (result.MessageType == WebSocketMessageType.Close)
+                using var message = new MemoryStream();
+                WebSocketReceiveResult result;
+                do
                 {
-                    await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
-                    OnStatusChanged?.Invoke("Disconnected from signaling server");
-                    ScheduleReconnect();
-                    break;
-                }
+                    result = await _ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
+                    if (result.MessageType == WebSocketMessageType.Close)
+                    {
+                        await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None);
+                        OnStatusChanged?.Invoke("Disconnected from signaling server");
+                        ScheduleReconnect();
+                        return;
+                    }
 
-                string msg = Encoding.UTF8.GetString(buffer, 0, result.Count);
-                ProcessMessage(msg);
+                    if (message.Length + result.Count > 1024 * 1024)
+                    {
+                        await _ws.CloseAsync(WebSocketCloseStatus.MessageTooBig, "Message exceeds 1 MiB limit", CancellationToken.None);
+                        OnStatusChanged?.Invoke("Signaling message exceeded the 1 MiB safety limit.");
+                        return;
+                    }
+                    message.Write(buffer, 0, result.Count);
+                }
+                while (!result.EndOfMessage);
+
+                if (result.MessageType == WebSocketMessageType.Text)
+                {
+                    ProcessMessage(Encoding.UTF8.GetString(message.ToArray()));
+                }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                break;
             }
             catch (Exception ex)
             {
@@ -165,64 +197,192 @@ public class SignalingService
         }
     }
 
+    private static JsonElement GetPayload(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("payload", out var payload))
+            return root;
+
+        if (payload.ValueKind == JsonValueKind.Object || payload.ValueKind == JsonValueKind.Array)
+            return payload;
+
+        // Android transports some JSON envelopes as a string-valued payload.
+        // Clone the parsed element so it remains valid after the temporary document is disposed.
+        if (payload.ValueKind == JsonValueKind.String)
+        {
+            var raw = payload.GetString();
+            if (!string.IsNullOrWhiteSpace(raw))
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(raw);
+                    return document.RootElement.Clone();
+                }
+                catch (JsonException)
+                {
+                    return payload;
+                }
+            }
+        }
+
+        return payload;
+    }
+
+    private static JsonElement FindValue(JsonElement root, JsonElement payload, string name)
+    {
+        if (payload.ValueKind == JsonValueKind.Object && payload.TryGetProperty(name, out var nested))
+            return nested;
+        if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty(name, out var topLevel))
+            return topLevel;
+        return default;
+    }
+
+    private static string JsonText(JsonElement value, string fallback)
+    {
+        if (value.ValueKind == JsonValueKind.Undefined || value.ValueKind == JsonValueKind.Null)
+            return fallback;
+        return value.ValueKind == JsonValueKind.String
+            ? value.GetString() ?? fallback
+            : value.GetRawText();
+    }
+
+    private static long Int64Value(JsonElement value, long fallback = 0)
+    {
+        return value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var number)
+            ? number
+            : fallback;
+    }
+
+    private static bool BoolValue(JsonElement value, bool fallback = false)
+    {
+        return value.ValueKind == JsonValueKind.True ||
+               (value.ValueKind != JsonValueKind.False && fallback);
+    }
+
     private void ProcessMessage(string json)
     {
         try
         {
             using var doc = JsonDocument.Parse(json);
-            if (!doc.RootElement.TryGetProperty("type", out var typeElem)) return;
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object ||
+                !root.TryGetProperty("type", out var typeElem)) return;
+
             string type = typeElem.GetString() ?? "";
+            var payload = GetPayload(root);
 
             switch (type)
             {
                 case "SDP_ANSWER":
-                    if (doc.RootElement.TryGetProperty("payload", out var p) && p.TryGetProperty("sdp", out var sdpElem))
-                        OnSdpReceived?.Invoke("answer", sdpElem.GetString() ?? "");
+                    var sdp = JsonText(FindValue(root, payload, "sdp"), "");
+                    if (!string.IsNullOrWhiteSpace(sdp))
+                        OnSdpReceived?.Invoke("answer", sdp);
                     break;
 
                 case "ICE_CANDIDATE":
-                    if (doc.RootElement.TryGetProperty("candidate", out var candElem))
-                        OnIceCandidateReceived?.Invoke(candElem.GetString() ?? "");
+                    var candidate = JsonText(FindValue(root, payload, "candidate"), "");
+                    if (!string.IsNullOrWhiteSpace(candidate))
+                        OnIceCandidateReceived?.Invoke(candidate);
                     break;
 
                 case "COMMAND_ACK":
-                    long seq = doc.RootElement.TryGetProperty("sequence", out var seqElem) ? seqElem.GetInt64() : 0;
-                    bool ok = doc.RootElement.TryGetProperty("success", out var okElem) && okElem.GetBoolean();
-                    int rtt = doc.RootElement.TryGetProperty("rtt", out var rttElem) ? rttElem.GetInt32() : 25;
+                    long seq = Int64Value(FindValue(root, payload, "sequence"));
+                    bool ok = BoolValue(FindValue(root, payload, "success"));
+                    int rtt = (int)Int64Value(FindValue(root, payload, "rtt"), 25);
                     OnCommandAckReceived?.Invoke(seq, ok, rtt);
                     break;
 
                 case "APP_LIST_RESPONSE":
-                    if (doc.RootElement.TryGetProperty("payload", out var appListElem))
-                        OnRemoteAppListReceived?.Invoke(appListElem.GetString() ?? "[]");
+                    var apps = FindValue(root, payload, "apps");
+                    OnRemoteAppListReceived?.Invoke(JsonText(apps, JsonText(payload, "[]")));
                     break;
 
                 case "FILE_LIST_RESPONSE":
-                    if (doc.RootElement.TryGetProperty("payload", out var fileListElem))
-                        OnRemoteFileListReceived?.Invoke(fileListElem.GetString() ?? "[]");
+                    var files = FindValue(root, payload, "files");
+                    OnRemoteFileListReceived?.Invoke(JsonText(files, JsonText(payload, "[]")));
                     break;
 
                 case "FILE_CHUNK_RESPONSE":
-                    string path = doc.RootElement.TryGetProperty("path", out var pathEl) ? pathEl.GetString() ?? "" : "";
-                    long offset = doc.RootElement.TryGetProperty("offset", out var offEl) ? offEl.GetInt64() : 0;
-                    string data = doc.RootElement.TryGetProperty("data", out var datEl) ? datEl.GetString() ?? "" : "";
+                    string path = JsonText(FindValue(root, payload, "path"), "");
+                    long offset = Int64Value(FindValue(root, payload, "offset"));
+                    string data = JsonText(FindValue(root, payload, "data"), "");
                     OnRemoteFileChunkReceived?.Invoke(path, offset, data);
                     break;
 
                 case "DIAGNOSTICS_RESULT":
-                    if (doc.RootElement.TryGetProperty("payload", out var diagElem))
-                        OnDiagnosticsReportReceived?.Invoke(diagElem.GetString() ?? "{}");
+                    OnDiagnosticsReportReceived?.Invoke(JsonText(payload, "{}"));
+                    break;
+
+                case "PAIR_PENDING":
+                    OnStatusChanged?.Invoke("Pairing request sent. Waiting for the phone owner to approve.");
+                    break;
+
+                case "PAIR_ACCEPT":
+                    string receiverId = JsonText(
+                        FindValue(root, payload, "receiverId"),
+                        JsonText(FindValue(root, payload, "sender"), "")
+                    );
+                    string receiverName = JsonText(FindValue(root, payload, "receiverName"), "Android receiver");
+                    string receiverFingerprint = JsonText(FindValue(root, payload, "fingerprint"), "");
+                    if (!string.IsNullOrWhiteSpace(receiverId) && !string.IsNullOrWhiteSpace(receiverFingerprint))
+                    {
+                        OnPairedDevice?.Invoke(new DeviceInfo
+                        {
+                            DeviceId = receiverId,
+                            DeviceName = receiverName,
+                            Fingerprint = receiverFingerprint,
+                        });
+                    }
+                    OnStatusChanged?.Invoke("Phone owner approved pairing. Establishing the secure session.");
+                    break;
+
+                case "PAIR_REJECT":
+                case "PAIR_ERROR":
+                    string pairingError = JsonText(
+                        FindValue(root, payload, "reason"),
+                        JsonText(FindValue(root, payload, "error"), "Pairing request was rejected.")
+                    );
+                    OnStatusChanged?.Invoke("Pairing failed: " + pairingError);
+                    break;
+
+                case "SESSION_AUTHORIZED":
+                    _sessionToken = JsonText(FindValue(root, payload, "sessionToken"), "");
+                    if (!string.IsNullOrWhiteSpace(_sessionToken))
+                        OnStatusChanged?.Invoke("Receiver approved the session. Secure session token received.");
+                    break;
+
+                case "AUTHENTICATED":
+                    OnStatusChanged?.Invoke("Secure remote session reconnected.");
+                    break;
+
+                case "SESSION_REVOKED":
+                case "DISCONNECTED":
+                case "AUTHENTICATION_FAILED":
+                    _sessionToken = null;
+                    OnStatusChanged?.Invoke("Remote session ended or was revoked.");
+                    break;
+
+                case "SCOPE_REQUIRED":
+                    string requiredScope = JsonText(FindValue(root, payload, "requiredScope"), "unknown");
+                    OnStatusChanged?.Invoke($"The receiver did not approve the requested permission: {requiredScope}.");
                     break;
 
                 case "RESOLUTION_SYNC":
-                    int w = doc.RootElement.TryGetProperty("width", out var wEl) ? wEl.GetInt32() : 1080;
-                    int h = doc.RootElement.TryGetProperty("height", out var hEl) ? hEl.GetInt32() : 1920;
-                    string orient = doc.RootElement.TryGetProperty("orientation", out var oEl) ? oEl.GetString() ?? "PORTRAIT" : "PORTRAIT";
+                    int w = (int)Int64Value(FindValue(root, payload, "width"), 1080);
+                    int h = (int)Int64Value(FindValue(root, payload, "height"), 1920);
+                    string orient = JsonText(FindValue(root, payload, "orientation"), "PORTRAIT");
                     OnResolutionSyncReceived?.Invoke(w, h, orient);
                     break;
             }
         }
-        catch { }
+        catch (JsonException ex)
+        {
+            OnStatusChanged?.Invoke($"Ignored invalid signaling JSON: {ex.Message}");
+        }
+        catch (InvalidOperationException ex)
+        {
+            OnStatusChanged?.Invoke($"Ignored malformed signaling payload: {ex.Message}");
+        }
     }
 
     private async Task HeartbeatLoopAsync(CancellationToken ct)
@@ -254,9 +414,28 @@ public class SignalingService
         });
     }
 
+    public async Task EmergencyDisconnectAsync(string reason)
+    {
+        try
+        {
+            await SendJsonAsync(new
+            {
+                type = "EMERGENCY_DISCONNECT",
+                payload = new { reason }
+            });
+            // Allow the signaling server to revoke the peer session before closing the socket.
+            await Task.Delay(150);
+        }
+        finally
+        {
+            await DisconnectAsync();
+        }
+    }
+
     public async Task DisconnectAsync()
     {
         _cts?.Cancel();
+        _sessionToken = null;
         if (_ws != null && _ws.State == WebSocketState.Open)
         {
             await _ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Operator disconnected", CancellationToken.None);

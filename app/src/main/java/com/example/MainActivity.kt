@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.QrCode
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -40,9 +41,8 @@ import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -50,6 +50,9 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -68,6 +71,7 @@ import com.example.ui.screens.AuditLogScreen
 import com.example.ui.screens.DashboardScreen
 import com.example.ui.screens.DiagnosticsScreen
 import com.example.ui.screens.FileManagerScreen
+import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.PairingScreen
 import com.example.ui.screens.RemoteServicesScreen
 import com.example.ui.theme.CyanAccent
@@ -91,6 +95,7 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+            viewModel.setScreenCaptureConsent(result.resultCode, result.data!!)
             val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
                 action = ScreenCaptureService.ACTION_START
                 putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, result.resultCode)
@@ -158,6 +163,8 @@ fun MainAppScaffold(
     val showDisconnectDialog by viewModel.showDisconnectDialog.collectAsState()
     val streamState by viewModel.screenStreamState.collectAsState()
 
+    var showMoreMenu by remember { mutableStateOf(false) }
+
     // If Controller has an active session, display the full-screen remote viewer
     if (appRole == com.example.controller.AppRole.CONTROLLER && activeControllerSession != null) {
         com.example.ui.screens.ControllerViewerScreen(viewModel = viewModel)
@@ -186,7 +193,7 @@ fun MainAppScaffold(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (appRole == com.example.controller.AppRole.CONTROLLER) "MAHI CONTROLLER" else "MAHI RECEIVER",
+                            text = "Mahi Remote",
                             color = TextPrimary,
                             fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
@@ -195,35 +202,33 @@ fun MainAppScaffold(
                     }
                 },
                 actions = {
-                    // Quick Role Switcher Button
-                    IconButton(
-                        onClick = {
-                            val newRole = if (appRole == com.example.controller.AppRole.RECEIVER) {
-                                com.example.controller.AppRole.CONTROLLER
-                            } else {
-                                com.example.controller.AppRole.RECEIVER
-                            }
-                            viewModel.setAppRole(newRole)
-                        },
-                        modifier = Modifier.testTag("appbar_role_switch_btn")
-                    ) {
-                        Icon(
-                            imageVector = if (appRole == com.example.controller.AppRole.RECEIVER) Icons.Default.PhoneAndroid else Icons.Default.Security,
-                            contentDescription = "Switch Role",
-                            tint = CyanAccent
-                        )
+                    IconButton(onClick = { showMoreMenu = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "More", tint = TextPrimary)
                     }
-
-                    if (appRole == com.example.controller.AppRole.RECEIVER) {
-                        IconButton(
-                            onClick = { viewModel.setShowDisconnectDialog(true) },
-                            modifier = Modifier.testTag("appbar_emergency_btn")
-                        ) {
-                            Icon(
-                                Icons.Default.Warning,
-                                contentDescription = "Emergency Disconnect",
-                                tint = if (activeSession != null) ErrorCoral else TextMuted
-                            )
+                    DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
+                        DropdownMenuItem(text = { Text("Home") }, onClick = {
+                            showMoreMenu = false
+                            viewModel.setAppRole(com.example.controller.AppRole.RECEIVER)
+                            viewModel.selectTab(MainTab.DASHBOARD)
+                        })
+                        DropdownMenuItem(text = { Text("Control another device") }, onClick = {
+                            showMoreMenu = false
+                            viewModel.setAppRole(com.example.controller.AppRole.CONTROLLER)
+                        })
+                        DropdownMenuItem(text = { Text("Share this phone") }, onClick = {
+                            showMoreMenu = false
+                            viewModel.setAppRole(com.example.controller.AppRole.RECEIVER)
+                            viewModel.selectTab(MainTab.PAIRING)
+                        })
+                        DropdownMenuItem(text = { Text("Files") }, onClick = { showMoreMenu = false; viewModel.selectTab(MainTab.FILES) })
+                        DropdownMenuItem(text = { Text("Apps") }, onClick = { showMoreMenu = false; viewModel.selectTab(MainTab.APPS) })
+                        DropdownMenuItem(text = { Text("Diagnostics") }, onClick = { showMoreMenu = false; viewModel.selectTab(MainTab.DIAGNOSTICS) })
+                        DropdownMenuItem(text = { Text("Services") }, onClick = { showMoreMenu = false; viewModel.selectTab(MainTab.SERVICES) })
+                        DropdownMenuItem(text = { Text("Security log") }, onClick = { showMoreMenu = false; viewModel.selectTab(MainTab.AUDIT) })
+                    }
+                    if (activeSession != null || activeControllerSession != null) {
+                        IconButton(onClick = { viewModel.setShowDisconnectDialog(true) }, modifier = Modifier.testTag("appbar_emergency_btn")) {
+                            Icon(Icons.Default.Warning, contentDescription = "Emergency Stop", tint = ErrorCoral)
                         }
                     }
                 },
@@ -232,55 +237,6 @@ fun MainAppScaffold(
                 )
             )
         },
-        bottomBar = {
-            if (appRole == com.example.controller.AppRole.RECEIVER) {
-                NavigationBar(
-                    containerColor = DarkSurface,
-                    tonalElevation = 8.dp
-                ) {
-                    val tabs = listOf(
-                        MainTab.DASHBOARD to Icons.Default.Dashboard,
-                        MainTab.PAIRING to Icons.Default.QrCode,
-                        MainTab.SERVICES to Icons.Default.CastConnected,
-                        MainTab.DIAGNOSTICS to Icons.Default.Speed,
-                        MainTab.FILES to Icons.Default.Folder,
-                        MainTab.APPS to Icons.Default.Apps,
-                        MainTab.AUDIT to Icons.Default.Security
-                    )
-
-                    tabs.forEach { (tab, icon) ->
-                        val isSelected = selectedTab == tab
-                        NavigationBarItem(
-                            selected = isSelected,
-                            onClick = { viewModel.selectTab(tab) },
-                            icon = {
-                                Icon(
-                                    icon,
-                                    contentDescription = tab.title,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            },
-                            label = {
-                                Text(
-                                    text = tab.title,
-                                    fontSize = 9.sp,
-                                    maxLines = 1,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                )
-                            },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = CyanAccent,
-                                selectedTextColor = CyanAccent,
-                                unselectedIconColor = TextMuted,
-                                unselectedTextColor = TextMuted,
-                                indicatorColor = DarkSurfaceElevated
-                            ),
-                            modifier = Modifier.testTag("tab_${tab.name.lowercase()}")
-                        )
-                    }
-                }
-            }
-        }
     ) { innerPadding ->
         Box(
             modifier = Modifier
@@ -291,8 +247,14 @@ fun MainAppScaffold(
                 com.example.ui.screens.ControllerDashboardScreen(viewModel = viewModel)
             } else {
                 when (selectedTab) {
-                    MainTab.DASHBOARD -> DashboardScreen(viewModel, onRequestScreenShare)
-                    MainTab.PAIRING -> PairingScreen(viewModel)
+                    MainTab.DASHBOARD -> HomeScreen(
+                        onControlAnotherDevice = { viewModel.setAppRole(com.example.controller.AppRole.CONTROLLER) },
+                        onShareThisPhone = {
+                            viewModel.setAppRole(com.example.controller.AppRole.RECEIVER)
+                            viewModel.selectTab(MainTab.PAIRING)
+                        }
+                    )
+                    MainTab.PAIRING -> PairingScreen(viewModel, onRequestScreenShare)
                     MainTab.SERVICES -> RemoteServicesScreen(viewModel, onRequestScreenShare)
                     MainTab.DIAGNOSTICS -> DiagnosticsScreen(viewModel)
                     MainTab.FILES -> FileManagerScreen(viewModel)
@@ -307,7 +269,12 @@ fun MainAppScaffold(
     if (pendingRequest != null) {
         OperatorApprovalDialog(
             request = pendingRequest!!,
-            onApprove = { viewModel.approveIncomingRequest(pendingRequest!!) },
+            onApprove = {
+                val approvedRequest = pendingRequest!!
+                viewModel.approveIncomingRequest(approvedRequest)
+                // Owner approval immediately hands off to Android's system screen-capture consent prompt.
+                onRequestScreenShare()
+            },
             onReject = { viewModel.rejectIncomingRequest(pendingRequest!!) }
         )
     }

@@ -1,3 +1,7 @@
+> **STATUS CORRECTION — 2026-11-04:** This document contains historical/generated statements from an earlier repository snapshot. Those statements have not been revalidated against the current source or reproduced in this implementation session. Do not treat old `VERIFIED`, `PASSED`, real-device, performance or production-ready labels below as evidence. The authoritative current status is [docs/IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md), [docs/FEATURE_MATRIX.md](FEATURE_MATRIX.md), and [docs/ANDROID_TO_ANDROID_TEST_REPORT.md](ANDROID_TO_ANDROID_TEST_REPORT.md).
+>
+> **STATUS CORRECTION — 2026-11-04:** This document contains historical/generated statements from an earlier repository snapshot. Those statements have not been revalidated against the current source or reproduced in this implementation session. Do not treat old `VERIFIED`, `PASSED`, real-device, performance or production-ready labels below as evidence. The authoritative current status is [docs/IMPLEMENTATION-STATUS.md](../docs/IMPLEMENTATION-STATUS.md), [docs/FEATURE_MATRIX.md](../docs/FEATURE_MATRIX.md), and [docs/ANDROID_TO_ANDROID_TEST_REPORT.md](../docs/ANDROID_TO_ANDROID_TEST_REPORT.md).
+>
 # Mahi Remote Control — Android-to-Android Architecture
 
 ## 1. Unified Application Model
