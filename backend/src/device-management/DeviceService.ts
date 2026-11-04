@@ -21,6 +21,7 @@ export class DeviceService {
     operatorFingerprint: string;
     receiverFingerprint: string;
     startedAt: number;
+    expiresAt: number;
   }>();
 
   public static registerDevice(deviceId: string, deviceName: string, fingerprint: string): RegisteredDevice {
@@ -37,7 +38,7 @@ export class DeviceService {
 
   public static storePairingCode(deviceId: string, code: string, expiresAt: number): void {
     const normalized = String(code || '').replace(/[^0-9]/g, '');
-    if (!deviceId || !/^\d{6}$/.test(normalized) || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    if (!deviceId || !/^\d{6}$/.test(normalized) || !Number.isFinite(expiresAt)) {
       throw new Error('Invalid pairing-code registration.');
     }
     // One currently valid code per receiver. A refresh invalidates the previous code.
@@ -96,6 +97,7 @@ export class DeviceService {
       operatorFingerprint,
       receiverFingerprint,
       startedAt: Date.now(),
+      expiresAt: Date.now() + 30 * 60 * 1000,
     });
   }
 
@@ -106,11 +108,16 @@ export class DeviceService {
     receiverFingerprint: string;
     startedAt: number;
   } | undefined {
-    return this.activeSessions.get(sessionId);
+    const session = this.activeSessions.get(sessionId);
+    if (session && Date.now() >= session.expiresAt) {
+      this.activeSessions.delete(sessionId);
+      return undefined;
+    }
+    return session;
   }
 
   public static isSessionParticipant(sessionId: string, entityId: string, fingerprint: string): boolean {
-    const session = this.activeSessions.get(sessionId);
+    const session = this.getActiveSession(sessionId);
     if (!session) return false;
     return (
       (entityId === session.deviceId && fingerprint === session.receiverFingerprint) ||
@@ -119,11 +126,22 @@ export class DeviceService {
   }
 
   public static getSessionPeer(sessionId: string, entityId: string): string | null {
-    const session = this.activeSessions.get(sessionId);
+    const session = this.getActiveSession(sessionId);
     if (!session) return null;
     if (entityId === session.deviceId) return session.controllerId;
     if (entityId === session.controllerId) return session.deviceId;
     return null;
+  }
+
+  public static hasActiveSessionForDevice(deviceId: string): boolean {
+    for (const [sessionId, session] of this.activeSessions.entries()) {
+      if (Date.now() >= session.expiresAt) {
+        this.activeSessions.delete(sessionId);
+        continue;
+      }
+      if (session.deviceId === deviceId) return true;
+    }
+    return false;
   }
 
   public static endSession(sessionId: string): boolean {
