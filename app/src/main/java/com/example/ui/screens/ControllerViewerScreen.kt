@@ -70,6 +70,7 @@ import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -241,6 +242,11 @@ private fun RemoteScreenViewport(
 ) {
     val remoteVideoTrack by viewModel.remoteVideoTrack.collectAsState()
     val remoteWebRtcStatus by viewModel.remoteWebRtcStatus.collectAsState()
+    val hasRemoteVideoFrame by viewModel.hasRemoteVideoFrame.collectAsState()
+
+    LaunchedEffect(remoteVideoTrack) {
+        viewModel.setRemoteVideoFrameRendered(false)
+    }
 
     Column(
         modifier = Modifier
@@ -264,8 +270,8 @@ private fun RemoteScreenViewport(
                     .background(Color.Black)
                     .border(2.dp, CyanAccent.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
                     .testTag("remote_screen_canvas")
-                    .pointerInput(remoteVideoTrack) {
-                        if (remoteVideoTrack != null) {
+                    .pointerInput(hasRemoteVideoFrame) {
+                        if (hasRemoteVideoFrame) {
                             detectTapGestures(
                                 onTap = { viewModel.sendRemoteTap(it.x, it.y, size.width.toFloat(), size.height.toFloat()) },
                                 onDoubleTap = { viewModel.sendRemoteDoubleTap(it.x, it.y, size.width.toFloat(), size.height.toFloat()) },
@@ -273,8 +279,8 @@ private fun RemoteScreenViewport(
                             )
                         }
                     }
-                    .pointerInput(remoteVideoTrack) {
-                        if (remoteVideoTrack != null) {
+                    .pointerInput(hasRemoteVideoFrame) {
+                        if (hasRemoteVideoFrame) {
                             var start = androidx.compose.ui.geometry.Offset.Zero
                             var end = androidx.compose.ui.geometry.Offset.Zero
                             var startedAt = 0L
@@ -298,7 +304,7 @@ private fun RemoteScreenViewport(
             ) {
                 RemoteVideoSurface(viewModel = viewModel, track = remoteVideoTrack)
 
-                if (remoteVideoTrack == null) {
+                if (!hasRemoteVideoFrame) {
                     Column(
                         modifier = Modifier
                             .align(Alignment.Center)
@@ -320,13 +326,13 @@ private fun RemoteScreenViewport(
                             letterSpacing = 0.8.sp
                         )
                         Text(
-                            text = remoteWebRtcStatus,
+                            text = if (remoteVideoTrack == null) remoteWebRtcStatus else "Video track negotiated; waiting for the first decoded frame",
                             color = TextSecondary,
                             fontSize = 11.sp,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
                         Text(
-                            text = "On the receiving phone, approve the Android screen-sharing prompt. Remote touch is disabled until video arrives.",
+                            text = "On the receiving phone, approve the Android screen-sharing prompt. Touch and navigation remain disabled until a real decoded frame is visible.",
                             color = TextMuted,
                             fontSize = 10.sp,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -504,7 +510,12 @@ private fun RemoteVideoSurface(viewModel: MahiViewModel, track: VideoTrack?) {
         modifier = Modifier.fillMaxSize(),
         factory = { context ->
             SurfaceViewRenderer(context).apply {
-                init(viewModel.remoteWebRtcSession.eglContext, null)
+                init(viewModel.remoteWebRtcSession.eglContext, object : RendererCommon.RendererEvents {
+                    override fun onFirstFrameRendered() {
+                        viewModel.setRemoteVideoFrameRendered(true)
+                    }
+                    override fun onFrameResolutionChanged(videoWidth: Int, videoHeight: Int, rotation: Int) {}
+                })
                 setEnableHardwareScaler(true)
                 setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
                 setMirror(false)
@@ -522,6 +533,7 @@ private fun RemoteVideoSurface(viewModel: MahiViewModel, track: VideoTrack?) {
             binding.track?.removeSink(renderer)
             binding.track = null
             binding.renderer = null
+            viewModel.setRemoteVideoFrameRendered(false)
             renderer.release()
         }
     )
