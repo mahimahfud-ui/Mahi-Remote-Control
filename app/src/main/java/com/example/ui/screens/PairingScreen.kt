@@ -304,7 +304,7 @@ fun PairingScreen(viewModel: MahiViewModel) {
             shape = RoundedCornerShape(20.dp),
             title = {
                 Text(
-                    text = "Scan with Mahi Remote on another device",
+                    text = "Scan with Mahi Remote or your phone camera",
                     color = TextPrimary,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold
