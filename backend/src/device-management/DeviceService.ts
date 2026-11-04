@@ -31,6 +31,7 @@ export interface ActiveRemoteSession {
   controllerId: string;
   receiverFingerprint: string;
   controllerFingerprint: string;
+  grantedScopes: string[];
   startedAt: number;
   expiresAt: number;
 }
@@ -46,6 +47,39 @@ export class DeviceService {
   private static readonly CODE_TTL_MAX_MS = 5 * 60 * 1000;
   private static readonly REQUEST_TTL_MS = 90 * 1000;
   private static readonly SESSION_TTL_MS = 30 * 60 * 1000;
+
+  private static normalizeGrantedScopes(scopes: string[]): string[] {
+    const aliases: Record<string, string> = {
+      SCREEN: 'SCREEN_VIEW',
+      SCREEN_VIEW: 'SCREEN_VIEW',
+      SCREEN_MIRRORING: 'SCREEN_VIEW',
+      REMOTE_SCREEN: 'SCREEN_VIEW',
+      VIDEO: 'SCREEN_VIEW',
+      INPUT: 'REMOTE_INPUT',
+      REMOTE_INPUT: 'REMOTE_INPUT',
+      REMOTE_INTERACTION: 'REMOTE_INPUT',
+      REMOTE_CONTROL: 'REMOTE_INPUT',
+      FILES: 'FILE_TRANSFER',
+      FILE_TRANSFER: 'FILE_TRANSFER',
+      FILE_ACCESS: 'FILE_TRANSFER',
+      APP: 'APP_MANAGEMENT',
+      APPS: 'APP_MANAGEMENT',
+      APP_CONTROL: 'APP_MANAGEMENT',
+      APP_MANAGEMENT: 'APP_MANAGEMENT',
+      APPLICATION_MANAGEMENT: 'APP_MANAGEMENT',
+      DIAGNOSTICS: 'DIAGNOSTICS',
+      DEVICE_DIAGNOSTICS: 'DIAGNOSTICS',
+    };
+
+    const granted = new Set<string>();
+    for (const scope of scopes) {
+      if (typeof scope !== 'string' || scope.length > 64) continue;
+      const normalized = scope.trim().toUpperCase().replace(/[\\s-]+/g, '_');
+      const canonical = aliases[normalized];
+      if (canonical) granted.add(canonical);
+    }
+    return Array.from(granted);
+  }
 
   public static registerDevice(deviceId: string, deviceName: string, fingerprint: string): RegisteredDevice {
     const dev: RegisteredDevice = {
@@ -102,7 +136,11 @@ export class DeviceService {
       controllerId,
       controllerName: (controllerName || 'Remote controller').slice(0, 80),
       controllerFingerprint,
-      requestedScopes: requestedScopes.filter(s => typeof s === 'string').slice(0, 12),
+      requestedScopes: requestedScopes
+        .filter(s => typeof s === 'string')
+        .map(s => s.trim().slice(0, 64))
+        .filter(Boolean)
+        .slice(0, 12),
       createdAt: Date.now(),
       expiresAt: Math.min(Date.now() + this.REQUEST_TTL_MS, record.expiresAt),
     };
@@ -130,6 +168,7 @@ export class DeviceService {
       controllerId,
       receiverFingerprint: receiver?.fingerprint || '',
       controllerFingerprint: request.controllerFingerprint,
+      grantedScopes: this.normalizeGrantedScopes(request.requestedScopes),
       startedAt: Date.now(),
       expiresAt: Date.now() + this.SESSION_TTL_MS,
     };
