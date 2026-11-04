@@ -1,36 +1,66 @@
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'mahi-remote-secure-ecdsa-jwt-secret-key-32b';
+const configuredJwtSecret = process.env.JWT_SECRET;
+if (
+  !configuredJwtSecret ||
+  Buffer.byteLength(configuredJwtSecret, 'utf8') < 32 ||
+  /replace|change[-_ ]?me|example|your[-_ ]?secret/i.test(configuredJwtSecret)
+) {
+  throw new Error('JWT_SECRET must be configured with at least 32 bytes. Refusing to start with an insecure fallback secret.');
+}
+// The explicit type is safe only after the fail-closed check above.
+const JWT_SECRET: string = configuredJwtSecret as string;
 
 export interface AuthContext {
   entityId: string;
   entityType: 'DEVICE' | 'OPERATOR';
   fingerprint: string;
+  sessionId?: string;
 }
 
 export class AuthService {
   private static rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
-  public static generateSessionToken(ctx: AuthContext, expiresIn = '4h'): string {
+  public static generateSessionToken(ctx: AuthContext, expiresIn = '30m'): string {
+    if (!ctx.sessionId) {
+      throw new Error('A backend-issued sessionId is required before issuing a session token.');
+    }
     return jwt.sign(
       {
         sub: ctx.entityId,
         type: ctx.entityType,
         fp: ctx.fingerprint,
+        sid: ctx.sessionId,
       },
       JWT_SECRET,
-      { expiresIn: expiresIn as any }
+      {
+        expiresIn: expiresIn as any,
+        algorithm: 'HS256',
+        issuer: 'mahi-remote',
+        audience: 'mahi-remote-session',
+      }
     );
   }
 
   public static verifySessionToken(token: string): AuthContext | null {
     try {
-      const decoded = jwt.verify(token, JWT_SECRET) as any;
+      const decoded = jwt.verify(token, JWT_SECRET, {
+        algorithms: ['HS256'],
+        issuer: 'mahi-remote',
+        audience: 'mahi-remote-session',
+      }) as any;
+      if (
+        typeof decoded.sub !== 'string' ||
+        !['DEVICE', 'OPERATOR'].includes(decoded.type) ||
+        typeof decoded.fp !== 'string' ||
+        typeof decoded.sid !== 'string'
+      ) return null;
       return {
         entityId: decoded.sub,
         entityType: decoded.type,
         fingerprint: decoded.fp,
+        sessionId: decoded.sid,
       };
     } catch {
       return null;

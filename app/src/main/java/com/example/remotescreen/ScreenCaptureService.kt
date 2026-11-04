@@ -8,34 +8,26 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
-import android.media.projection.MediaProjection
-import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
 import com.example.R
 import com.example.security.AuditLogger
 import com.example.security.AuditSeverity
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
+import com.example.webrtc.WebRtcSessionManager
+import org.json.JSONObject
+import org.webrtc.PeerConnection
+import java.util.concurrent.ConcurrentLinkedQueue
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
 
 class ScreenCaptureService : Service() {
 
-    private val serviceScope = CoroutineScope(Dispatchers.Default + Job())
-    private var metricsJob: Job? = null
-
-    private var mediaProjection: MediaProjection? = null
-    private var virtualDisplay: VirtualDisplay? = null
+    private var webRtcSession: WebRtcSessionManager? = null
+    @Volatile private var activeSessionId: String? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     companion object {
         const val ACTION_START = "com.example.action.START_STREAM"
@@ -43,12 +35,26 @@ class ScreenCaptureService : Service() {
         const val EXTRA_RESULT_CODE = "extra_result_code"
         const val EXTRA_RESULT_DATA = "extra_result_data"
         const val EXTRA_PRESET = "extra_preset"
+        const val EXTRA_ICE_CONFIG = "extra_ice_config"
+        const val EXTRA_TARGET_DEVICE_ID = "extra_target_device_id"
+        const val EXTRA_SESSION_ID = "extra_session_id"
 
         private const val NOTIFICATION_ID = 9021
         private const val CHANNEL_ID = "mahi_remote_screen_channel"
 
-        private val _streamState = MutableStateFlow<ScreenStreamState>(ScreenStreamState.Idle)
-        val streamState: StateFlow<ScreenStreamState> = _streamState.asStateFlow()
+        private val _streamState = kotlinx.coroutines.flow.MutableStateFlow<ScreenStreamState>(
+            ScreenStreamState.Idle
+        )
+        val streamState: kotlinx.coroutines.flow.StateFlow<ScreenStreamState> =
+            _streamState.asStateFlow()
+
+        @Volatile
+        var signalingSender: ((String, String, String?) -> Boolean)? = null
+
+        @Volatile
+        private var runningInstance: ScreenCaptureService? = null
+
+        private val pendingSignals = ConcurrentLinkedQueue<Pair<String, String>>()
 
         fun isStreaming(): Boolean = _streamState.value is ScreenStreamState.Active
 
@@ -56,7 +62,20 @@ class ScreenCaptureService : Service() {
             val intent = Intent(context, ScreenCaptureService::class.java).apply {
                 action = ACTION_STOP
             }
-            context.startService(intent)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun handleSignalingMessage(type: String, rawMessage: String) {
+            val service = runningInstance
+            if (service == null) {
+                pendingSignals.add(type to rawMessage)
+                return
+            }
+            service.dispatchSignal(type, rawMessage)
         }
     }
 
@@ -64,6 +83,7 @@ class ScreenCaptureService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        runningInstance = this
         createNotificationChannel()
     }
 
@@ -78,97 +98,204 @@ class ScreenCaptureService : Service() {
                     intent.getParcelableExtra(EXTRA_RESULT_DATA)
                 }
                 val presetName = intent.getStringExtra(EXTRA_PRESET) ?: VideoPreset.BALANCED.name
-                val preset = try {
-                    VideoPreset.valueOf(presetName)
-                } catch (e: Exception) {
-                    VideoPreset.BALANCED
-                }
+                val preset = runCatching { VideoPreset.valueOf(presetName) }
+                    .getOrDefault(VideoPreset.BALANCED)
+                val iceConfig = intent.getStringExtra(EXTRA_ICE_CONFIG).orEmpty()
+                val targetDeviceId = intent.getStringExtra(EXTRA_TARGET_DEVICE_ID).orEmpty()
+                val sessionId = intent.getStringExtra(EXTRA_SESSION_ID).orEmpty()
 
-                if (resultData != null) {
-                    startCapture(resultCode, resultData, preset)
+                if (resultData == null || iceConfig.isBlank() || targetDeviceId.isBlank() || sessionId.isBlank()) {
+                    _streamState.value = ScreenStreamState.Error(
+                        "Screen sharing needs Android consent, ICE configuration and an approved controller session."
+                    )
+                    stopSelf(startId)
+                    return START_NOT_STICKY
                 }
+                startCapture(resultCode, resultData, preset, iceConfig, targetDeviceId, sessionId)
             }
             ACTION_STOP -> {
                 stopCapture()
-                stopSelf()
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf(startId)
             }
         }
         return START_NOT_STICKY
     }
 
-    private fun startCapture(resultCode: Int, resultData: Intent, preset: VideoPreset) {
-        val notification = buildForegroundNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
-
+    private fun startCapture(
+        resultCode: Int,
+        resultData: Intent,
+        preset: VideoPreset,
+        iceConfig: String,
+        controllerDeviceId: String,
+        sessionId: String
+    ) {
         try {
-            val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildForegroundNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, buildForegroundNotification())
+            }
 
-            mediaProjection?.registerCallback(object : MediaProjection.Callback() {
-                override fun onStop() {
-                    AuditLogger.log("SCREEN", "MEDIA_PROJECTION_STOPPED", "System or user revoked screen projection", AuditSeverity.WARNING)
-                    stopCapture()
-                    stopSelf()
+            stopCurrentWebRtcSession()
+            activeSessionId = sessionId
+            _streamState.value = ScreenStreamState.RequestingConsent
+
+            val manager = WebRtcSessionManager(
+                context = this,
+                sendSignal = { type, payload, recipient ->
+                    signalingSender?.invoke(type, payload, recipient) ?: false
+                },
+                onConnectionState = { state ->
+                    when (state) {
+                        PeerConnection.PeerConnectionState.CONNECTED -> {
+                            _streamState.value = ScreenStreamState.Active(
+                                metrics = StreamMetrics(
+                                    currentFps = 0,
+                                    bitrateKbps = 0,
+                                    resolution = preset.width.toString() + "x" + preset.height
+                                ),
+                                preset = preset
+                            )
+                            AuditLogger.log(
+                                "SCREEN",
+                                "MEDIA_CONNECTED",
+                                "WebRTC media transport connected to the approved controller.",
+                                AuditSeverity.SECURITY
+                            )
+                        }
+                        PeerConnection.PeerConnectionState.FAILED -> {
+                            mainHandler.post {
+                                _streamState.value = ScreenStreamState.Error(
+                                    "WebRTC connection failed. Check internet and TURN connectivity."
+                                )
+                                stopCapture()
+                                stopForeground(STOP_FOREGROUND_REMOVE)
+                                stopSelf()
+                            }
+                        }
+                        PeerConnection.PeerConnectionState.DISCONNECTED,
+                        PeerConnection.PeerConnectionState.CLOSED -> {
+                            if (_streamState.value !is ScreenStreamState.Error) {
+                                _streamState.value = ScreenStreamState.Stopped
+                            }
+                        }
+                        else -> Unit
+                    }
+                },
+                onError = { message ->
+                    mainHandler.post {
+                        _streamState.value = ScreenStreamState.Error(message)
+                        AuditLogger.log("SCREEN", "MEDIA_ERROR", message, AuditSeverity.WARNING)
+                        stopCapture()
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                    }
                 }
-            }, null)
-
-            AuditLogger.log("SCREEN", "STREAM_STARTED", "WebRTC MediaProjection active at ${preset.width}x${preset.height} @ ${preset.fps}fps", AuditSeverity.SECURITY)
-
-            startMetricsSimulation(preset)
-        } catch (e: Exception) {
-            _streamState.value = ScreenStreamState.Error(e.message ?: "Failed to start MediaProjection")
-            AuditLogger.log("SCREEN", "ERROR", "Failed to start MediaProjection: ${e.message}", AuditSeverity.CRITICAL)
+            )
+            webRtcSession = manager
+            manager.startReceiver(
+                permissionResult = resultData,
+                preset = preset,
+                iceConfigJson = iceConfig,
+                controllerDeviceId = controllerDeviceId
+            )
+            flushPendingSignals(sessionId)
+            AuditLogger.log(
+                "SCREEN",
+                "CAPTURE_STARTED",
+                "MediaProjection screen capture and WebRTC sender started after owner approval.",
+                AuditSeverity.SECURITY
+            )
+        } catch (error: Exception) {
+            _streamState.value = ScreenStreamState.Error(
+                error.message ?: "Could not start the screen-sharing session."
+            )
+            stopCurrentWebRtcSession()
+            activeSessionId = null
+            pendingSignals.clear()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
         }
     }
 
-    private fun startMetricsSimulation(preset: VideoPreset) {
-        var frameCounter = 0L
-        var bytesCounter = 0L
-        val bytesPerFrame = (preset.bitrateKbps * 1024L / 8L) / preset.fps
-
-        metricsJob?.cancel()
-        metricsJob = serviceScope.launch {
-            while (isActive) {
-                frameCounter += preset.fps
-                bytesCounter += bytesPerFrame * preset.fps
-
-                val currentMetrics = StreamMetrics(
-                    currentFps = preset.fps,
-                    bitrateKbps = preset.bitrateKbps,
-                    resolution = "${preset.width}x${preset.height}",
-                    framesEncoded = frameCounter,
-                    bytesTransferred = bytesCounter,
-                    roundTripTimeMs = 28 + (frameCounter % 15).toInt(),
-                    packetLossPercent = 0.01f
+    @Synchronized
+    private fun dispatchSignal(type: String, rawMessage: String) {
+        val manager = webRtcSession
+        if (manager == null) {
+            pendingSignals.add(type to rawMessage)
+            return
+        }
+        try {
+            val root = JSONObject(rawMessage)
+            val packetSessionId = root.optString("sessionId")
+            if (packetSessionId.isBlank() || packetSessionId != activeSessionId) {
+                AuditLogger.log(
+                    "SIGNALING",
+                    "STALE_MEDIA_SIGNAL_IGNORED",
+                    "Ignored a media packet that does not belong to the active receiver session.",
+                    AuditSeverity.WARNING
                 )
+                return
+            }
+            val payload = root.optJSONObject("payload") ?: root
+            when (type) {
+                "SDP_OFFER" -> {
+                    val sdp = payload.optString("sdp", root.optString("sdp"))
+                    if (sdp.isNotBlank()) manager.handleOffer(sdp)
+                }
+                "ICE_CANDIDATE" -> manager.handleIceCandidate(payload)
+                "SESSION_ENDED", "EMERGENCY_DISCONNECT" -> {
+                    stopCapture()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+            }
+        } catch (error: Exception) {
+            AuditLogger.log(
+                "SIGNALING",
+                "MEDIA_SIGNAL_PARSE_FAILED",
+                error.message ?: "Invalid media signaling payload.",
+                AuditSeverity.WARNING
+            )
+        }
+    }
 
-                _streamState.value = ScreenStreamState.Active(currentMetrics, preset)
-                delay(1000L)
+    @Synchronized
+    private fun flushPendingSignals(expectedSessionId: String) {
+        while (true) {
+            val next = pendingSignals.poll() ?: break
+            val matchesSession = runCatching {
+                JSONObject(next.second).optString("sessionId") == expectedSessionId
+            }.getOrDefault(false)
+            if (matchesSession) {
+                dispatchSignal(next.first, next.second)
             }
         }
     }
 
+    private fun stopCurrentWebRtcSession() {
+        webRtcSession?.close()
+        webRtcSession = null
+    }
+
     private fun stopCapture() {
-        metricsJob?.cancel()
-        metricsJob = null
-        try {
-            virtualDisplay?.release()
-            virtualDisplay = null
-            mediaProjection?.stop()
-            mediaProjection = null
-        } catch (e: Exception) {
-            // Ignore clean teardown exceptions
+        stopCurrentWebRtcSession()
+        activeSessionId = null
+        pendingSignals.clear()
+        if (_streamState.value !is ScreenStreamState.Error) {
+            _streamState.value = ScreenStreamState.Stopped
         }
-        _streamState.value = ScreenStreamState.Stopped
-        AuditLogger.log("SCREEN", "STREAM_STOPPED", "Screen streaming terminated cleanly", AuditSeverity.INFO)
+        AuditLogger.log(
+            "SCREEN",
+            "STREAM_STOPPED",
+            "Screen sharing session stopped.",
+            AuditSeverity.INFO
+        )
     }
 
     private fun buildForegroundNotification(): Notification {
@@ -181,27 +308,26 @@ class ScreenCaptureService : Service() {
             stopIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-
-        val openAppIntent = Intent(this, MainActivity::class.java)
+        val openIntent = Intent(this, MainActivity::class.java)
         val openPendingIntent = PendingIntent.getActivity(
             this,
             0,
-            openAppIntent,
+            openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Mahi Remote Screen Active")
-            .setContentText("Screen is streaming to authorized Windows operator")
+            .setContentTitle("Mahi Remote screen sharing")
+            .setContentText("Your screen is shared with the controller you approved.")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
             .setContentIntent(openPendingIntent)
             .addAction(
                 android.R.drawable.ic_menu_close_clear_cancel,
-                "Stop Sharing",
+                "Stop sharing",
                 stopPendingIntent
             )
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
     }
@@ -210,18 +336,18 @@ class ScreenCaptureService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Mahi Remote Screen Streaming",
+                "Mahi Remote screen sharing",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Shows persistent status while remote screen is sharing"
+                description = "Visible while an approved remote screen-sharing session is active."
             }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
 
     override fun onDestroy() {
         stopCapture()
+        if (runningInstance === this) runningInstance = null
         super.onDestroy()
     }
 }

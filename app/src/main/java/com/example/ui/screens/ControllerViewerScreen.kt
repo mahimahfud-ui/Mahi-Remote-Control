@@ -65,6 +65,7 @@ import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -77,13 +78,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.controller.RemoteViewerTab
 import com.example.ui.MahiViewModel
+import org.webrtc.SurfaceViewRenderer
 import com.example.ui.theme.CyanAccent
 import com.example.ui.theme.DarkCharcoalBg
 import com.example.ui.theme.DarkSurface
@@ -102,6 +106,7 @@ fun ControllerViewerScreen(viewModel: MahiViewModel) {
     val session = viewModel.activeControllerSession.collectAsState().value ?: return
     val selectedViewerTab by viewModel.remoteViewerTab.collectAsState()
     val remoteMetrics by viewModel.remoteMetrics.collectAsState()
+    val hasVideoFrames by viewModel.remoteVideoHasFrames.collectAsState()
     val remoteTelemetry by viewModel.remoteTelemetry.collectAsState()
 
     var keyboardInput by remember { mutableStateOf("") }
@@ -130,7 +135,11 @@ fun ControllerViewerScreen(viewModel: MahiViewModel) {
                             )
                         }
                         Text(
-                            text = "${remoteMetrics.roundTripTimeMs} ms • ${remoteMetrics.currentFps} FPS • ${remoteMetrics.bitrateKbps / 1000f} Mbps",
+                            text = if (hasVideoFrames) {
+                                "${remoteMetrics.roundTripTimeMs} ms • ${remoteMetrics.currentFps} FPS • ${remoteMetrics.bitrateKbps / 1000f} Mbps"
+                            } else {
+                                "Waiting for real video frames"
+                            },
                             color = CyanAccent,
                             fontSize = 10.sp,
                             fontFamily = FontFamily.Monospace
@@ -243,6 +252,14 @@ private fun RemoteScreenViewport(
     onKeyboardInputChanged: (String) -> Unit,
     onSendText: () -> Unit
 ) {
+    val context = LocalContext.current
+    val hasVideoFrames by viewModel.remoteVideoHasFrames.collectAsState()
+    val videoRenderer = remember { SurfaceViewRenderer(context) }
+    DisposableEffect(videoRenderer) {
+        viewModel.attachRemoteVideoRenderer(videoRenderer)
+        onDispose { viewModel.detachRemoteVideoRenderer(videoRenderer) }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -311,56 +328,39 @@ private fun RemoteScreenViewport(
                         )
                     }
             ) {
-                // Background visual representation of receiver's active UI
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    // Simulated status bar
-                    drawRect(
-                        color = Color(0xFF1E293B),
-                        size = androidx.compose.ui.geometry.Size(size.width, 24.dp.toPx())
-                    )
+                AndroidView(
+                    factory = { videoRenderer },
+                    modifier = Modifier.fillMaxSize()
+                )
 
-                    // Visual touch ripples
-                    touchRipples.forEach { ripple ->
-                        drawCircle(
-                            color = CyanAccent.copy(alpha = 0.6f),
-                            radius = 28.dp.toPx(),
-                            center = ripple
+                if (!hasVideoFrames) {
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.ScreenShare,
+                            contentDescription = null,
+                            tint = CyanAccent.copy(alpha = 0.8f),
+                            modifier = Modifier.size(44.dp)
                         )
-                        drawCircle(
-                            color = Color.White.copy(alpha = 0.8f),
-                            radius = 12.dp.toPx(),
-                            center = ripple
+                        Text(
+                            text = "WAITING FOR REMOTE VIDEO",
+                            color = CyanAccent,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp
+                        )
+                        Text(
+                            text = "The receiver must approve screen sharing and start its Android media session. The real screen will appear here when the first video frame arrives.",
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
                     }
-                }
-
-                // Center Live Screen Status overlay
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        Icons.Default.ScreenShare,
-                        contentDescription = null,
-                        tint = CyanAccent.copy(alpha = 0.7f),
-                        modifier = Modifier.size(48.dp)
-                    )
-                    Text(
-                        text = "LIVE REMOTE SCREEN STREAMING",
-                        color = CyanAccent,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.sp
-                    )
-                    Text(
-                        text = "Touch, swipe, or drag inside this window to control the receiver phone directly.",
-                        color = TextSecondary,
-                        fontSize = 10.sp,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                    )
                 }
 
                 // Volume & Quick System Controls overlay in top-right of canvas

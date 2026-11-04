@@ -1,46 +1,25 @@
-# Mahi Remote Control — Remaining Blockers & Platform Requirements
+# Mahi Remote Control — Current Remaining Blockers
 
-This document enumerates the external prerequisites, platform restrictions, and hardware verification dependencies that cannot be resolved strictly within the cloud container environment.
+This document supersedes older reports that either claimed tests passed without evidence or incorrectly stated that Android WebRTC media code did not exist. The current `work/remote-access-hardening` branch contains the Android media pipeline and browser receive path in source, but end-to-end operation is not yet proven. See [IMPLEMENTATION-STATUS.md](IMPLEMENTATION-STATUS.md).
 
----
+## Release blockers
 
-## 1. Physical Android Hardware Verification
+1. **Android CI:** Two Kotlin compile issues were fixed on PR #2: the viewer header now observes `remoteVideoHasFrames`, and `PairingScreen` snapshots the delegated active-session value before null-checking it. The new Android workflow must complete successfully, including debug APK build and Robolectric/unit tests.
+2. **Durable backend:** `DeviceService` stores device, code and session state in process-local Maps. `AuthService` rate limiting and pending WebSocket pairing requests are also process-local. Wire the backend to PostgreSQL using migrations and atomic transactions; the existing `pg` dependency and schema are not connected storage.
+3. **Cryptographic device proof:** Implement device-key enrollment plus nonce-based challenge/response proving possession of a private key held by Android Keystore. Client-supplied device IDs/fingerprints are not sufficient proof.
+4. **Production infrastructure:** Configure a real HTTPS/WSS origin, DNS/TLS, Coturn, private TURN shared secret, firewall/relay ports, and production environment variables. Validate actual relay candidates from outside the hosting network.
+5. **Physical Android validation:** Test two phones end-to-end: pairing, explicit approval, Android screen-capture consent, real decoded frames, coordinate scaling, Accessibility-based input, Stop/revoke, network interruption and session expiry.
+6. **Browser validation:** Verify Chrome and Edge browser-to-Android sessions, SDP/ICE, actual video rendering, forced TURN, control commands, file/app tools and reconnect. The browser client source alone does not establish interoperability.
+7. **Windows compatibility:** Migrate the legacy WPF controller to the current participant-token and pairing protocol, including a real native WebRTC video renderer, or exclude Windows from the first supported release. Do not fake a screen stream.
+8. **Branch reconciliation:** PR #2 is two commits behind current `main`; preserve the latest restored browser UI. PR #1 and PR #2 contain overlapping changes from the same initial base and must not be merged wholesale together. Compare both branches and the current Google AI Studio Remix workspace before choosing a canonical implementation.
 
-- **Requirement**: Two physical Android handsets (one acting as Controller, one as Receiver).
-- **Blocker Reason**: The cloud container lacks physical Android hardware and ADB interfaces. While automated Robolectric unit tests and Node.js integration tests pass (`5/5` and `7/7`), end-to-end hardware validation requires two physical phones.
-- **Action Needed**:
-  1. Transfer `dist/MahiRemote-debug.apk` to both physical Android devices.
-  2. Follow the verification runbook in `docs/ANDROID_TO_ANDROID_SETUP.md`.
+## Verification rules
 
----
+- Backend build/integration workflow passed on the latest recorded source commit `ea75c9e544a5f917eb19ab7f7cbf3bf58505acfe`.
+- Android workflow after the Kotlin source fixes was still running at the last status check. Confirm the latest Actions result before claiming it passed.
+- No real two-phone, browser-to-phone, different-network/TURN, or Windows integration test is claimed.
+- Existing files under `dist/` are historical reports, not proof of the current build or physical test state.
 
-## 2. Manual User Permissions on Target Device
+## Do not release
 
-The Android OS strictly forbids applications from granting sensitive permissions to themselves:
-
-1. **Accessibility Service Activation**:
-   - The user must manually navigate to `Settings > Accessibility > Mahi Remote Input Service` and toggle the service to **ON**.
-   - Standard Android applications cannot programmatically enable accessibility without root (Magisk) or device owner enrollment.
-2. **MediaProjection Screen Capture Consent**:
-   - Every screen sharing session requires the user on the receiver phone to tap **Start now** on the official Android system projection prompt.
-3. **Android 12+ Overlay Restrictions**:
-   - Accessibility touches cannot click "Allow" on system runtime permission dialogs (clickjacking defense).
-
----
-
-## 3. Public Coturn TURN Relay for Symmetric Cellular Networks
-
-- **Requirement**: A running Coturn instance hosted on a public IPv4 address with UDP ports `3478` and `49152–65535` exposed.
-- **Blocker Reason**: When both phones connect via cellular data across symmetric carrier NATs (e.g. Grameenphone 4G to Banglalink 4G), direct STUN UDP hole-punching fails. Cloudflare Quick Tunnels proxy HTTP and WebSockets only, not raw WebRTC UDP media packets.
-- **Action Needed**:
-  - Deploy Coturn on a cloud VPS (AWS, DigitalOcean, Hetzner) following `docs/IP-DEPLOYMENT.md` and populate TURN credentials in `backend/.env`.
-
----
-
-## 4. Windows Desktop .NET 10 Workstation Compilation
-
-- **Requirement**: Building `windows-controller/MahiRemote.sln` requires the .NET 10 SDK and Windows Desktop Workload (WPF).
-- **Blocker Reason**: The containerized Linux agent environment contains OpenJDK and Node.js, but does not provide Microsoft .NET Windows Desktop SDKs.
-- **Action Needed**:
-  - Windows operators can build the desktop app on their Windows workstation using `.\scripts\build-windows.ps1`.
-  - Alternatively, operators can use the zero-install **Web Browser Controller** (`http://<PUBLIC_IP>:8080`) or Cloudflare Tunnel (`https://*.trycloudflare.com`) on any modern browser without compiling native desktop code.
+Do not publish or describe this as a production-ready remote-control product until Android CI passes, PostgreSQL persistence and device identity proof are implemented, HTTPS/WSS and TURN are configured, and the physical Android/browser test matrix is green.

@@ -13,6 +13,16 @@ android {
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
+    val dotEnvFile = rootProject.file(".env")
+    val publicBaseUrlFromDotEnv = if (dotEnvFile.exists()) {
+      dotEnvFile.readLines().firstOrNull { it.trim().startsWith("PUBLIC_BASE_URL=") }
+        ?.substringAfter("=")?.trim()?.trim('"')
+    } else null
+    val publicBaseUrl = (project.findProperty("PUBLIC_BASE_URL") as String?)
+      ?: System.getenv("PUBLIC_BASE_URL")
+      ?: publicBaseUrlFromDotEnv
+      ?: ""
+    buildConfigField("String", "PUBLIC_BASE_URL", "\"${publicBaseUrl}\"")
     applicationId = "com.aistudio.mahiremote.rcvkm"
     minSdk = 26
     targetSdk = 36
@@ -124,6 +134,10 @@ dependencies {
   implementation(libs.logging.interceptor)
   implementation(libs.moshi.kotlin)
   implementation(libs.okhttp)
+  // Standards-compliant QR generation and Google Play Services QR scanning.
+  implementation("com.google.zxing:core:3.5.4")
+  implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+  implementation("io.github.webrtc-sdk:android:150.7871.04")
   // implementation(libs.play.services.location)
   implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)

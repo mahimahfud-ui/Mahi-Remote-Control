@@ -2,6 +2,7 @@ package com.example.ui
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.appmanager.AppItem
@@ -29,6 +30,9 @@ import com.example.security.DeviceIdentity
 import com.example.signaling.ConnectionStatus
 import com.example.signaling.SignalingClient
 import com.example.signaling.SignalingMessage
+import com.example.webrtc.WebRtcSessionManager
+import org.webrtc.SurfaceViewRenderer
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -101,18 +105,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     private val _activeControllerSession = MutableStateFlow<ControllerSession?>(null)
     val activeControllerSession: StateFlow<ControllerSession?> = _activeControllerSession.asStateFlow()
 
-    private val _recentTargetDevices = MutableStateFlow<List<KnownTargetDevice>>(
-        listOf(
-            KnownTargetDevice(
-                deviceId = "MAHI-NOAKHALI-01",
-                name = "Phone B — Receiver (Noakhali)",
-                model = "Pixel 8 Pro (Android 14)",
-                fingerprint = "7A:B3:99:C2:54:E1:88:20:D1:66:33:F0:91:AA:BB:CC",
-                lastConnectedAtMillis = System.currentTimeMillis() - 7200000L,
-                isOnline = true
-            )
-        )
-    )
+    private val _recentTargetDevices = MutableStateFlow<List<KnownTargetDevice>>(emptyList())
     val recentTargetDevices: StateFlow<List<KnownTargetDevice>> = _recentTargetDevices.asStateFlow()
 
     private val _remoteViewerTab = MutableStateFlow(RemoteViewerTab.SCREEN)
@@ -124,26 +117,35 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     private val _remoteAppList = MutableStateFlow<List<AppItem>>(emptyList())
     val remoteAppList: StateFlow<List<AppItem>> = _remoteAppList.asStateFlow()
 
-    private val _remoteTelemetry = MutableStateFlow<RemoteTelemetry?>(RemoteTelemetry())
+    private val _remoteTelemetry = MutableStateFlow<RemoteTelemetry?>(null)
     val remoteTelemetry: StateFlow<RemoteTelemetry?> = _remoteTelemetry.asStateFlow()
 
-    private val _remoteMetrics = MutableStateFlow(StreamMetrics(roundTripTimeMs = 32, currentFps = 60, bitrateKbps = 2400))
+    private val _remoteMetrics = MutableStateFlow(StreamMetrics(currentFps = 0, bitrateKbps = 0, resolution = "", framesEncoded = 0, bytesTransferred = 0, roundTripTimeMs = 0, packetLossPercent = 0f))
     val remoteMetrics: StateFlow<StreamMetrics> = _remoteMetrics.asStateFlow()
 
     val signalingClient: SignalingClient
+    private var controllerWebRtcSession: WebRtcSessionManager? = null
+    private var attachedRemoteRenderer: SurfaceViewRenderer? = null
+    private val _remoteVideoHasFrames = MutableStateFlow(false)
+    val remoteVideoHasFrames: StateFlow<Boolean> = _remoteVideoHasFrames.asStateFlow()
 
     init {
         signalingClient = SignalingClient(identity) { msg ->
             handleIncomingSignalingMessage(msg)
         }
+        ScreenCaptureService.signalingSender = { type, payload, recipient ->
+            signalingClient.send(type, payload, recipient)
+        }
         signalingClient.connect()
 
-        // Register initial pairing code with backend signaling server
-        pairingManager.currentPairingCode.value?.let { pCode ->
-            signalingClient.send(
-                "REGISTER_PAIRING_CODE",
-                """{"code":"${pCode.code}","expiresAt":${pCode.expiresAtMillis}}"""
-            )
+        viewModelScope.launch {
+            signalingClient.runtimeConfigJson.collect { rawConfig ->
+                val browserUrl = runCatching {
+                    JSONObject(rawConfig ?: "{}").optString("browserAccessUrl")
+                        .takeIf { it.startsWith("https://") }
+                }.getOrNull()
+                pairingManager.setBrowserAccessUrl(browserUrl)
+            }
         }
 
         refreshFiles()
@@ -158,12 +160,18 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 when (msg.type) {
+                    "REGISTER_ACK" -> registerCurrentPairingCode()
+                    "PAIR_PENDING" -> {
+                        _isControllerConnecting.value = true
+                        _controllerErrorMessage.value = "Waiting for the receiver owner to approve."
+                    }
                     "PAIR_REQUEST" -> {
                         val root = JSONObject(msg.payload)
                         val opName = root.optString("operatorName", root.optString("controllerName", "Mahi Remote Controller"))
                         val opLoc = root.optString("operatorLocation", "Remote Android Controller")
                         val opFp = root.optString("fingerprint", root.optString("controllerFingerprint", "UNKNOWN-FP"))
                         val cId = root.optString("controllerId", msg.sender)
+                        val backendRequestId = root.optString("requestId")
                         val scopesJson = root.optJSONArray("requestedScopes")
                         val scopes = mutableListOf<String>()
                         if (scopesJson != null) {
@@ -178,13 +186,21 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                             operatorName = opName,
                             location = opLoc,
                             fingerprint = opFp,
-                            scopes = scopes
+                            scopes = scopes,
+                            requestId = backendRequestId
                         )
                     }
                     "PAIR_ACCEPT" -> {
                         // Handled on Controller side: target device approved!
                         val root = JSONObject(msg.payload)
-                        val sessionId = root.optString("sessionId", UUID.randomUUID().toString())
+                        val sessionId = root.optString("sessionId")
+                        val issuedToken = root.optString("sessionToken")
+                        if (sessionId.isBlank() || issuedToken.isBlank()) {
+                            _isControllerConnecting.value = false
+                            _controllerErrorMessage.value = "The server did not issue a valid approved session."
+                            return@launch
+                        }
+                        signalingClient.setSessionToken(issuedToken)
                         val receiverName = root.optString("receiverName", "Android Receiver Phone")
                         val targetFp = root.optString("fingerprint", "TARGET-FP")
                         val session = ControllerSession(
@@ -192,30 +208,85 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                             targetDeviceId = msg.sender,
                             targetDeviceName = receiverName,
                             targetFingerprint = targetFp,
-                            sessionToken = UUID.randomUUID().toString(),
+                            sessionToken = issuedToken,
                             connectedAtMillis = System.currentTimeMillis()
                         )
                         _activeControllerSession.value = session
                         _isControllerConnecting.value = false
                         _controllerErrorMessage.value = null
+                        startControllerWebRtc(msg.sender)
 
-                        // Add to recent target devices
-                        val updated = _recentTargetDevices.value.filter { it.deviceId != msg.sender } +
-                            KnownTargetDevice(
-                                deviceId = msg.sender,
-                                name = receiverName,
-                                model = "Android Device",
-                                fingerprint = targetFp,
-                                lastConnectedAtMillis = System.currentTimeMillis(),
-                                isOnline = true
-                            )
-                        _recentTargetDevices.value = updated
-
-                        AuditLogger.log("CONTROLLER", "SESSION_ESTABLISHED", "Connected to remote phone: $receiverName", AuditSeverity.SECURITY)
+                        AuditLogger.log("CONTROLLER", "SESSION_ESTABLISHED", "Approved controller session established with $receiverName", AuditSeverity.SECURITY)
 
                         // Request initial remote app and file catalog
                         fetchRemoteApps()
                         fetchRemoteFiles()
+                    }
+                    "PAIR_SESSION_AUTHORIZED" -> {
+                        val root = JSONObject(msg.payload)
+                        val issuedToken = root.optString("sessionToken")
+                        val sessionId = root.optString("sessionId")
+                        if (issuedToken.isNotBlank() && sessionId.isNotBlank()) {
+                            signalingClient.setSessionToken(issuedToken)
+                            val activated = pairingManager.markSessionAuthorized(sessionId)
+                            if (!activated) {
+                                signalingClient.send(
+                                    "EMERGENCY_DISCONNECT",
+                                    """{"reason":"Receiver app could not match the approved request"}"""
+                                )
+                                signalingClient.setSessionToken(null)
+                                AuditLogger.log(
+                                    "SESSION",
+                                    "APPROVAL_STATE_MISMATCH",
+                                    "Backend approved a request that was no longer pending locally; the session was immediately revoked.",
+                                    AuditSeverity.CRITICAL
+                                )
+                                return@launch
+                            }
+                            AuditLogger.log("SESSION", "SESSION_AUTHORIZED", "Backend authorized the receiver session.", AuditSeverity.SECURITY)
+                        }
+                    }
+                    "SDP_ANSWER" -> {
+                        if (_appRole.value == AppRole.CONTROLLER) {
+                            val root = JSONObject(msg.payload)
+                            val activeSessionId = _activeControllerSession.value?.sessionId
+                            if (activeSessionId.isNullOrBlank() || root.optString("sessionId") != activeSessionId) {
+                                return@launch
+                            }
+                            val payload = root.optJSONObject("payload") ?: root
+                            val sdp = payload.optString("sdp", root.optString("sdp"))
+                            if (sdp.isNotBlank()) controllerWebRtcSession?.handleAnswer(sdp)
+                        }
+                    }
+                    "SDP_OFFER" -> {
+                        if (_appRole.value == AppRole.RECEIVER) {
+                            ScreenCaptureService.handleSignalingMessage(msg.type, msg.payload)
+                        }
+                    }
+                    "ICE_CANDIDATE" -> {
+                        val root = JSONObject(msg.payload)
+                        val packetSessionId = root.optString("sessionId")
+                        if (_appRole.value == AppRole.CONTROLLER && controllerWebRtcSession != null) {
+                            if (packetSessionId != _activeControllerSession.value?.sessionId) return@launch
+                            val payload = root.optJSONObject("payload") ?: root
+                            controllerWebRtcSession?.handleIceCandidate(payload)
+                        } else if (_appRole.value == AppRole.RECEIVER) {
+                            ScreenCaptureService.handleSignalingMessage(msg.type, msg.payload)
+                        }
+                    }
+                    "SESSION_ENDED" -> {
+                        signalingClient.setSessionToken(null)
+                        controllerWebRtcSession?.close()
+                        controllerWebRtcSession = null
+                        _remoteVideoHasFrames.value = false
+                        _activeControllerSession.value = null
+                        pairingManager.emergencyDisconnect("Remote session ended")
+                        ScreenCaptureService.stop(getApplication())
+                        if (_appRole.value == AppRole.RECEIVER) generateNewPairingCode()
+                    }
+                    "SESSION_ERROR" -> {
+                        val root = JSONObject(msg.payload)
+                        _controllerErrorMessage.value = root.optString("error", "Session authorization failed.")
                     }
                     "PAIR_REJECT" -> {
                         _isControllerConnecting.value = false
@@ -225,7 +296,11 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                     "PAIR_ERROR" -> {
                         val root = JSONObject(msg.payload)
                         _isControllerConnecting.value = false
-                        _controllerErrorMessage.value = root.optString("error", "Pairing error occurred.")
+                        val reason = root.optString("error", "Pairing error occurred.")
+                        if (_appRole.value == AppRole.RECEIVER) {
+                            pairingManager.failApproval(reason)
+                        }
+                        _controllerErrorMessage.value = reason
                     }
                     "APP_LIST_RESPONSE" -> {
                         val root = JSONObject(msg.payload)
@@ -472,12 +547,16 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
 
     fun connectToTargetWithQr(qrJson: String) {
         try {
-            val root = JSONObject(qrJson)
-            val code = root.optString("pairingCode", "")
-            if (code.isNotBlank()) {
+            val trimmed = qrJson.trim()
+            val code = if (trimmed.startsWith("{")) {
+                JSONObject(trimmed).optString("pairingCode", "")
+            } else {
+                android.net.Uri.parse(trimmed).getQueryParameter("code").orEmpty()
+            }
+            if (code.filter(Char::isDigit).length == 6) {
                 connectToTargetWithCode(code)
             } else {
-                _controllerErrorMessage.value = "QR payload does not contain a valid pairing code."
+                _controllerErrorMessage.value = "QR code does not contain a valid six-digit pairing code."
             }
         } catch (e: Exception) {
             _controllerErrorMessage.value = "Invalid QR code format: ${e.message}"
@@ -485,21 +564,15 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun connectToTargetDeviceId(deviceId: String, name: String) {
-        _isControllerConnecting.value = true
-        _controllerErrorMessage.value = null
-
-        val payload = """
-            {
-              "type": "PAIR_REQUEST",
-              "controllerId": "${identity.deviceId}",
-              "operatorName": "${identity.deviceName}",
-              "operatorLocation": "Remote Android Controller",
-              "fingerprint": "${identity.fingerprint}",
-              "requestedScopes": ["Screen Mirroring", "Remote Interaction", "File Transfer", "Diagnostics"]
-            }
-        """.trimIndent()
-
-        signalingClient.send("PAIR_REQUEST", payload, deviceId)
+        _isControllerConnecting.value = false
+        _controllerErrorMessage.value =
+            "Direct device-ID pairing is disabled. Ask the receiver to share a temporary six-digit code or QR, then connect with that code."
+        AuditLogger.log(
+            "PAIRING",
+            "DIRECT_ID_PAIRING_DISABLED",
+            "Rejected direct device-ID pairing for $deviceId. A fresh pairing code and owner approval are required.",
+            AuditSeverity.WARNING
+        )
     }
 
     fun removeRecentDevice(deviceId: String) {
@@ -510,6 +583,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         val session = _activeControllerSession.value
         if (session != null) {
             signalingClient.send("EMERGENCY_DISCONNECT", """{"reason":"Controller disconnected"}""", session.targetDeviceId)
+            signalingClient.setSessionToken(null)
             _activeControllerSession.value = null
             AuditLogger.log("CONTROLLER", "DISCONNECTED", "Disconnected from ${session.targetDeviceName}", AuditSeverity.INFO)
         }
@@ -749,25 +823,27 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun emergencyDisconnect() {
+        if (signalingClient.connectionStatus.value == ConnectionStatus.AUTHENTICATED) {
+            signalingClient.send("EMERGENCY_DISCONNECT", """{"reason":"Receiver owner activated Emergency Stop"}""")
+        }
+        signalingClient.setSessionToken(null)
         pairingManager.emergencyDisconnect("Emergency killswitch activated by user")
         ScreenCaptureService.stop(getApplication())
+        if (_appRole.value == AppRole.RECEIVER) generateNewPairingCode()
         _showDisconnectDialog.value = false
     }
 
-    fun simulateOperatorConnection() {
-        pairingManager.simulateIncomingOperatorRequest()
-    }
-
     fun approveIncomingRequest(req: OperatorRequest) {
+        if (req.controllerId.isBlank()) return
         pairingManager.approveRequest(req)
-        // If request originated from an Android or Windows controller, send PAIR_ACCEPT back
-        if (req.controllerId.isNotBlank()) {
-            val sessionId = UUID.randomUUID().toString()
-            signalingClient.send(
-                "PAIR_ACCEPT",
-                """{"sessionId":"$sessionId","receiverName":"${identity.deviceName}","status":"APPROVED","fingerprint":"${identity.fingerprint}"}""",
-                req.controllerId
-            )
+        val sent = signalingClient.send(
+            "PAIR_ACCEPT",
+            """{"requestId":"${req.requestId}","receiverName":"${identity.deviceName}","status":"APPROVED","fingerprint":"${identity.fingerprint}"}""",
+            req.controllerId
+        )
+        if (!sent) {
+            pairingManager.failApproval("The approval could not be sent to the signaling server.")
+            _controllerErrorMessage.value = "Approval could not be sent. Check the connection and try pairing again."
         }
     }
 
@@ -776,18 +852,103 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         if (req.controllerId.isNotBlank()) {
             signalingClient.send(
                 "PAIR_REJECT",
-                """{"status":"DENIED","reason":"User declined connection request"}""",
+                """{"requestId":"${req.requestId}","status":"DENIED","reason":"User declined connection request"}""",
                 req.controllerId
             )
         }
     }
 
-    fun generateNewPairingCode() {
-        val code = pairingManager.generateNewPairingCode()
-        signalingClient.send(
-            "REGISTER_PAIRING_CODE",
-            """{"code":"${code.code}","expiresAt":${code.expiresAtMillis}}"""
+    private fun startControllerWebRtc(receiverDeviceId: String) {
+        controllerWebRtcSession?.close()
+        controllerWebRtcSession = null
+        _remoteVideoHasFrames.value = false
+
+        signalingClient.fetchSessionIceConfig(
+            onSuccess = { iceConfig ->
+                if (_activeControllerSession.value?.targetDeviceId != receiverDeviceId) return@fetchSessionIceConfig
+                val manager = WebRtcSessionManager(
+                    context = getApplication(),
+                    sendSignal = { type, payload, recipient ->
+                        signalingClient.send(type, payload, recipient)
+                    },
+                    onFirstRemoteFrame = {
+                        _remoteVideoHasFrames.value = true
+                    },
+                    onError = { message ->
+                        _controllerErrorMessage.value = message
+                    }
+                )
+                controllerWebRtcSession = manager
+                attachedRemoteRenderer?.let(manager::initializeRenderer)
+                try {
+                    manager.startController(iceConfig, receiverDeviceId)
+                } catch (error: Exception) {
+                    manager.close()
+                    if (controllerWebRtcSession === manager) controllerWebRtcSession = null
+                    _controllerErrorMessage.value =
+                        error.message ?: "Could not start the remote video connection."
+                }
+            },
+            onFailure = { error ->
+                _controllerErrorMessage.value = error
+            }
         )
+    }
+
+    fun attachRemoteVideoRenderer(renderer: SurfaceViewRenderer) {
+        attachedRemoteRenderer = renderer
+        controllerWebRtcSession?.initializeRenderer(renderer)
+    }
+
+    fun detachRemoteVideoRenderer(renderer: SurfaceViewRenderer) {
+        controllerWebRtcSession?.releaseRenderer(renderer)
+        if (attachedRemoteRenderer === renderer) attachedRemoteRenderer = null
+    }
+
+    fun startReceiverScreenShare(resultCode: Int, resultData: Intent) {
+        val session = pairingManager.activeSession.value
+        if (session == null || session.controllerId.isBlank() ||
+            signalingClient.connectionStatus.value != ConnectionStatus.AUTHENTICATED) {
+            AuditLogger.log(
+                "SCREEN",
+                "SHARE_NOT_AUTHORIZED",
+                "Screen sharing was not started because there is no approved, authenticated controller session.",
+                AuditSeverity.WARNING
+            )
+            return
+        }
+
+        signalingClient.fetchSessionIceConfig(
+            onSuccess = { iceConfig ->
+                val serviceIntent = Intent(getApplication(), ScreenCaptureService::class.java).apply {
+                    action = ScreenCaptureService.ACTION_START
+                    putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode)
+                    putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, resultData)
+                    putExtra(ScreenCaptureService.EXTRA_PRESET, _videoPreset.value.name)
+                    putExtra(ScreenCaptureService.EXTRA_ICE_CONFIG, iceConfig)
+                    putExtra(ScreenCaptureService.EXTRA_TARGET_DEVICE_ID, session.controllerId)
+                    putExtra(ScreenCaptureService.EXTRA_SESSION_ID, session.sessionId)
+                }
+                androidx.core.content.ContextCompat.startForegroundService(getApplication(), serviceIntent)
+            },
+            onFailure = { error ->
+                AuditLogger.log("SCREEN", "ICE_CONFIG_FAILED", error, AuditSeverity.WARNING)
+            }
+        )
+    }
+
+    private fun registerCurrentPairingCode() {
+        pairingManager.currentPairingCode.value?.let { code ->
+            signalingClient.send(
+                "REGISTER_PAIRING_CODE",
+                """{"code":"${code.code}","expiresAt":${code.expiresAtMillis}}"""
+            )
+        }
+    }
+
+    fun generateNewPairingCode() {
+        pairingManager.generateNewPairingCode()
+        registerCurrentPairingCode()
     }
 
     override fun onCleared() {

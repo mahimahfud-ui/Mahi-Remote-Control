@@ -26,8 +26,9 @@ data class ActiveSession(
     val operatorLocation: String,
     val controllerFingerprint: String,
     val startedAtMillis: Long,
+    val controllerId: String = "",
     val isScreenStreaming: Boolean = false,
-    val isInputEnabled: Boolean = true
+    val isInputEnabled: Boolean = false
 )
 
 data class PairingCodeData(

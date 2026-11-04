@@ -6,24 +6,22 @@
   const state = {
     ws: null,
     peerConnection: null,
-    operatorFingerprint: 'OP-WEB-' + Math.random().toString(36).substring(2, 10).toUpperCase(),
-    operatorName: 'Web Operator (Chrome/Windows)',
-    operatorLocation: 'Sylhet NOC',
-    activeDeviceId: 'MAHI-SAM-9B7C12F0',
-    pairedDevices: [
-      {
-        deviceId: 'MAHI-SAM-9B7C12F0',
-        deviceName: 'Samsung Galaxy S24 Ultra',
-        location: 'Noakhali, Bangladesh',
-        battery: 86,
-        isOnline: true
-      }
-    ],
+    pingTimer: null,
+    operatorFingerprint: 'OP-WEB-' + Array.from(crypto.getRandomValues(new Uint8Array(16))).map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase(),
+    operatorName: 'Browser Controller',
+    activeDeviceId: null,
+    pairedDevices: [],
+    pairingRequestId: null,
+    sessionId: null,
+    sessionToken: null,
+    sessionId: null,
+    pendingIceCandidates: [],
+    runtimeConfig: null,
     commandSequence: 1,
     dragStart: null,
     lastClickTime: 0,
     clickCount: 0,
-    currentPath: '/storage/emulated/0/Documents'
+    currentPath: '/Documents'
   };
 
   // DOM Elements
@@ -74,31 +72,63 @@
     setupModal();
     setupFileUpload();
     renderDevices();
-    connectSignaling();
     startCanvasRenderLoop();
-    logAudit('INIT', `Browser Operator Console active. Fingerprint: ${state.operatorFingerprint}`, 'security');
+    logAudit('INIT', `Browser Controller ready. Fingerprint: ${state.operatorFingerprint}`, 'security');
+    loadRuntimeConfig().finally(connectSignaling);
+  }
+
+  async function loadRuntimeConfig() {
+    try {
+      const response = await fetch('/api/v1/config', { cache: 'no-store', credentials: 'same-origin' });
+      if (!response.ok) throw new Error('Configuration endpoint returned HTTP ' + response.status);
+      const config = await response.json();
+      state.runtimeConfig = config;
+      if (!config.browserAccessConfigured || !config.signalingUrl) {
+        logAudit('CONFIG', 'Public HTTPS access is not configured on the backend.', 'critical');
+      } else {
+        logAudit('CONFIG', 'Public browser URL and WSS endpoint loaded from backend.', 'security');
+      }
+      if (!config.turnConfigured) {
+        logAudit('NETWORK', 'TURN relay is not configured. Cross-network connectivity may fail behind restrictive NAT/CGNAT.', 'critical');
+      } else {
+        logAudit('NETWORK', 'TURN relay is configured. Short-lived credentials will be issued only after receiver approval.', 'security');
+      }
+    } catch (error) {
+      state.runtimeConfig = null;
+      logAudit('CONFIG', 'Unable to load runtime configuration: ' + error.message, 'critical');
+    }
   }
 
   // WebSocket Signaling Connection (Dynamically works with ANY IP or Cloudflare tunnel!)
   function connectSignaling() {
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+    const configuredUrl = state.runtimeConfig && state.runtimeConfig.signalingUrl;
+    if (!configuredUrl || !configuredUrl.startsWith('wss://')) {
+      el.badge.textContent = 'PUBLIC ACCESS NOT CONFIGURED';
+      el.badge.className = 'badge badge-danger';
+      logAudit('CONFIG', 'A real HTTPS PUBLIC_BASE_URL and WSS endpoint must be configured on the backend before browser access can work.', 'critical');
+      return;
+    }
+    const wsUrl = new URL(configuredUrl);
+    // Stable browser identity lets an approved session reconnect on the same tab
+    // without changing the server-side participant ID bound into its token.
+    wsUrl.searchParams.set('controllerFingerprint', state.operatorFingerprint);
 
-    logAudit('SIGNALING', `Connecting to signaling socket at ${wsUrl}...`);
+    logAudit('SIGNALING', `Connecting to configured WSS endpoint ${wsUrl.origin}/ws...`);
     el.badge.textContent = 'CONNECTING';
     el.badge.className = 'badge badge-warning';
 
     try {
-      state.ws = new WebSocket(wsUrl);
+      state.ws = new WebSocket(wsUrl.toString());
 
       state.ws.onopen = () => {
         el.badge.textContent = 'ONLINE / READY';
         el.badge.className = 'badge badge-success';
         logAudit('SIGNALING', `Connected to signaling hub. Authenticated as ${state.operatorFingerprint}`, 'security');
         
-        // Initial ping for latency
+        // Keep exactly one heartbeat timer across reconnect attempts.
+        if (state.pingTimer) clearInterval(state.pingTimer);
         sendPing();
-        setInterval(sendPing, 15000);
+        state.pingTimer = setInterval(sendPing, 15000);
       };
 
       state.ws.onmessage = (event) => {
@@ -111,6 +141,10 @@
       };
 
       state.ws.onclose = () => {
+        if (state.pingTimer) {
+          clearInterval(state.pingTimer);
+          state.pingTimer = null;
+        }
         el.badge.textContent = 'OFFLINE';
         el.badge.className = 'badge badge-danger';
         logAudit('SIGNALING', 'Socket disconnected. Retrying in 5 seconds...', 'critical');
@@ -126,11 +160,13 @@
   }
 
   function sendWs(data) {
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-      state.ws.send(JSON.stringify(data));
-      return true;
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return false;
+    const message = { ...data };
+    if (state.sessionToken && !['PING', 'PAIR_BY_CODE', 'PAIR_CODE_CONNECT'].includes(message.type)) {
+      message.sessionToken = state.sessionToken;
     }
-    return false;
+    state.ws.send(JSON.stringify(message));
+    return true;
   }
 
   let lastPingTimestamp = 0;
@@ -148,7 +184,7 @@
         break;
       }
       case 'COMMAND_ACK': {
-        logAudit('ACK', `Command #${msg.sequence} confirmed by Noakhali phone (${msg.rtt}ms RTT)`);
+        logAudit('ACK', `Command #${msg.sequence} acknowledged by the remote device.`);
         break;
       }
       case 'APP_LIST_RESPONSE': {
@@ -169,48 +205,199 @@
         } catch (e) {}
         break;
       }
+      case 'PAIR_PENDING': {
+        state.pairingRequestId = msg.requestId || null;
+        el.badge.textContent = 'WAITING FOR APPROVAL';
+        el.badge.className = 'badge badge-warning';
+        logAudit('PAIRING', 'Pairing request delivered. Waiting for receiver approval.');
+        break;
+      }
+      case 'PAIR_ACCEPT': {
+        if (!msg.sessionToken || !msg.sessionId || !msg.sender) {
+          logAudit('SECURITY', 'Server approval did not include valid session credentials.', 'critical');
+          break;
+        }
+        state.sessionToken = msg.sessionToken;
+        state.sessionId = msg.sessionId;
+        state.activeDeviceId = msg.sender;
+        state.pairedDevices = [{ deviceId: msg.sender, deviceName: msg.receiverName || 'Android Receiver' }];
+        renderDevices();
+        el.badge.textContent = 'APPROVED · CONNECTING';
+        el.badge.className = 'badge badge-warning';
+        logAudit('SECURITY', 'Receiver owner approved this session. Establishing media connection.', 'security');
+        startControllerOffer().catch(error => {
+          logAudit('WEBRTC', 'Unable to create WebRTC offer: ' + error.message, 'critical');
+        });
+        break;
+      }
+      case 'PAIR_REJECT': {
+        state.pairingRequestId = null;
+        el.badge.textContent = 'REJECTED';
+        el.badge.className = 'badge badge-danger';
+        logAudit('PAIRING', 'Receiver owner rejected the connection request.', 'critical');
+        break;
+      }
+      case 'PAIR_ERROR':
+      case 'SESSION_ERROR': {
+        state.pairingRequestId = null;
+        el.badge.textContent = 'CONNECTION ERROR';
+        el.badge.className = 'badge badge-danger';
+        logAudit('SECURITY', msg.error || 'Connection or session authorization failed.', 'critical');
+        break;
+      }
+      case 'SESSION_ENDED': {
+        stopBrowserSession('Remote session ended.');
+        break;
+      }
       case 'SDP_ANSWER': {
-        handleSdpAnswer(msg.payload.sdp);
+        if (!state.sessionId || msg.sessionId !== state.sessionId) break;
+        const payload = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};
+        const answer = payload.sdp || msg.sdp;
+        if (answer) {
+          handleSdpAnswer(answer).catch(error => {
+            logAudit('WEBRTC', 'Unable to apply remote SDP answer: ' + error.message, 'critical');
+          });
+        }
+        break;
+      }
+      case 'ICE_CANDIDATE': {
+        if (!state.sessionId || msg.sessionId !== state.sessionId) break;
+        const payload = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};
+        if (!payload.candidate) break;
+        const candidate = new RTCIceCandidate({
+          candidate: payload.candidate,
+          sdpMid: payload.sdpMid || null,
+          sdpMLineIndex: Number.isInteger(payload.sdpMLineIndex) ? payload.sdpMLineIndex : 0
+        });
+        if (!state.peerConnection || !state.peerConnection.remoteDescription) {
+          state.pendingIceCandidates.push(candidate);
+        } else {
+          state.peerConnection.addIceCandidate(candidate).catch(error => {
+            logAudit('WEBRTC', 'Unable to add remote ICE candidate: ' + error.message, 'critical');
+          });
+        }
         break;
       }
     }
   }
 
+  async function loadSessionIceServers() {
+    const fallback = state.runtimeConfig && Array.isArray(state.runtimeConfig.iceServers)
+      ? state.runtimeConfig.iceServers
+      : [{ urls: 'stun:stun.l.google.com:19302' }];
+
+    if (!state.sessionToken || !state.runtimeConfig || !state.runtimeConfig.turnConfigured) {
+      return fallback;
+    }
+
+    try {
+      const response = await fetch('/api/v1/turn-credentials', {
+        method: 'GET',
+        cache: 'no-store',
+        credentials: 'same-origin',
+        headers: { Authorization: 'Bearer ' + state.sessionToken }
+      });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const result = await response.json();
+      if (!Array.isArray(result.iceServers) || result.iceServers.length < 2) {
+        throw new Error('TURN server returned no ICE relay configuration.');
+      }
+      logAudit('NETWORK', 'Session-scoped, short-lived TURN credentials received.', 'security');
+      return result.iceServers;
+    } catch (error) {
+      logAudit('NETWORK', 'TURN credentials could not be loaded: ' + error.message + '. Direct ICE may still work; restrictive NAT may block this session.', 'critical');
+      return fallback;
+    }
+  }
+
   // WebRTC Setup
-  async function initWebRTC() {
-    const config = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        {
-          urls: 'turn:turn.mahi-remote.cloud:3478',
-          username: 'mahi_operator',
-          credential: 'mahi-turn-shared-secret-auth-key'
-        }
-      ]
-    };
+  async function initWebRTC(iceServers) {
+    // TURN credentials are fetched only after the owner-approved session exists.
+    // The shared TURN secret never enters this browser.
+    state.peerConnection = new RTCPeerConnection({ iceServers });
 
-    state.peerConnection = new RTCPeerConnection(config);
-
+    state.peerConnection.addTransceiver('video', { direction: 'recvonly' });
     state.peerConnection.ontrack = (event) => {
-      el.video.srcObject = event.streams[0];
-      el.placeholder.style.display = 'none';
-      logAudit('WEBRTC', 'Video track received. Hardware H.264 rendering started.', 'security');
+      const stream = event.streams && event.streams[0];
+      if (!stream) return;
+      el.video.srcObject = stream;
+      el.video.play().catch(() => {});
+      el.placeholder.style.display = 'block';
+      el.placeholder.textContent = 'Connecting video…';
+      const markFrameReceived = () => {
+        el.placeholder.style.display = 'none';
+        el.badge.textContent = 'LIVE';
+        el.badge.className = 'badge badge-success';
+        logAudit('WEBRTC', 'First actual remote video frame received.', 'security');
+      };
+      if (typeof el.video.requestVideoFrameCallback === 'function') {
+        el.video.requestVideoFrameCallback(markFrameReceived);
+      } else {
+        el.video.addEventListener('loadeddata', markFrameReceived, { once: true });
+      }
     };
 
     state.peerConnection.onicecandidate = (event) => {
       if (event.candidate) {
         sendWs({
           type: 'ICE_CANDIDATE',
-          candidate: event.candidate.candidate,
-          targetDeviceId: state.activeDeviceId
+          targetDeviceId: state.activeDeviceId,
+          payload: {
+            candidate: event.candidate.candidate,
+            sdpMid: event.candidate.sdpMid,
+            sdpMLineIndex: event.candidate.sdpMLineIndex
+          }
         });
+      }
+    };
+    state.peerConnection.onconnectionstatechange = () => {
+      const status = state.peerConnection.connectionState;
+      if (status === 'failed' || status === 'disconnected' || status === 'closed') {
+        el.badge.textContent = 'MEDIA ' + status.toUpperCase();
+        el.badge.className = 'badge badge-danger';
       }
     };
   }
 
+  async function startControllerOffer() {
+    if (!state.activeDeviceId || !state.sessionToken) throw new Error('No approved session.');
+    const iceServers = await loadSessionIceServers();
+    await initWebRTC(iceServers);
+    const offer = await state.peerConnection.createOffer();
+    await state.peerConnection.setLocalDescription(offer);
+    sendWs({
+      type: 'SDP_OFFER',
+      targetDeviceId: state.activeDeviceId,
+      payload: { sdp: state.peerConnection.localDescription.sdp }
+    });
+  }
+
+  function stopBrowserSession(reason) {
+    if (state.peerConnection) {
+      state.peerConnection.close();
+      state.peerConnection = null;
+    }
+    state.video.srcObject = null;
+    state.sessionToken = null;
+    state.sessionId = null;
+    state.pendingIceCandidates = [];
+    state.activeDeviceId = null;
+    state.pairedDevices = [];
+    el.placeholder.style.display = 'block';
+    el.placeholder.textContent = 'No active remote session.';
+    el.badge.textContent = 'DISCONNECTED';
+    el.badge.className = 'badge badge-danger';
+    renderDevices();
+    logAudit('SESSION', reason, 'critical');
+  }
+
   async function handleSdpAnswer(sdp) {
-    if (!state.peerConnection) await initWebRTC();
+    if (!state.peerConnection) throw new Error('The local WebRTC offer has not been created.');
     await state.peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }));
+    const queued = state.pendingIceCandidates.splice(0);
+    for (const candidate of queued) {
+      await state.peerConnection.addIceCandidate(candidate);
+    }
   }
 
   // Mouse to Touch Translation Engine
@@ -332,46 +519,14 @@
   // Canvas Render Loop
   function startCanvasRenderLoop() {
     function render() {
-      if (el.video.srcObject && el.video.readyState >= 2) {
+      if (el.video.srcObject && el.video.readyState >= 2 && el.video.videoWidth > 0) {
         ctx.drawImage(el.video, 0, 0, el.canvas.width, el.canvas.height);
       } else {
-        // Draw crisp modern UI frame on canvas
+        // Do not synthesize a phone screen. The empty viewer remains visibly empty
+        // until actual remote video frames arrive.
+        ctx.clearRect(0, 0, el.canvas.width, el.canvas.height);
         ctx.fillStyle = '#0E1116';
         ctx.fillRect(0, 0, el.canvas.width, el.canvas.height);
-
-        // Status Header
-        ctx.fillStyle = '#161B22';
-        ctx.fillRect(0, 0, el.canvas.width, 100);
-
-        ctx.fillStyle = '#F0F6FC';
-        ctx.font = 'bold 36px Inter, sans-serif';
-        ctx.fillText('10:42', 60, 68);
-
-        ctx.fillStyle = '#00E676';
-        ctx.fillRect(el.canvas.width - 140, 42, 60, 26);
-        ctx.fillStyle = '#000';
-        ctx.font = 'bold 20px monospace';
-        ctx.fillText('86%', el.canvas.width - 130, 62);
-
-        // Grid lines
-        ctx.strokeStyle = '#21262D';
-        ctx.lineWidth = 2;
-        for (let i = 200; i < el.canvas.height - 200; i += 200) {
-          ctx.beginPath();
-          ctx.moveTo(40, i);
-          ctx.lineTo(el.canvas.width - 40, i);
-          ctx.stroke();
-        }
-
-        // Navigation bar
-        ctx.fillStyle = '#161B22';
-        ctx.fillRect(0, el.canvas.height - 120, el.canvas.width, 120);
-
-        ctx.fillStyle = '#8B949E';
-        ctx.font = '32px sans-serif';
-        ctx.fillText('◄', el.canvas.width * 0.25, el.canvas.height - 50);
-        ctx.fillText('●', el.canvas.width * 0.50, el.canvas.height - 50);
-        ctx.fillText('■', el.canvas.width * 0.75, el.canvas.height - 50);
       }
       requestAnimationFrame(render);
     }
@@ -388,19 +543,24 @@
     document.getElementById('btnVolDown').onclick = () => sendCommand('Volume', { action: 'DOWN' });
     document.getElementById('btnVolUp').onclick = () => sendCommand('Volume', { action: 'UP' });
 
-    el.qualitySelect.onchange = () => {
-      const q = el.qualitySelect.value;
-      const stats = q === '1080p' ? '60 FPS | 4000 Kbps' : q === '720p' ? '30 FPS | 2048 Kbps' : '15 FPS | 800 Kbps';
-      el.streamStats.textContent = stats;
-      logAudit('STREAM', `Video profile switched to ${q} (${stats})`);
-    };
+    // Quality selection is disabled in the UI until a real Android sender can apply it.
 
     el.btnEmergencyKill.onclick = () => {
-      if (confirm('Sever connection and terminate all remote sessions on the phone immediately?')) {
-        sendWs({ type: 'EMERGENCY_DISCONNECT', targetDeviceId: state.activeDeviceId });
-        logAudit('SECURITY', 'EMERGENCY DISCONNECT EXECUTED. Session wiped.', 'critical');
-        el.badge.textContent = 'DISCONNECTED';
-        el.badge.className = 'badge badge-danger';
+      if (!state.sessionToken || !state.activeDeviceId) {
+        logAudit('SECURITY', 'No approved session is active. No disconnect command was sent.', 'warning');
+        return;
+      }
+      if (confirm('Sever this approved remote session immediately?')) {
+        const sent = sendWs({ type: 'EMERGENCY_DISCONNECT', targetDeviceId: state.activeDeviceId });
+        if (!sent) {
+          el.badge.textContent = 'STOP NOT SENT';
+          el.badge.className = 'badge badge-danger';
+          logAudit('SECURITY', 'Emergency disconnect could not be sent. The remote session may still be active.', 'critical');
+          return;
+        }
+        el.badge.textContent = 'DISCONNECTING';
+        el.badge.className = 'badge badge-warning';
+        logAudit('SECURITY', 'Emergency disconnect request sent; waiting for server revocation confirmation.', 'critical');
       }
     };
 
@@ -474,9 +634,9 @@
           await new Promise(r => setTimeout(r, 20));
         }
 
-        el.progressText.textContent = `Upload completed: ${file.name}`;
-        logAudit('FILES', `Uploaded file ${file.name} (${totalBytes} bytes) successfully.`, 'security');
-        setTimeout(() => { el.fileUploadProgress.style.display = 'none'; }, 2000);
+        el.progressText.textContent = `Chunks sent: ${file.name} (receiver confirmation not available)`;
+        logAudit('FILES', `Sent ${totalBytes} bytes of ${file.name} to the signaling channel. End-to-end file-write confirmation has not been implemented.`, 'warning');
+        setTimeout(() => { el.fileUploadProgress.style.display = 'none'; }, 4000);
       };
 
       reader.readAsArrayBuffer(file);
@@ -485,6 +645,13 @@
 
   // Pairing Modal
   function setupModal() {
+    const queryCode = new URL(window.location.href).searchParams.get('code');
+    if (queryCode && /^\\d{6}$/.test(queryCode.replace(/[^0-9]/g, ''))) {
+      el.inputPairCode.value = queryCode.replace(/[^0-9]/g, '');
+      el.pairModal.style.display = 'flex';
+      logAudit('PAIRING', 'Temporary code was prefilled from the receiver QR link.');
+    }
+
     el.btnPair.onclick = () => {
       el.pairModal.style.display = 'flex';
       el.inputPairCode.focus();
@@ -493,22 +660,44 @@
     el.btnCloseModal.onclick = () => { el.pairModal.style.display = 'none'; };
 
     el.btnSubmitPair.onclick = () => {
-      const code = el.inputPairCode.value.trim();
-      if (code.length >= 6) {
-        el.pairModal.style.display = 'none';
-        logAudit('PAIRING', `Submitting 6-digit pairing code: ${code}...`, 'security');
-        sendWs({
-          type: 'PAIR_REQUEST',
-          pairingCode: code,
-          targetDeviceId: state.activeDeviceId,
-          operatorFingerprint: state.operatorFingerprint,
-          operatorName: state.operatorName,
-          operatorLocation: state.operatorLocation
-        });
-        alert('Pairing challenge sent to phone in Noakhali. Device owner must tap "Authorize Session".');
+      const code = el.inputPairCode.value.trim().replace(/[^0-9]/g, '');
+      if (!/^\\d{6}$/.test(code)) {
+        logAudit('PAIRING', 'Enter a valid six-digit pairing code.', 'critical');
+        return;
       }
+      state.sessionToken = null;
+      state.sessionId = null;
+      state.activeDeviceId = null;
+      const sent = sendWs({
+        type: 'PAIR_BY_CODE',
+        code,
+        fingerprint: state.operatorFingerprint,
+        operatorName: state.operatorName,
+        requestedScopes: ['Screen Mirroring', 'Remote Interaction', 'File Transfer']
+      });
+      if (!sent) {
+        el.badge.textContent = 'SIGNALING OFFLINE';
+        el.badge.className = 'badge badge-danger';
+        logAudit('PAIRING', 'Pairing request was not sent because the WSS connection is offline.', 'critical');
+        return;
+      }
+      el.pairModal.style.display = 'none';
+      logAudit('PAIRING', 'Pairing request sent. Waiting for receiver approval.', 'security');
+      el.badge.textContent = 'REQUEST SENT';
+      el.badge.className = 'badge badge-warning';
     };
   }
+
+  window.addEventListener('pagehide', () => {
+    if (state.sessionToken && state.activeDeviceId && state.ws && state.ws.readyState === WebSocket.OPEN) {
+      state.ws.send(JSON.stringify({
+        type: 'EMERGENCY_DISCONNECT',
+        targetDeviceId: state.activeDeviceId,
+        sessionToken: state.sessionToken,
+        payload: { reason: 'Browser controller page closed' }
+      }));
+    }
+  });
 
   // Tab switching
   function setupTabs() {
@@ -531,14 +720,23 @@
 
   function renderDevices() {
     el.deviceList.innerHTML = '';
+    if (!state.pairedDevices.length) {
+      const empty = document.createElement('div');
+      empty.className = 'device-card';
+      empty.textContent = 'No approved devices in this session. Enter a temporary pairing code to connect.';
+      el.deviceList.appendChild(empty);
+      return;
+    }
     state.pairedDevices.forEach(d => {
       const card = document.createElement('div');
       card.className = 'device-card active';
-      card.innerHTML = `
-        <div class="device-card-title">${d.deviceName}</div>
-        <div class="device-card-id">${d.deviceId}</div>
-        <div class="device-card-meta">${d.location} • <span class="text-mint">${d.battery}% Batt</span></div>
-      `;
+      const title = document.createElement('div');
+      title.className = 'device-card-title';
+      title.textContent = d.deviceName;
+      const id = document.createElement('div');
+      id.className = 'device-card-id';
+      id.textContent = d.deviceId;
+      card.append(title, id);
       el.deviceList.appendChild(card);
     });
   }

@@ -1,3 +1,8 @@
+// Integration-only secret. Production must supply JWT_SECRET through its secret manager.
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'integration-test-only-secret-change-before-production-0001';
+process.env.TURN_SERVER_URL = 'turn:turn.integration.invalid:3478';
+process.env.TURN_SHARED_SECRET = 'integration-only-turn-secret-not-for-production';
+
 const http = require('http');
 const express = require('express');
 const cors = require('cors');
@@ -35,64 +40,43 @@ async function runTests() {
     assert.strictEqual(healthData.status, 'healthy');
     console.log('✓ /api/v1/health PASSED');
 
-    // 3. Test Device Registration & Listing
-    console.log('[TEST] Registering mock device in Noakhali...');
-    DeviceService.registerDevice('MAHI-TEST-NOAKHALI', 'Samsung Test Device', 'AA:BB:CC:DD:EE:FF:11:22');
+    // Public configuration may expose STUN/public endpoints, but never TURN credentials.
+    const publicConfigRes = await fetch('http://localhost:8099/api/v1/config');
+    assert.strictEqual(publicConfigRes.status, 200);
+    const publicConfig = await publicConfigRes.json();
+    assert.strictEqual(publicConfig.turnConfigured, true);
+    assert(!JSON.stringify(publicConfig).includes('credential'));
+    assert(!JSON.stringify(publicConfig).includes('integration-only-turn-secret'));
+    console.log('✓ Public runtime config does not disclose TURN credentials');
+
+    const unauthTurnRes = await fetch('http://localhost:8099/api/v1/turn-credentials');
+    assert.strictEqual(unauthTurnRes.status, 401);
+    console.log('✓ TURN credentials require an approved session token');
+
+    // 3. Global device enumeration must not disclose device IDs/fingerprints.
+    console.log('[TEST] Verifying unauthenticated device enumeration is disabled...');
     const devRes = await fetch('http://localhost:8099/api/v1/devices');
-    assert.strictEqual(devRes.status, 200);
-    const devData = await devRes.json();
-    const found = devData.devices.find(d => d.deviceId === 'MAHI-TEST-NOAKHALI');
-    assert(found, 'Device not found in listing');
-    console.log('✓ Device registration and listing PASSED');
+    assert.strictEqual(devRes.status, 410);
+    console.log('✓ Public device enumeration is disabled');
 
-    // 4. Test 6-Digit Pairing Code Lifecycle (Single-use & Expiry)
-    console.log('[TEST] Testing Pairing Code verification and single-use consumption...');
+    // 4. Ensure the legacy REST endpoint cannot mint a session before owner approval.
+    console.log('[TEST] Verifying REST code-only pairing is disabled...');
     const pairingCode = '839-201';
-    DeviceService.storePairingCode('MAHI-TEST-NOAKHALI', pairingCode, Date.now() + 300000); // 5 min expiry
-
-    // First attempt (Valid)
+    DeviceService.storePairingCode('MAHI-TEST-NOAKHALI', pairingCode, Date.now() + 300000);
     const pairRes = await fetch('http://localhost:8099/api/v1/pair/verify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        code: pairingCode,
-        operatorFingerprint: 'OPERATOR-SYLHET-99',
-        operatorName: 'Sylhet Test Operator',
-        operatorLocation: 'Sylhet, Bangladesh'
-      })
+      body: JSON.stringify({ code: pairingCode, operatorFingerprint: 'OPERATOR-SYLHET-99' })
     });
-    assert.strictEqual(pairRes.status, 200);
-    const pairData = await pairRes.json();
-    assert.strictEqual(pairData.success, true);
-    assert.strictEqual(pairData.deviceId, 'MAHI-TEST-NOAKHALI');
-    assert(pairData.sessionToken, 'Session token missing');
-    console.log('✓ Initial Pairing Verification PASSED (Token received)');
+    assert.strictEqual(pairRes.status, 410, 'REST endpoint must not issue a token before receiver approval');
+    assert(DeviceService.getPairingCode(pairingCode), 'Pairing code should remain available until owner approval');
+    console.log('✓ Pre-approval REST token issuance blocked');
 
-    // Second attempt with SAME code (Must fail - Single use enforce)
-    const replayRes = await fetch('http://localhost:8099/api/v1/pair/verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        code: pairingCode,
-        operatorFingerprint: 'OPERATOR-SYLHET-99'
-      })
-    });
-    assert.strictEqual(replayRes.status, 401, 'Replay of consumed pairing code was not rejected');
-    console.log('✓ Single-Use Code Enforcement PASSED (Replay blocked with 401)');
-
-    // 5. Test Expired Code
-    console.log('[TEST] Testing expired code rejection...');
+    // 5. Expired pairing codes are rejected without issuing a token.
+    console.log('[TEST] Testing expired code lookup...');
     const expiredCode = '111-222';
-    DeviceService.storePairingCode('MAHI-TEST-NOAKHALI', expiredCode, Date.now() - 1000); // Expired 1s ago
-    const expiredRes = await fetch('http://localhost:8099/api/v1/pair/verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        code: expiredCode,
-        operatorFingerprint: 'OPERATOR-SYLHET-99'
-      })
-    });
-    assert.strictEqual(expiredRes.status, 401);
+    DeviceService.storePairingCode('MAHI-TEST-NOAKHALI', expiredCode, Date.now() - 1000);
+    assert.strictEqual(DeviceService.getPairingCode(expiredCode), null);
     console.log('✓ Expired Pairing Code Rejection PASSED');
 
     // 6. Test Rate Limiting
@@ -108,79 +92,141 @@ async function runTests() {
     assert(blocked, 'Rate limiter failed to block excessive requests');
     console.log('✓ Rate Limiter Threshold Enforcement PASSED');
 
-    // 7. Test WebSocket Signaling: Device and Operator connection and SDP relay
-    console.log('[TEST] Testing WebSocket WebRTC signaling relay...');
+    // 7. Verify code request -> receiver approval -> signed session -> protected SDP relay.
+    console.log('[TEST] Testing approved WebSocket pairing and authorized SDP relay...');
     const wsDevice = new WebSocket('ws://localhost:8099/ws', {
       headers: {
         'x-device-id': 'MAHI-WS-DEVICE',
-        'x-device-fingerprint': 'DEV-FP-1234'
+        'x-device-fingerprint': 'DEV-FP-1234',
+        'x-device-name': 'Receiver Test Device',
+        'x-client-role': 'RECEIVER'
       }
     });
-
     const wsOperator = new WebSocket('ws://localhost:8099/ws', {
       headers: {
         'x-operator-fingerprint': 'OP-FP-5678',
-        'x-operator-name': 'Sylhet Operator',
-        'x-operator-location': 'Sylhet'
+        'x-operator-name': 'Test Browser Operator'
       }
     });
 
     await Promise.all([
-      new Promise(res => wsDevice.on('open', res)),
-      new Promise(res => wsOperator.on('open', res))
+      new Promise(res => wsDevice.once('open', res)),
+      new Promise(res => wsOperator.once('open', res))
     ]);
-    console.log('  Both Device and Operator connected to WebSocket signaling');
 
-    // Operator sends SDP Offer targeted to MAHI-WS-DEVICE
-    const sdpOfferPromise = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Timeout waiting for SDP relay')), 3000);
-      wsDevice.on('message', (raw) => {
+    const nextMessage = (ws, predicate, description) => new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Timeout waiting for ' + description)), 3000);
+      const listener = raw => {
         const msg = JSON.parse(raw.toString());
-        if (msg.type === 'SDP_OFFER') {
-          clearTimeout(timeout);
-          resolve(msg);
-        }
-      });
+        if (!predicate(msg)) return;
+        clearTimeout(timeout);
+        ws.off('message', listener);
+        resolve(msg);
+      };
+      ws.on('message', listener);
     });
 
+    const testCode = '654321';
+    DeviceService.storePairingCode('MAHI-WS-DEVICE', testCode, Date.now() + 300000);
+    const requestToReceiver = nextMessage(wsDevice, msg => msg.type === 'PAIR_REQUEST', 'receiver approval prompt');
+    const pendingToController = nextMessage(wsOperator, msg => msg.type === 'PAIR_PENDING', 'pair pending acknowledgement');
+    wsOperator.send(JSON.stringify({
+      type: 'PAIR_BY_CODE',
+      code: testCode,
+      fingerprint: 'OP-FP-5678',
+      operatorName: 'Integration Test Browser',
+      requestedScopes: ['Screen Mirroring', 'Remote Interaction']
+    }));
+    const [incomingRequest, pendingAck] = await Promise.all([requestToReceiver, pendingToController]);
+    assert(incomingRequest.requestId);
+    assert.strictEqual(incomingRequest.requestId, pendingAck.requestId);
+    assert(DeviceService.getPairingCode(testCode), 'Code must not be consumed before owner approval');
+
+    const approvalToController = nextMessage(wsOperator, msg => msg.type === 'PAIR_ACCEPT', 'controller session authorization');
+    const authorizationToReceiver = nextMessage(wsDevice, msg => msg.type === 'PAIR_SESSION_AUTHORIZED', 'receiver session authorization');
+    wsDevice.send(JSON.stringify({
+      type: 'PAIR_ACCEPT',
+      payload: {
+        requestId: incomingRequest.requestId,
+        status: 'APPROVED'
+      }
+    }));
+    const [controllerApproval, receiverAuthorization] = await Promise.all([approvalToController, authorizationToReceiver]);
+    assert.strictEqual(controllerApproval.sessionId, receiverAuthorization.sessionId);
+    assert(controllerApproval.sessionToken, 'Controller token missing');
+    assert(receiverAuthorization.sessionToken, 'Receiver token missing');
+    assert.strictEqual(DeviceService.getPairingCode(testCode), null, 'Approved code must be consumed exactly once');
+    assert(DeviceService.hasActiveSessionForDevice('MAHI-WS-DEVICE'), 'Receiver must have one active session');
+
+    const authorizedTurnRes = await fetch('http://localhost:8099/api/v1/turn-credentials', {
+      headers: { Authorization: 'Bearer ' + controllerApproval.sessionToken }
+    });
+    assert.strictEqual(authorizedTurnRes.status, 200);
+    const turnPayload = await authorizedTurnRes.json();
+    assert(turnPayload.iceServers.some(server => server.urls === process.env.TURN_SERVER_URL));
+    assert(turnPayload.iceServers.some(server => typeof server.credential === 'string' && server.credential.length > 10));
+    assert(!JSON.stringify(turnPayload).includes('integration-only-turn-secret'));
+    console.log('✓ Approved session receives expiring TURN credentials');
+
+    // With TURN disabled, the approved session should still get a STUN-only config.
+    const savedTurnUrl = process.env.TURN_SERVER_URL;
+    const savedTurnSecret = process.env.TURN_SHARED_SECRET;
+    delete process.env.TURN_SERVER_URL;
+    delete process.env.TURN_SHARED_SECRET;
+    const stunOnlyRes = await fetch('http://localhost:8099/api/v1/turn-credentials', {
+      headers: { Authorization: 'Bearer ' + controllerApproval.sessionToken }
+    });
+    assert.strictEqual(stunOnlyRes.status, 200, 'TURN absence must not block STUN fallback');
+    const stunOnlyPayload = await stunOnlyRes.json();
+    assert.strictEqual(stunOnlyPayload.turnConfigured, false);
+    assert(stunOnlyPayload.iceServers.some(server => String(server.urls).startsWith('stun:')));
+    assert.strictEqual(stunOnlyPayload.iceServers.some(server => String(server.urls).startsWith('turn:')), false);
+    process.env.TURN_SERVER_URL = savedTurnUrl;
+    process.env.TURN_SHARED_SECRET = savedTurnSecret;
+    console.log('✓ STUN-only fallback remains available when TURN is not deployed');
+
+    console.log('✓ Pairing request is pending until explicit receiver approval');
+    console.log('✓ Both participants receive separate signed tokens for one session');
+
+    const sdpOfferPromise = nextMessage(wsDevice, msg => msg.type === 'SDP_OFFER', 'authorized SDP offer relay');
     wsOperator.send(JSON.stringify({
       type: 'SDP_OFFER',
       targetDeviceId: 'MAHI-WS-DEVICE',
-      payload: { sdp: 'v=0\r\no=- 1234 2 IN IP4 0.0.0.0...' }
+      sessionToken: controllerApproval.sessionToken,
+      payload: { sdp: 'v=0\\r\\no=- 1234 2 IN IP4 0.0.0.0...' }
     }));
-
     const receivedOffer = await sdpOfferPromise;
     assert.strictEqual(receivedOffer.type, 'SDP_OFFER');
+    assert.strictEqual(receivedOffer.sessionId, controllerApproval.sessionId);
     assert(receivedOffer.payload.sdp.includes('v=0'), 'SDP payload corrupted');
-    console.log('✓ WebSocket Signaling SDP Offer Relay PASSED');
+    console.log('✓ Authorized WebSocket SDP offer relay PASSED');
 
-    // Device responds with SDP Answer
-    const sdpAnswerPromise = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Timeout waiting for SDP answer relay')), 3000);
-      wsOperator.on('message', (raw) => {
-        const msg = JSON.parse(raw.toString());
-        if (msg.type === 'SDP_ANSWER') {
-          clearTimeout(timeout);
-          resolve(msg);
-        }
-      });
-    });
-
+    const sdpAnswerPromise = nextMessage(wsOperator, msg => msg.type === 'SDP_ANSWER', 'authorized SDP answer relay');
     wsDevice.send(JSON.stringify({
       type: 'SDP_ANSWER',
-      recipient: 'operator_OP-FP-56',
-      payload: { sdp: 'v=0\r\no=- 5678 2 IN IP4 0.0.0.0...' }
+      recipient: receiverAuthorization.sender,
+      sessionToken: receiverAuthorization.sessionToken,
+      payload: { sdp: 'v=0\\r\\no=- 5678 2 IN IP4 0.0.0.0...' }
     }));
-
     const receivedAnswer = await sdpAnswerPromise;
     assert.strictEqual(receivedAnswer.type, 'SDP_ANSWER');
-    console.log('✓ WebSocket Signaling SDP Answer Relay PASSED');
+    assert.strictEqual(receivedAnswer.sessionId, controllerApproval.sessionId);
+    console.log('✓ Authorized WebSocket SDP answer relay PASSED');
 
+    // Missing/invalid session credentials must not be relayed.
+    const unauthorizedPromise = nextMessage(wsOperator, msg => msg.type === 'SESSION_ERROR', 'unauthorized command rejection');
+    wsOperator.send(JSON.stringify({
+      type: 'INPUT_EVENT',
+      targetDeviceId: 'MAHI-WS-DEVICE',
+      payload: { command: { type: 'TAP', x: 100, y: 100 } }
+    }));
+    await unauthorizedPromise;
+    console.log('✓ Unauthenticated input command rejected');
     wsDevice.close();
     wsOperator.close();
 
     console.log('====================================================');
-    console.log(' ALL 7 BACKEND & SIGNALING INTEGRATION TESTS PASSED ');
+    console.log(' BACKEND & APPROVED-SESSION INTEGRATION TESTS PASSED ');
     console.log('====================================================');
 
   } finally {
