@@ -15,7 +15,13 @@ export interface PairingCodeRecord {
 export class DeviceService {
   private static devices = new Map<string, RegisteredDevice>();
   private static pairingCodes = new Map<string, PairingCodeRecord>();
-  private static activeSessions = new Map<string, { deviceId: string; operatorFingerprint: string; startedAt: number }>();
+  private static activeSessions = new Map<string, {
+    deviceId: string;
+    controllerId: string;
+    operatorFingerprint: string;
+    receiverFingerprint: string;
+    startedAt: number;
+  }>();
 
   public static registerDevice(deviceId: string, deviceName: string, fingerprint: string): RegisteredDevice {
     const dev: RegisteredDevice = {
@@ -65,8 +71,47 @@ export class DeviceService {
     return Array.from(this.devices.values());
   }
 
-  public static startSession(sessionId: string, deviceId: string, operatorFingerprint: string): void {
-    this.activeSessions.set(sessionId, { deviceId, operatorFingerprint, startedAt: Date.now() });
+  public static startSession(
+    sessionId: string,
+    deviceId: string,
+    operatorFingerprint: string,
+    controllerId: string,
+    receiverFingerprint: string
+  ): void {
+    this.activeSessions.set(sessionId, {
+      deviceId,
+      controllerId,
+      operatorFingerprint,
+      receiverFingerprint,
+      startedAt: Date.now(),
+    });
+  }
+
+  public static getActiveSession(sessionId: string): {
+    deviceId: string;
+    controllerId: string;
+    operatorFingerprint: string;
+    receiverFingerprint: string;
+    startedAt: number;
+  } | undefined {
+    return this.activeSessions.get(sessionId);
+  }
+
+  public static isSessionParticipant(sessionId: string, entityId: string, fingerprint: string): boolean {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) return false;
+    return (
+      (entityId === session.deviceId && fingerprint === session.receiverFingerprint) ||
+      (entityId === session.controllerId && fingerprint === session.operatorFingerprint)
+    );
+  }
+
+  public static getSessionPeer(sessionId: string, entityId: string): string | null {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) return null;
+    if (entityId === session.deviceId) return session.controllerId;
+    if (entityId === session.controllerId) return session.deviceId;
+    return null;
   }
 
   public static endSession(sessionId: string): boolean {
