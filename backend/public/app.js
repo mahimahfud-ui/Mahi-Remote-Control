@@ -503,19 +503,24 @@
     document.getElementById('btnVolDown').onclick = () => sendCommand('Volume', { action: 'DOWN' });
     document.getElementById('btnVolUp').onclick = () => sendCommand('Volume', { action: 'UP' });
 
-    el.qualitySelect.onchange = () => {
-      const q = el.qualitySelect.value;
-      const stats = q === '1080p' ? '60 FPS | 4000 Kbps' : q === '720p' ? '30 FPS | 2048 Kbps' : '15 FPS | 800 Kbps';
-      el.streamStats.textContent = stats;
-      logAudit('STREAM', `Video profile switched to ${q} (${stats})`);
-    };
+    // Quality selection is disabled in the UI until a real Android sender can apply it.
 
     el.btnEmergencyKill.onclick = () => {
-      if (confirm('Sever connection and terminate all remote sessions on the phone immediately?')) {
-        sendWs({ type: 'EMERGENCY_DISCONNECT', targetDeviceId: state.activeDeviceId });
-        logAudit('SECURITY', 'EMERGENCY DISCONNECT EXECUTED. Session wiped.', 'critical');
-        el.badge.textContent = 'DISCONNECTED';
-        el.badge.className = 'badge badge-danger';
+      if (!state.sessionToken || !state.activeDeviceId) {
+        logAudit('SECURITY', 'No approved session is active. No disconnect command was sent.', 'warning');
+        return;
+      }
+      if (confirm('Sever this approved remote session immediately?')) {
+        const sent = sendWs({ type: 'EMERGENCY_DISCONNECT', targetDeviceId: state.activeDeviceId });
+        if (!sent) {
+          el.badge.textContent = 'STOP NOT SENT';
+          el.badge.className = 'badge badge-danger';
+          logAudit('SECURITY', 'Emergency disconnect could not be sent. The remote session may still be active.', 'critical');
+          return;
+        }
+        el.badge.textContent = 'DISCONNECTING';
+        el.badge.className = 'badge badge-warning';
+        logAudit('SECURITY', 'Emergency disconnect request sent; waiting for server revocation confirmation.', 'critical');
       }
     };
 
@@ -589,9 +594,9 @@
           await new Promise(r => setTimeout(r, 20));
         }
 
-        el.progressText.textContent = `Upload completed: ${file.name}`;
-        logAudit('FILES', `Uploaded file ${file.name} (${totalBytes} bytes) successfully.`, 'security');
-        setTimeout(() => { el.fileUploadProgress.style.display = 'none'; }, 2000);
+        el.progressText.textContent = `Chunks sent: ${file.name} (receiver confirmation not available)`;
+        logAudit('FILES', `Sent ${totalBytes} bytes of ${file.name} to the signaling channel. End-to-end file-write confirmation has not been implemented.`, 'warning');
+        setTimeout(() => { el.fileUploadProgress.style.display = 'none'; }, 4000);
       };
 
       reader.readAsArrayBuffer(file);
@@ -615,26 +620,44 @@
     el.btnCloseModal.onclick = () => { el.pairModal.style.display = 'none'; };
 
     el.btnSubmitPair.onclick = () => {
-      const code = el.inputPairCode.value.trim();
-      if (code.length >= 6) {
-        el.pairModal.style.display = 'none';
-        logAudit('PAIRING', `Submitting 6-digit pairing code: ${code}...`, 'security');
-        state.sessionToken = null;
-        state.sessionId = null;
-        state.activeDeviceId = null;
-        sendWs({
-          type: 'PAIR_BY_CODE',
-          code: code.replace(/[^0-9]/g, ''),
-          fingerprint: state.operatorFingerprint,
-          operatorName: state.operatorName,
-          requestedScopes: ['Screen Mirroring', 'Remote Interaction', 'File Transfer']
-        });
-        el.badge.textContent = 'REQUEST SENT';
-        el.badge.className = 'badge badge-warning';
-        logAudit('PAIRING', 'Pairing request sent. Waiting for owner approval.', 'security');
+      const code = el.inputPairCode.value.trim().replace(/[^0-9]/g, '');
+      if (!/^\\d{6}$/.test(code)) {
+        logAudit('PAIRING', 'Enter a valid six-digit pairing code.', 'critical');
+        return;
       }
+      state.sessionToken = null;
+      state.sessionId = null;
+      state.activeDeviceId = null;
+      const sent = sendWs({
+        type: 'PAIR_BY_CODE',
+        code,
+        fingerprint: state.operatorFingerprint,
+        operatorName: state.operatorName,
+        requestedScopes: ['Screen Mirroring', 'Remote Interaction', 'File Transfer']
+      });
+      if (!sent) {
+        el.badge.textContent = 'SIGNALING OFFLINE';
+        el.badge.className = 'badge badge-danger';
+        logAudit('PAIRING', 'Pairing request was not sent because the WSS connection is offline.', 'critical');
+        return;
+      }
+      el.pairModal.style.display = 'none';
+      logAudit('PAIRING', 'Pairing request sent. Waiting for receiver approval.', 'security');
+      el.badge.textContent = 'REQUEST SENT';
+      el.badge.className = 'badge badge-warning';
     };
   }
+
+  window.addEventListener('pagehide', () => {
+    if (state.sessionToken && state.activeDeviceId && state.ws && state.ws.readyState === WebSocket.OPEN) {
+      state.ws.send(JSON.stringify({
+        type: 'EMERGENCY_DISCONNECT',
+        targetDeviceId: state.activeDeviceId,
+        sessionToken: state.sessionToken,
+        payload: { reason: 'Browser controller page closed' }
+      }));
+    }
+  });
 
   // Tab switching
   function setupTabs() {
