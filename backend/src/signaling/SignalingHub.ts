@@ -312,10 +312,12 @@ export class SignalingHub {
       DIAGNOSTICS_RESULT: 'DIAGNOSTICS',
     };
     let requiredScope = requiredScopeByMessage[type];
-    if (type === 'FILE_COMMAND' && String(payload.action || '').toUpperCase() === 'DELETE') {
+    // Desktop/browser messages place action at the top level; Android wraps it in payload.
+    const commandAction = String(payload.action || msg.action || '').toUpperCase();
+    if (type === 'FILE_COMMAND' && commandAction === 'DELETE') {
       requiredScope = 'FILE_DELETE';
     }
-    if (type === 'APP_COMMAND' && String(payload.action || '').toUpperCase() === 'UNINSTALL') {
+    if (type === 'APP_COMMAND' && commandAction === 'UNINSTALL') {
       requiredScope = 'APP_UNINSTALL';
     }
     if (requiredScope && !activeSession.grantedScopes.includes(requiredScope)) {
