@@ -1,194 +1,200 @@
 const http = require('http');
 const express = require('express');
-const cors = require('cors');
 const { WebSocket, WebSocketServer } = require('ws');
 const assert = require('assert');
 
-// Import compiled backend modules
+process.env.JWT_SECRET = 'integration-test-secret-32-bytes-minimum-length';
+process.env.TURN_SECRET = 'integration-test-turn-secret-32-bytes-minimum';
+process.env.TURN_URL = 'turn:127.0.0.1:3478';
+process.env.STUN_URL = 'stun:stun.l.google.com:19302';
+
 const { apiRouter } = require('../dist/api/routes');
 const { SignalingHub } = require('../dist/signaling/SignalingHub');
 const { DeviceService } = require('../dist/device-management/DeviceService');
 const { AuthService } = require('../dist/authentication/AuthService');
 
+const PORT = 8099;
+const BASE = 'http://127.0.0.1:' + PORT;
+
+function waitForOpen(socket) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('WebSocket open timeout')), 4000);
+    socket.once('open', () => { clearTimeout(timer); resolve(); });
+    socket.once('error', error => { clearTimeout(timer); reject(error); });
+  });
+}
+
+function waitForMessage(socket, type, timeoutMs = 4000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      socket.off('message', listener);
+      reject(new Error('Timed out waiting for ' + type));
+    }, timeoutMs);
+    const listener = raw => {
+      let message;
+      try { message = JSON.parse(raw.toString()); } catch { return; }
+      if (message.type !== type) return;
+      clearTimeout(timer);
+      socket.off('message', listener);
+      resolve(message);
+    };
+    socket.on('message', listener);
+  });
+}
+
+function connectAndroid(id, role, fingerprint) {
+  return new WebSocket('ws://127.0.0.1:' + PORT + '/ws', {
+    headers: {
+      'x-device-id': id,
+      'x-device-fingerprint': fingerprint,
+      'x-device-name': id,
+      'x-client-role': role,
+    },
+  });
+}
+
 async function runTests() {
-  console.log('=== STARTING BACKEND INTEGRATION TESTS ===');
-  
-  // 1. Setup ephemeral test server
+  console.log('=== Mahi Remote Control secure pairing/signaling tests ===');
   const app = express();
-  app.use(cors());
-  app.use(express.json());
+  app.use(express.json({ limit: '1mb' }));
   app.use('/api/v1', apiRouter);
 
   const server = http.createServer(app);
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 1024 * 1024 });
   new SignalingHub(wss);
+  await new Promise(resolve => server.listen(PORT, '127.0.0.1', resolve));
 
-  await new Promise((resolve) => server.listen(8099, resolve));
-  console.log('Test Server listening on port 8099');
-
+  let receiver;
+  let controller;
   try {
-    // 2. Test /api/v1/health
-    console.log('[TEST] Checking /api/v1/health...');
-    const healthRes = await fetch('http://localhost:8099/api/v1/health');
-    assert.strictEqual(healthRes.status, 200);
-    const healthData = await healthRes.json();
-    assert.strictEqual(healthData.status, 'healthy');
-    console.log('✓ /api/v1/health PASSED');
+    const health = await fetch(BASE + '/api/v1/health');
+    assert.strictEqual(health.status, 200);
+    const config = await fetch(BASE + '/api/v1/config');
+    const configJson = await config.json();
+    assert.strictEqual(configJson.publicAccessConfigured, false);
+    console.log('✓ health and explicit public URL configuration state');
 
-    // 3. Test Device Registration & Listing
-    console.log('[TEST] Registering mock device in Noakhali...');
-    DeviceService.registerDevice('MAHI-TEST-NOAKHALI', 'Samsung Test Device', 'AA:BB:CC:DD:EE:FF:11:22');
-    const devRes = await fetch('http://localhost:8099/api/v1/devices');
-    assert.strictEqual(devRes.status, 200);
-    const devData = await devRes.json();
-    const found = devData.devices.find(d => d.deviceId === 'MAHI-TEST-NOAKHALI');
-    assert(found, 'Device not found in listing');
-    console.log('✓ Device registration and listing PASSED');
-
-    // 4. Test 6-Digit Pairing Code Lifecycle (Single-use & Expiry)
-    console.log('[TEST] Testing Pairing Code verification and single-use consumption...');
-    const pairingCode = '839-201';
-    DeviceService.storePairingCode('MAHI-TEST-NOAKHALI', pairingCode, Date.now() + 300000); // 5 min expiry
-
-    // First attempt (Valid)
-    const pairRes = await fetch('http://localhost:8099/api/v1/pair/verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        code: pairingCode,
-        operatorFingerprint: 'OPERATOR-SYLHET-99',
-        operatorName: 'Sylhet Test Operator',
-        operatorLocation: 'Sylhet, Bangladesh'
-      })
+    const legacyVerify = await fetch(BASE + '/api/v1/pair/verify', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: '123456', operatorFingerprint: 'web-test' }),
     });
-    assert.strictEqual(pairRes.status, 200);
-    const pairData = await pairRes.json();
-    assert.strictEqual(pairData.success, true);
-    assert.strictEqual(pairData.deviceId, 'MAHI-TEST-NOAKHALI');
-    assert(pairData.sessionToken, 'Session token missing');
-    console.log('✓ Initial Pairing Verification PASSED (Token received)');
+    assert.strictEqual(legacyVerify.status, 410);
+    console.log('✓ legacy pairing endpoint cannot mint a token before owner approval');
 
-    // Second attempt with SAME code (Must fail - Single use enforce)
-    const replayRes = await fetch('http://localhost:8099/api/v1/pair/verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        code: pairingCode,
-        operatorFingerprint: 'OPERATOR-SYLHET-99'
-      })
-    });
-    assert.strictEqual(replayRes.status, 401, 'Replay of consumed pairing code was not rejected');
-    console.log('✓ Single-Use Code Enforcement PASSED (Replay blocked with 401)');
+    receiver = connectAndroid('receiver-test', 'RECEIVER', 'RECEIVER-FINGERPRINT-0001');
+    controller = connectAndroid('controller-test', 'CONTROLLER', 'CONTROLLER-FINGERPRINT-0001');
+    await Promise.all([waitForOpen(receiver), waitForOpen(controller)]);
 
-    // 5. Test Expired Code
-    console.log('[TEST] Testing expired code rejection...');
-    const expiredCode = '111-222';
-    DeviceService.storePairingCode('MAHI-TEST-NOAKHALI', expiredCode, Date.now() - 1000); // Expired 1s ago
-    const expiredRes = await fetch('http://localhost:8099/api/v1/pair/verify', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        code: expiredCode,
-        operatorFingerprint: 'OPERATOR-SYLHET-99'
-      })
-    });
-    assert.strictEqual(expiredRes.status, 401);
-    console.log('✓ Expired Pairing Code Rejection PASSED');
+    const code = '482915';
+    const codeAck = waitForMessage(receiver, 'CODE_REGISTERED_ACK');
+    receiver.send(JSON.stringify({
+      type: 'REGISTER_PAIRING_CODE',
+      code,
+      expiresAt: Date.now() + 5 * 60 * 1000,
+    }));
+    await codeAck;
+    console.log('✓ receiver registers a short-lived six-digit code');
 
-    // 6. Test Rate Limiting
-    console.log('[TEST] Testing Rate Limiter threshold...');
-    const clientKey = '192.168.1.99';
-    let blocked = false;
-    for (let i = 0; i < 70; i++) {
-      if (!AuthService.checkRateLimit(clientKey, 50, 10000)) {
-        blocked = true;
-        break;
-      }
-    }
-    assert(blocked, 'Rate limiter failed to block excessive requests');
-    console.log('✓ Rate Limiter Threshold Enforcement PASSED');
+    const requestPromise = waitForMessage(receiver, 'PAIR_REQUEST');
+    const pendingPromise = waitForMessage(controller, 'PAIR_PENDING');
+    controller.send(JSON.stringify({
+      type: 'PAIR_BY_CODE',
+      code,
+      fingerprint: 'CONTROLLER-FINGERPRINT-0001',
+      controllerName: 'Integration test controller',
+      requestedScopes: ['SCREEN_VIEW', 'REMOTE_INPUT'],
+    }));
+    const [request, pending] = await Promise.all([requestPromise, pendingPromise]);
+    assert.strictEqual(request.controllerId, 'controller-test');
+    assert.strictEqual(pending.receiverId, 'receiver-test');
+    console.log('✓ shared Android pairing protocol creates a pending request without consuming the code');
 
-    // 7. Test WebSocket Signaling: Device and Operator connection and SDP relay
-    console.log('[TEST] Testing WebSocket WebRTC signaling relay...');
-    const wsDevice = new WebSocket('ws://localhost:8099/ws', {
-      headers: {
-        'x-device-id': 'MAHI-WS-DEVICE',
-        'x-device-fingerprint': 'DEV-FP-1234'
-      }
-    });
-
-    const wsOperator = new WebSocket('ws://localhost:8099/ws', {
-      headers: {
-        'x-operator-fingerprint': 'OP-FP-5678',
-        'x-operator-name': 'Sylhet Operator',
-        'x-operator-location': 'Sylhet'
-      }
-    });
-
-    await Promise.all([
-      new Promise(res => wsDevice.on('open', res)),
-      new Promise(res => wsOperator.on('open', res))
-    ]);
-    console.log('  Both Device and Operator connected to WebSocket signaling');
-
-    // Operator sends SDP Offer targeted to MAHI-WS-DEVICE
-    const sdpOfferPromise = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Timeout waiting for SDP relay')), 3000);
-      wsDevice.on('message', (raw) => {
-        const msg = JSON.parse(raw.toString());
-        if (msg.type === 'SDP_OFFER') {
-          clearTimeout(timeout);
-          resolve(msg);
-        }
-      });
-    });
-
-    wsOperator.send(JSON.stringify({
+    const blocked = waitForMessage(controller, 'SESSION_REQUIRED');
+    controller.send(JSON.stringify({
       type: 'SDP_OFFER',
-      targetDeviceId: 'MAHI-WS-DEVICE',
-      payload: { sdp: 'v=0\r\no=- 1234 2 IN IP4 0.0.0.0...' }
+      targetDeviceId: 'receiver-test',
+      payload: { type: 'offer', sdp: 'not-allowed-before-approval' },
     }));
+    await blocked;
+    console.log('✓ SDP signaling is blocked until explicit receiver approval');
 
-    const receivedOffer = await sdpOfferPromise;
-    assert.strictEqual(receivedOffer.type, 'SDP_OFFER');
-    assert(receivedOffer.payload.sdp.includes('v=0'), 'SDP payload corrupted');
-    console.log('✓ WebSocket Signaling SDP Offer Relay PASSED');
+    const pairAccepted = waitForMessage(controller, 'PAIR_ACCEPT');
+    const receiverAuthorized = waitForMessage(receiver, 'SESSION_AUTHORIZED');
+    const controllerAuthorized = waitForMessage(controller, 'SESSION_AUTHORIZED');
+    receiver.send(JSON.stringify({
+      type: 'PAIR_ACCEPT',
+      recipient: 'controller-test',
+      payload: { status: 'APPROVED' },
+    }));
+    const [, receiverAuth, controllerAuth] = await Promise.all([
+      pairAccepted, receiverAuthorized, controllerAuthorized,
+    ]);
+    assert(receiverAuth.sessionToken);
+    assert(controllerAuth.sessionToken);
+    assert.strictEqual(receiverAuth.sessionId, controllerAuth.sessionId);
+    console.log('✓ session tokens are issued only after receiver approval');
 
-    // Device responds with SDP Answer
-    const sdpAnswerPromise = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Timeout waiting for SDP answer relay')), 3000);
-      wsOperator.on('message', (raw) => {
-        const msg = JSON.parse(raw.toString());
-        if (msg.type === 'SDP_ANSWER') {
-          clearTimeout(timeout);
-          resolve(msg);
-        }
-      });
+    const authorizedInput = waitForMessage(receiver, 'INPUT_EVENT');
+    controller.send(JSON.stringify({
+      type: 'INPUT_EVENT',
+      targetDeviceId: 'receiver-test',
+      payload: { command: { type: 'TAP', x: 10, y: 20 } },
+    }));
+    const relayed = await authorizedInput;
+    assert.strictEqual(relayed.sender, 'controller-test');
+    console.log('✓ approved peer-only command relay');
+
+    const turn = await fetch(BASE + '/api/v1/turn/credentials', {
+      method: 'POST', headers: { Authorization: 'Bearer ' + controllerAuth.sessionToken },
     });
+    assert.strictEqual(turn.status, 200);
+    const turnJson = await turn.json();
+    assert(turnJson.iceServers.some(server => server.username && server.credential));
+    console.log('✓ dynamic short-lived TURN credentials are generated server-side');
 
-    wsDevice.send(JSON.stringify({
-      type: 'SDP_ANSWER',
-      recipient: 'operator_OP-FP-56',
-      payload: { sdp: 'v=0\r\no=- 5678 2 IN IP4 0.0.0.0...' }
+    const unauthorizedTurn = await fetch(BASE + '/api/v1/turn/credentials', { method: 'POST' });
+    assert.strictEqual(unauthorizedTurn.status, 401);
+    console.log('✓ TURN credentials are not public');
+
+    const revoked = waitForMessage(receiver, 'SESSION_REVOKED');
+    controller.send(JSON.stringify({
+      type: 'EMERGENCY_DISCONNECT',
+      payload: { reason: 'integration test emergency stop' },
     }));
+    await revoked;
+    const deniedAfterStop = waitForMessage(controller, 'SESSION_REQUIRED');
+    controller.send(JSON.stringify({
+      type: 'INPUT_EVENT',
+      targetDeviceId: 'receiver-test',
+      payload: { command: { type: 'TAP', x: 10, y: 20 } },
+    }));
+    await deniedAfterStop;
+    console.log('✓ emergency disconnect revokes the session and blocks further commands');
 
-    const receivedAnswer = await sdpAnswerPromise;
-    assert.strictEqual(receivedAnswer.type, 'SDP_ANSWER');
-    console.log('✓ WebSocket Signaling SDP Answer Relay PASSED');
+    const rateKey = 'integration-rate-limit-' + Date.now();
+    for (let i = 0; i < 5; i++) assert.strictEqual(AuthService.checkRateLimit(rateKey, 5, 60000), true);
+    assert.strictEqual(AuthService.checkRateLimit(rateKey, 5, 60000), false);
+    console.log('✓ pairing rate limiter enforces its configured threshold');
 
-    wsDevice.close();
-    wsOperator.close();
+    const expiredCode = '739154';
+    DeviceService.storePairingCode('receiver-test', expiredCode, Date.now() + 5);
+    await new Promise(resolve => setTimeout(resolve, 15));
+    assert.strictEqual(
+      DeviceService.beginPairing(expiredCode, 'controller-test', 'Test', 'FP-TEST'),
+      null
+    );
+    console.log('✓ expired pairing codes are rejected');
 
-    console.log('====================================================');
-    console.log(' ALL 7 BACKEND & SIGNALING INTEGRATION TESTS PASSED ');
-    console.log('====================================================');
-
+    console.log('=== ALL SECURE PAIRING/SIGNALING TESTS PASSED ===');
   } finally {
-    server.close();
+    receiver?.close();
+    controller?.close();
+    wss.close();
+    await new Promise(resolve => server.close(resolve));
   }
 }
 
-runTests().catch(err => {
-  console.error('INTEGRATION TEST FAILURE:', err);
-  process.exit(1);
+runTests().catch(error => {
+  console.error('TEST FAILURE:', error);
+  process.exitCode = 1;
 });
