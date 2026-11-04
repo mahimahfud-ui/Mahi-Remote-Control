@@ -196,6 +196,11 @@
         el.badge.className = 'badge badge-danger';
         logAudit('PAIRING', msg.reason || msg.error || 'Pairing request was rejected.', 'critical');
         break;
+      case 'SCOPE_REQUIRED':
+        el.badge.textContent = 'PERMISSION LIMITED';
+        el.badge.className = 'badge badge-warning';
+        logAudit('SECURITY', 'The receiver did not approve this operation: ' + (msg.requiredScope || 'permission'), 'critical');
+        break;
       case 'COMMAND_ACK':
         logAudit('ACK', 'Remote command acknowledged.');
         break;
