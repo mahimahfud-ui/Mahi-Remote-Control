@@ -92,7 +92,13 @@ export class SignalingHub {
         fingerprint: (req.headers['x-device-fingerprint'] || operatorFp || '') as string,
         remoteAddress: req.socket.remoteAddress || 'unknown',
       };
+      const previousClient = this.clients.get(clientId);
       this.clients.set(clientId, client);
+      // A reconnect for the same Android device replaces the previous socket.
+      // The old socket's eventual close event must not delete the new connection.
+      if (previousClient && previousClient.ws !== ws) {
+        previousClient.ws.close(1000, 'Replaced by a newer connection for this device');
+      }
 
       ws.on('message', (data: string) => {
         try {
@@ -104,6 +110,9 @@ export class SignalingHub {
       });
 
       ws.on('close', () => {
+        // Ignore close events from replaced sockets; only the current connection
+        // is allowed to clear this logical device's pending pairing requests.
+        if (this.clients.get(clientId) !== client) return;
         this.clients.delete(clientId);
         for (const [requestId, pending] of this.pendingRequests.entries()) {
           if (pending.controllerId === clientId || pending.receiverId === clientId) {
