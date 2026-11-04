@@ -177,8 +177,8 @@ async function runTests() {
     console.log('✓ pairing rate limiter enforces its configured threshold');
 
     const expiredCode = '739154';
-    DeviceService.storePairingCode('receiver-test', expiredCode, Date.now() + 5);
-    await new Promise(resolve => setTimeout(resolve, 15));
+    DeviceService.storePairingCode('receiver-test', expiredCode, Date.now() + 200);
+    await new Promise(resolve => setTimeout(resolve, 250));
     assert.strictEqual(
       DeviceService.beginPairing(expiredCode, 'controller-test', 'Test', 'FP-TEST'),
       null
