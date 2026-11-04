@@ -82,9 +82,10 @@ apiRouter.get('/health', (req: Request, res: Response) => {
   });
 });
 
-apiRouter.get('/devices', (req: Request, res: Response) => {
-  const devices = DeviceService.listDevices();
-  res.json({ devices });
+// A global device directory would expose device names and fingerprints to anyone.
+// Re-enable only with a scoped participant-authorized listing.
+apiRouter.get('/devices', (_req: Request, res: Response) => {
+  return res.status(410).json({ error: 'Public device enumeration is disabled. Use an approved session-scoped device view.' });
 });
 
 // Pairing codes are registered over an identified WebSocket connection.
