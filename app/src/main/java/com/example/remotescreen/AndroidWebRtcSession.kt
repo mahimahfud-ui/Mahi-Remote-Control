@@ -74,6 +74,17 @@ class AndroidWebRtcSession(
         if (servers.isNotEmpty()) executor.execute { iceServers = servers.toList() }
     }
 
+    fun updatePreset(value: VideoPreset) {
+        executor.execute {
+            preset = value
+            try {
+                capturer?.changeCaptureFormat(value.width, value.height, value.fps)
+            } catch (error: Exception) {
+                _status.value = "Video quality will apply on the next share: ${error.message}"
+            }
+        }
+    }
+
     fun setScreenConsent(resultCode: Int, resultData: Intent, quality: VideoPreset) {
         if (resultCode != Activity.RESULT_OK) return
         executor.execute {
@@ -310,6 +321,19 @@ class AndroidWebRtcSession(
             releaseCapture()
             pendingOffer = null; peerId = null; sessionId = null; receiver = false
             _status.value = "Session ended"
+            ScreenCaptureService.setStreamState(ScreenStreamState.Stopped)
+        }
+    }
+
+    fun endFromServer() {
+        executor.execute {
+            stopPeer()
+            releaseCapture()
+            pendingOffer = null
+            peerId = null
+            sessionId = null
+            receiver = false
+            _status.value = "Remote session ended"
             ScreenCaptureService.setStreamState(ScreenStreamState.Stopped)
         }
     }
