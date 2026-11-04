@@ -88,7 +88,7 @@
       if (!config.turnConfigured) {
         logAudit('NETWORK', 'TURN relay is not configured. Cross-network connectivity may fail behind restrictive NAT/CGNAT.', 'critical');
       } else {
-        logAudit('NETWORK', 'Short-lived TURN credentials loaded from backend.', 'security');
+        logAudit('NETWORK', 'TURN relay is configured. Short-lived credentials will be issued only after receiver approval.', 'security');
       }
     } catch (error) {
       state.runtimeConfig = null;
