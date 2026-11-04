@@ -144,6 +144,35 @@ async function runTests() {
     assert.strictEqual(relayed.sender, 'controller-test');
     console.log('✓ approved peer-only command relay');
 
+    const forwardedOffer = waitForMessage(receiver, 'SDP_OFFER');
+    controller.send(JSON.stringify({
+      type: 'SDP_OFFER',
+      targetDeviceId: 'receiver-test',
+      payload: { sdp: 'v=0\\r\\no=controller 1 1 IN IP4 0.0.0.0', sdpType: 'offer' },
+    }));
+    const offerMessage = await forwardedOffer;
+    assert.strictEqual(offerMessage.payload.sdpType, 'offer');
+    assert(offerMessage.payload.sdp.includes('v=0'));
+
+    const forwardedAnswer = waitForMessage(controller, 'SDP_ANSWER');
+    receiver.send(JSON.stringify({
+      type: 'SDP_ANSWER',
+      targetDeviceId: 'controller-test',
+      payload: { sdp: 'v=0\\r\\no=receiver 1 1 IN IP4 0.0.0.0', sdpType: 'answer' },
+    }));
+    const answerMessage = await forwardedAnswer;
+    assert.strictEqual(answerMessage.payload.sdpType, 'answer');
+
+    const forwardedIce = waitForMessage(receiver, 'ICE_CANDIDATE');
+    controller.send(JSON.stringify({
+      type: 'ICE_CANDIDATE',
+      targetDeviceId: 'receiver-test',
+      payload: { candidate: 'candidate:1 1 udp 1 192.0.2.1 5000 typ host', sdpMid: '0', sdpMLineIndex: 0 },
+    }));
+    const candidateMessage = await forwardedIce;
+    assert(candidateMessage.payload.candidate.startsWith('candidate:'));
+    console.log('✓ approved peer-only WebRTC offer, answer and ICE relay');
+
     const storedSession = DeviceService.getSession(controllerAuth.sessionId);
     assert(storedSession);
     assert.deepStrictEqual(storedSession.grantedScopes, ['SCREEN_VIEW', 'REMOTE_INPUT']);
