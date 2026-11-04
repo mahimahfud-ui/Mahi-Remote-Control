@@ -5,7 +5,7 @@ import { AuthService } from '../authentication/AuthService';
 
 export const apiRouter = Router();
 
-apiRouter.get('/config', (_req: Request, res: Response) => {
+function getPublicConfig() {
   const configuredBase = process.env.PUBLIC_BASE_URL || '';
   let publicBaseUrl: string | null = null;
   let signalingUrl: string | null = null;
@@ -22,28 +22,54 @@ apiRouter.get('/config', (_req: Request, res: Response) => {
     // A malformed or missing public URL is intentionally reported as unconfigured.
   }
 
-  const iceServers: Array<Record<string, unknown>> = [];
-  const stunUrl = process.env.STUN_SERVER_URL || 'stun:stun.l.google.com:19302';
-  iceServers.push({ urls: stunUrl });
-
-  const turnUrl = process.env.TURN_SERVER_URL;
-  const turnSecret = process.env.TURN_SHARED_SECRET;
-  const turnConfigured = Boolean(turnUrl && turnSecret);
-  if (turnUrl && turnSecret) {
-    const expiresAt = Math.floor(Date.now() / 1000) + 3600;
-    const username = `${expiresAt}:mahi-remote`;
-    const credential = crypto.createHmac('sha1', turnSecret).update(username).digest('base64');
-    iceServers.push({ urls: turnUrl, username, credential });
-  }
-
-  return res.json({
+  return {
     browserAccessConfigured: Boolean(publicBaseUrl),
     publicBaseUrl,
     browserAccessUrl,
     signalingUrl,
-    turnConfigured,
-    iceServers,
+    turnConfigured: Boolean(process.env.TURN_SERVER_URL && process.env.TURN_SHARED_SECRET),
+    iceServers: [{ urls: process.env.STUN_SERVER_URL || 'stun:stun.l.google.com:19302' }],
     sessionTtlSeconds: 1800,
+  };
+}
+
+function getTurnIceServer(): Record<string, unknown> | null {
+  const turnUrl = process.env.TURN_SERVER_URL;
+  const turnSecret = process.env.TURN_SHARED_SECRET;
+  if (!turnUrl || !turnSecret) return null;
+  const expiresAt = Math.floor(Date.now() / 1000) + 3600;
+  const username = `${expiresAt}:mahi-remote`;
+  const credential = crypto.createHmac('sha1', turnSecret).update(username).digest('base64');
+  return { urls: turnUrl, username, credential };
+}
+
+apiRouter.get('/config', (_req: Request, res: Response) => {
+  // Public endpoint: never expose TURN credentials before an approved session.
+  return res.json(getPublicConfig());
+});
+
+apiRouter.get('/turn-credentials', (req: Request, res: Response) => {
+  const bearer = req.header('Authorization') || '';
+  const token = bearer.startsWith('Bearer ') ? bearer.slice(7) : '';
+  const auth = token ? AuthService.verifySessionToken(token) : null;
+  if (
+    !auth?.sessionId ||
+    !DeviceService.isSessionParticipant(auth.sessionId, auth.entityId, auth.fingerprint)
+  ) {
+    return res.status(401).json({ error: 'An active approved session is required for TURN credentials.' });
+  }
+
+  const turnServer = getTurnIceServer();
+  if (!turnServer) {
+    return res.status(503).json({ error: 'TURN relay is not configured on this backend.' });
+  }
+
+  return res.json({
+    iceServers: [
+      { urls: process.env.STUN_SERVER_URL || 'stun:stun.l.google.com:19302' },
+      turnServer,
+    ],
+    expiresInSeconds: 3600,
   });
 });
 
