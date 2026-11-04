@@ -85,8 +85,8 @@ class PairingManager(private val context: Context) {
             operatorLocation = request.operatorLocation,
             controllerFingerprint = request.controllerFingerprint,
             startedAtMillis = System.currentTimeMillis(),
-            isScreenStreaming = true,
-            isInputEnabled = true
+            isScreenStreaming = false,
+            isInputEnabled = false
         )
         _activeSession.value = session
         _pendingRequest.value = null
