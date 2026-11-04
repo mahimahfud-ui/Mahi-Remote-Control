@@ -19,7 +19,7 @@
     dragStart: null,
     lastClickTime: 0,
     clickCount: 0,
-    currentPath: '/Documents'
+    currentPath: '/storage/emulated/0/Documents'
   };
 
   // DOM Elements
@@ -107,6 +107,7 @@
       };
 
       state.ws.onclose = () => {
+        rejectPendingCommandAck('Signaling connection closed during file transfer.');
         if (state.peerConnection) { state.peerConnection.close(); state.peerConnection = null; }
         state.isVideoLive = false;
         el.placeholder.style.display = 'flex';
@@ -136,6 +137,30 @@
   function sendPing() {
     lastPingTimestamp = Date.now();
     sendWs({ type: 'PING', timestamp: lastPingTimestamp });
+  }
+
+  let pendingCommandAck = null;
+
+  function rejectPendingCommandAck(reason) {
+    if (!pendingCommandAck) return;
+    const pending = pendingCommandAck;
+    pendingCommandAck = null;
+    clearTimeout(pending.timer);
+    pending.reject(new Error(reason));
+  }
+
+  function waitForCommandAck(command, timeoutMs = 15000) {
+    if (pendingCommandAck) {
+      return Promise.reject(new Error('Another remote command is still awaiting acknowledgement.'));
+    }
+    return new Promise((resolve, reject) => {
+      const pending = { command, resolve, reject, timer: null };
+      pending.timer = setTimeout(() => {
+        if (pendingCommandAck === pending) pendingCommandAck = null;
+        reject(new Error('Remote device did not acknowledge ' + command + ' within ' + timeoutMs + 'ms.'));
+      }, timeoutMs);
+      pendingCommandAck = pending;
+    });
   }
 
   // Handle incoming messages
@@ -180,6 +205,7 @@
       case 'AUTHENTICATION_FAILED':
       case 'SESSION_REVOKED':
       case 'DISCONNECTED':
+        rejectPendingCommandAck('Remote session ended during file transfer.');
         state.sessionActive = false;
         state.isVideoLive = false;
         state.sessionToken = null;
@@ -197,13 +223,23 @@
         logAudit('PAIRING', msg.reason || msg.error || 'Pairing request was rejected.', 'critical');
         break;
       case 'SCOPE_REQUIRED':
+        rejectPendingCommandAck('Receiver did not approve the ' + (msg.requiredScope || 'requested') + ' permission.');
         el.badge.textContent = 'PERMISSION LIMITED';
         el.badge.className = 'badge badge-warning';
         logAudit('SECURITY', 'The receiver did not approve this operation: ' + (msg.requiredScope || 'permission'), 'critical');
         break;
-      case 'COMMAND_ACK':
-        logAudit('ACK', 'Remote command acknowledged.');
+      case 'COMMAND_ACK': {
+        const command = String(payload.command || '').toUpperCase();
+        if (pendingCommandAck && pendingCommandAck.command === command) {
+          const pending = pendingCommandAck;
+          pendingCommandAck = null;
+          clearTimeout(pending.timer);
+          if (payload.success === true) pending.resolve(payload);
+          else pending.reject(new Error('Remote device rejected ' + command + '.'));
+        }
+        logAudit('ACK', command + ': ' + (payload.success === false ? 'rejected' : 'confirmed'), payload.success === false ? 'critical' : 'security');
         break;
+      }
       case 'APP_LIST_RESPONSE':
         renderAppList(Array.isArray(payload.apps) ? payload.apps : []);
         break;
@@ -537,51 +573,102 @@
 
   // File Upload Handling
   function setupFileUpload() {
-    el.btnTriggerUpload.onclick = () => el.fileUploadInput.click();
+    el.btnTriggerUpload.onclick = () => {
+      if (!state.sessionActive || !state.activeDeviceId) {
+        logAudit('FILES', 'Pair and approve a receiver before uploading files.', 'critical');
+        return;
+      }
+      el.fileUploadInput.click();
+    };
 
-    el.fileUploadInput.onchange = (e) => {
-      const file = e.target.files[0];
+    el.fileUploadInput.onchange = async (event) => {
+      const file = event.target.files && event.target.files[0];
       if (!file) return;
 
-      const reader = new FileReader();
+      const fileName = String(file.name || '').trim();
+      if (!fileName || fileName.length > 128 || fileName === '.' || fileName === '..' ||
+          /[\\/\\\\\\u0000]/.test(fileName)) {
+        logAudit('FILES', 'The selected file name is not safe for remote storage.', 'critical');
+        event.target.value = '';
+        return;
+      }
+      if (!state.sessionActive || !state.activeDeviceId) {
+        logAudit('FILES', 'No approved receiver session is active.', 'critical');
+        event.target.value = '';
+        return;
+      }
+
+      const remotePath = state.currentPath.replace(/\\/$/, '') + '/' + fileName;
+      const chunkSize = 32768;
+      let offset = 0;
+      el.btnTriggerUpload.disabled = true;
+      el.fileUploadInput.disabled = true;
       el.fileUploadProgress.style.display = 'block';
-      el.progressText.textContent = `Uploading ${file.name} (0%)...`;
       el.progressBarFill.style.width = '0%';
+      el.progressText.textContent = 'Uploading ' + fileName + ' (0%)...';
 
-      reader.onload = async (evt) => {
-        const arrayBuffer = evt.target.result;
-        const totalBytes = arrayBuffer.byteLength;
-        const chunkSize = 32768; // 32KB
-        let offset = 0;
-
-        while (offset < totalBytes) {
-          const slice = arrayBuffer.slice(offset, offset + chunkSize);
-          const base64 = btoa(String.fromCharCode.apply(null, new Uint8Array(slice)));
-
-          sendWs({
-            type: 'FILE_COMMAND',
-            action: 'WRITE_CHUNK',
-            path: `${state.currentPath}/${file.name}`,
-            data: base64,
-            append: offset > 0,
-            targetDeviceId: state.activeDeviceId
-          });
-
-          offset += chunkSize;
-          const percent = Math.min(100, Math.round((offset / totalBytes) * 100));
-          el.progressBarFill.style.width = `${percent}%`;
-          el.progressText.textContent = `Uploading ${file.name} (${percent}%)...`;
-
-          // Small throttle to avoid socket congestion
-          await new Promise(r => setTimeout(r, 20));
+      const arrayBufferToBase64 = (buffer) => {
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.length; i += 0x8000) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
         }
-
-        el.progressText.textContent = `Upload completed: ${file.name}`;
-        logAudit('FILES', `Uploaded file ${file.name} (${totalBytes} bytes) successfully.`, 'security');
-        setTimeout(() => { el.fileUploadProgress.style.display = 'none'; }, 2000);
+        return btoa(binary);
       };
 
-      reader.readAsArrayBuffer(file);
+      const sendAndConfirm = async (command, message) => {
+        const acknowledgement = waitForCommandAck(command);
+        if (!sendWs(message)) {
+          rejectPendingCommandAck('Signaling socket is not open.');
+          throw new Error('Signaling socket is not open.');
+        }
+        await acknowledgement;
+      };
+
+      try {
+        if (file.size === 0) {
+          await sendAndConfirm('CREATE_EMPTY_FILE', {
+            type: 'FILE_COMMAND',
+            action: 'CREATE_EMPTY_FILE',
+            path: remotePath,
+            targetDeviceId: state.activeDeviceId
+          });
+        } else {
+          while (offset < file.size) {
+            if (!state.sessionActive || !state.activeDeviceId) {
+              throw new Error('Remote session was disconnected.');
+            }
+            const end = Math.min(offset + chunkSize, file.size);
+            const chunk = await file.slice(offset, end).arrayBuffer();
+            const base64 = arrayBufferToBase64(chunk);
+            await sendAndConfirm('WRITE_CHUNK', {
+              type: 'FILE_COMMAND',
+              action: 'WRITE_CHUNK',
+              path: remotePath,
+              data: base64,
+              append: offset > 0,
+              targetDeviceId: state.activeDeviceId
+            });
+            offset = end;
+            const percent = Math.min(100, Math.round((offset / file.size) * 100));
+            el.progressBarFill.style.width = percent + '%';
+            el.progressText.textContent = 'Uploading ' + fileName + ' (' + percent + '% confirmed)...';
+          }
+        }
+
+        el.progressBarFill.style.width = '100%';
+        el.progressText.textContent = 'Upload verified: ' + fileName;
+        logAudit('FILES', 'Receiver confirmed upload of ' + fileName + ' (' + file.size + ' bytes).', 'security');
+        sendWs({ type: 'FILE_COMMAND', action: 'LIST', path: state.currentPath, targetDeviceId: state.activeDeviceId });
+      } catch (error) {
+        el.progressText.textContent = 'Upload failed: ' + error.message;
+        logAudit('FILES', 'Upload failed for ' + fileName + ': ' + error.message, 'critical');
+      } finally {
+        el.btnTriggerUpload.disabled = false;
+        el.fileUploadInput.disabled = false;
+        event.target.value = '';
+        setTimeout(() => { el.fileUploadProgress.style.display = 'none'; }, 5000);
+      }
     };
   }
 
