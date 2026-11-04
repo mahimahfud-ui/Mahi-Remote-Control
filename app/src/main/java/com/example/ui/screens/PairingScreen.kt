@@ -78,6 +78,7 @@ fun PairingScreen(
     val context = LocalContext.current
     val currentCode by viewModel.pairingManager.currentPairingCode.collectAsState()
     val activeSession by viewModel.pairingManager.activeSession.collectAsState()
+    val currentActiveSession = activeSession
     val approvalInProgress by viewModel.pairingManager.approvalInProgress.collectAsState()
     val streamState by viewModel.screenStreamState.collectAsState()
     val trustedControllers by viewModel.pairingManager.trustedControllers.collectAsState()
@@ -97,7 +98,7 @@ fun PairingScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        if (activeSession == null) {
+        if (currentActiveSession == null) {
             // Pairing Code Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -222,7 +223,7 @@ fun PairingScreen(
                 ) {
                     Text("CONNECTION APPROVED", color = MintAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     Text(
-                        text = "Approved controller: ${activeSession.operatorName}",
+                        text = "Approved controller: ${currentActiveSession.operatorName}",
                         color = TextPrimary,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.SemiBold
