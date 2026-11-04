@@ -269,7 +269,12 @@ fun MainAppScaffold(
     if (pendingRequest != null) {
         OperatorApprovalDialog(
             request = pendingRequest!!,
-            onApprove = { viewModel.approveIncomingRequest(pendingRequest!!) },
+            onApprove = {
+                val approvedRequest = pendingRequest!!
+                viewModel.approveIncomingRequest(approvedRequest)
+                // Owner approval immediately hands off to Android's system screen-capture consent prompt.
+                onRequestScreenShare()
+            },
             onReject = { viewModel.rejectIncomingRequest(pendingRequest!!) }
         )
     }
