@@ -167,7 +167,7 @@
         break;
       }
       case 'COMMAND_ACK': {
-        logAudit('ACK', `Command #${msg.sequence} confirmed by Noakhali phone (${msg.rtt}ms RTT)`);
+        logAudit('ACK', `Command #${msg.sequence} acknowledged by the remote device.`);
         break;
       }
       case 'APP_LIST_RESPONSE': {
