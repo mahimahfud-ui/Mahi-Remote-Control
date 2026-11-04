@@ -159,6 +159,7 @@ fun MainAppScaffold(
     val activeControllerSession by viewModel.activeControllerSession.collectAsState()
     val selectedTab by viewModel.selectedTab.collectAsState()
     val pendingRequest by viewModel.pairingManager.pendingRequest.collectAsState()
+    val approvalInProgress by viewModel.pairingManager.approvalInProgress.collectAsState()
     val activeSession by viewModel.pairingManager.activeSession.collectAsState()
     val showDisconnectDialog by viewModel.showDisconnectDialog.collectAsState()
     val streamState by viewModel.screenStreamState.collectAsState()
@@ -404,7 +405,8 @@ fun MainAppScaffold(
         OperatorApprovalDialog(
             request = pendingRequest!!,
             onApprove = { viewModel.approveIncomingRequest(pendingRequest!!) },
-            onReject = { viewModel.rejectIncomingRequest(pendingRequest!!) }
+            onReject = { viewModel.rejectIncomingRequest(pendingRequest!!) },
+            isSubmitting = approvalInProgress
         )
     }
 
