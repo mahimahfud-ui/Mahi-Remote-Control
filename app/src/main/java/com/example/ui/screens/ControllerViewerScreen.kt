@@ -243,9 +243,13 @@ private fun RemoteScreenViewport(
     val remoteVideoTrack by viewModel.remoteVideoTrack.collectAsState()
     val remoteWebRtcStatus by viewModel.remoteWebRtcStatus.collectAsState()
     val hasRemoteVideoFrame by viewModel.hasRemoteVideoFrame.collectAsState()
+    val remoteVideoResolution by viewModel.remoteVideoResolution.collectAsState()
 
     LaunchedEffect(remoteVideoTrack) {
         viewModel.setRemoteVideoFrameRendered(false)
+        if (remoteVideoTrack == null) {
+            viewModel.setRemoteVideoResolution(0, 0, 0)
+        }
     }
 
     Column(
@@ -262,10 +266,18 @@ private fun RemoteScreenViewport(
                 .fillMaxWidth(),
             contentAlignment = Alignment.Center
         ) {
+            val frameWidth = remoteVideoResolution?.first ?: 9
+            val frameHeight = remoteVideoResolution?.second ?: 16
+            val frameAspect = frameWidth.toFloat() / frameHeight.coerceAtLeast(1).toFloat()
+            val availableAspect = maxWidth.value / maxHeight.value.coerceAtLeast(1f)
+            val frameSizeModifier = if (frameAspect > availableAspect) {
+                Modifier.fillMaxWidth().aspectRatio(frameAspect)
+            } else {
+                Modifier.fillMaxHeight().aspectRatio(frameAspect)
+            }
+
             Box(
-                modifier = Modifier
-                    .aspectRatio(9f / 16f)
-                    .fillMaxHeight()
+                modifier = frameSizeModifier
                     .clip(RoundedCornerShape(16.dp))
                     .background(Color.Black)
                     .border(2.dp, CyanAccent.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
@@ -514,9 +526,12 @@ private fun RemoteVideoSurface(viewModel: MahiViewModel, track: VideoTrack?) {
                     override fun onFirstFrameRendered() {
                         viewModel.setRemoteVideoFrameRendered(true)
                     }
-                    override fun onFrameResolutionChanged(videoWidth: Int, videoHeight: Int, rotation: Int) {}
+                    override fun onFrameResolutionChanged(videoWidth: Int, videoHeight: Int, rotation: Int) {
+                        viewModel.setRemoteVideoResolution(videoWidth, videoHeight, rotation)
+                    }
                 })
                 setEnableHardwareScaler(true)
+                setZOrderMediaOverlay(true)
                 setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
                 setMirror(false)
                 binding.renderer = this
