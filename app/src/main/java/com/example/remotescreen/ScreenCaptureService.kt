@@ -97,63 +97,19 @@ class ScreenCaptureService : Service() {
     }
 
     private fun startCapture(resultCode: Int, resultData: Intent, preset: VideoPreset) {
-        val notification = buildForegroundNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
-
-        try {
-            val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
-
-            mediaProjection?.registerCallback(object : MediaProjection.Callback() {
-                override fun onStop() {
-                    AuditLogger.log("SCREEN", "MEDIA_PROJECTION_STOPPED", "System or user revoked screen projection", AuditSeverity.WARNING)
-                    stopCapture()
-                    stopSelf()
-                }
-            }, null)
-
-            AuditLogger.log("SCREEN", "STREAM_STARTED", "WebRTC MediaProjection active at ${preset.width}x${preset.height} @ ${preset.fps}fps", AuditSeverity.SECURITY)
-
-            startMetricsSimulation(preset)
-        } catch (e: Exception) {
-            _streamState.value = ScreenStreamState.Error(e.message ?: "Failed to start MediaProjection")
-            AuditLogger.log("SCREEN", "ERROR", "Failed to start MediaProjection: ${e.message}", AuditSeverity.CRITICAL)
-        }
-    }
-
-    private fun startMetricsSimulation(preset: VideoPreset) {
-        var frameCounter = 0L
-        var bytesCounter = 0L
-        val bytesPerFrame = (preset.bitrateKbps * 1024L / 8L) / preset.fps
-
-        metricsJob?.cancel()
-        metricsJob = serviceScope.launch {
-            while (isActive) {
-                frameCounter += preset.fps
-                bytesCounter += bytesPerFrame * preset.fps
-
-                val currentMetrics = StreamMetrics(
-                    currentFps = preset.fps,
-                    bitrateKbps = preset.bitrateKbps,
-                    resolution = "${preset.width}x${preset.height}",
-                    framesEncoded = frameCounter,
-                    bytesTransferred = bytesCounter,
-                    roundTripTimeMs = 28 + (frameCounter % 15).toInt(),
-                    packetLossPercent = 0.01f
-                )
-
-                _streamState.value = ScreenStreamState.Active(currentMetrics, preset)
-                delay(1000L)
-            }
-        }
+        // MediaProjection consent alone is not a video stream. This repository
+        // currently has no Android WebRTC peer connection, encoder, or RTP sender.
+        // Stop here rather than reporting fabricated FPS/bitrate or claiming LIVE.
+        _streamState.value = ScreenStreamState.Error(
+            "Screen permission was granted, but live WebRTC video transport is not implemented in this build. No screen is being shared."
+        )
+        AuditLogger.log(
+            "SCREEN",
+            "STREAM_BLOCKED",
+            "MediaProjection consent received; no WebRTC sender exists, so capture was not started.",
+            AuditSeverity.WARNING
+        )
+        stopSelf()
     }
 
     private fun stopCapture() {
@@ -165,10 +121,12 @@ class ScreenCaptureService : Service() {
             mediaProjection?.stop()
             mediaProjection = null
         } catch (e: Exception) {
-            // Ignore clean teardown exceptions
+            // Ignore clean teardown exceptions.
         }
-        _streamState.value = ScreenStreamState.Stopped
-        AuditLogger.log("SCREEN", "STREAM_STOPPED", "Screen streaming terminated cleanly", AuditSeverity.INFO)
+        if (_streamState.value !is ScreenStreamState.Error) {
+            _streamState.value = ScreenStreamState.Stopped
+        }
+        AuditLogger.log("SCREEN", "STREAM_STOPPED", "Screen capture service stopped", AuditSeverity.INFO)
     }
 
     private fun buildForegroundNotification(): Notification {
