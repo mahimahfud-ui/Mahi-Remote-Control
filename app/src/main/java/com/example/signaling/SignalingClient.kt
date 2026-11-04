@@ -53,7 +53,7 @@ class SignalingClient(
     private val _connectionStatus = MutableStateFlow(ConnectionStatus.DISCONNECTED)
     val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus.asStateFlow()
 
-    private val _serverUrl = MutableStateFlow("wss://signaling.mahi-remote.cloud/ws")
+    private val _serverUrl = MutableStateFlow("")
     val serverUrl: StateFlow<String> = _serverUrl.asStateFlow()
 
     fun updateServerUrl(newUrl: String) {
@@ -71,6 +71,15 @@ class SignalingClient(
     }
 
     fun connect() {
+        if (_serverUrl.value.isBlank()) {
+            _connectionStatus.value = ConnectionStatus.ERROR
+            AuditLogger.log(
+                "SIGNALING", "SERVER_NOT_CONFIGURED",
+                "Set MAHI_PUBLIC_BASE_URL at Android build time to enable public remote access.",
+                AuditSeverity.WARNING
+            )
+            return
+        }
         if (_connectionStatus.value == ConnectionStatus.CONNECTING ||
             _connectionStatus.value == ConnectionStatus.CONNECTED ||
             _connectionStatus.value == ConnectionStatus.AUTHENTICATED) return
@@ -130,7 +139,7 @@ class SignalingClient(
                                 }
                             }
                         }
-                        "SESSION_REVOKED", "AUTHENTICATION_FAILED" -> {
+                        "SESSION_REVOKED", "AUTHENTICATION_FAILED", "DISCONNECTED" -> {
                             sessionToken = null
                         }
                     }
