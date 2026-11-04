@@ -284,16 +284,15 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         _remoteFileList.value = list
                     }
                     "DIAGNOSTICS_RESULT" -> {
-                        val root = JSONObject(msg.payload)
-                        val payloadObj = if (root.has("payload") && root.get("payload") is JSONObject) root.getJSONObject("payload") else root
-                        val battery = payloadObj.optInt("battery", 85)
-                        val temp = payloadObj.optDouble("temp", 33.5).toFloat()
-                        val storage = payloadObj.optString("storage", "38.2 GB")
+                        val payloadObj = messagePayload(msg)
+                        val battery = payloadObj.optInt("battery", 0)
+                        val temp = payloadObj.optDouble("temp", 0.0).toFloat()
+                        val storage = payloadObj.optString("storage", "unavailable")
                         _remoteTelemetry.value = RemoteTelemetry(
                             batteryPercent = battery,
                             batteryTempC = temp,
                             storageFree = storage,
-                            roundTripTimeMs = 30
+                            roundTripTimeMs = 0
                         )
                     }
                     "INPUT_EVENT" -> {
@@ -328,8 +327,13 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun messagePayload(msg: SignalingMessage): JSONObject {
+        val envelope = JSONObject(msg.payload)
+        return envelope.optJSONObject("payload") ?: envelope
+    }
+
     private fun handleInputEvent(msg: SignalingMessage) {
-        val root = JSONObject(msg.payload)
+        val root = messagePayload(msg)
         val cmd = if (root.has("command")) root.getJSONObject("command") else root
         val type = cmd.optString("type", "")
 
@@ -390,7 +394,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun handleAppCommand(msg: SignalingMessage) {
-        val root = JSONObject(msg.payload)
+        val root = messagePayload(msg)
         val action = root.optString("action", "LIST")
         val pkg = root.optString("packageName", "")
 
@@ -415,7 +419,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun handleFileCommand(msg: SignalingMessage) {
-        val root = JSONObject(msg.payload)
+        val root = messagePayload(msg)
         val action = root.optString("action", "LIST")
         val path = root.optString("path", getApplication<Application>().filesDir.absolutePath)
 
