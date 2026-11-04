@@ -190,6 +190,25 @@ class FileManager(private val context: Context) {
         }
     }
 
+    fun createEmptyFile(path: String): Boolean {
+        val roots = getPermittedRootFolders().map { it.absolutePath }
+        if (AllowlistValidator.validateFilePath(path, roots) !is AllowlistValidator.ValidationResult.Valid) {
+            return false
+        }
+        return try {
+            val file = File(path)
+            val parent = file.parentFile ?: return false
+            if (file.exists() || !parent.isDirectory || !parent.canWrite()) return false
+            val created = file.createNewFile()
+            if (created) {
+                AuditLogger.log("FILE", "EMPTY_FILE_CREATED", "Created empty file: ${file.name}", AuditSeverity.INFO)
+            }
+            created
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     fun writeFileChunk(path: String, data: ByteArray, append: Boolean): Boolean {
         if (data.isEmpty() || data.size > MAX_TRANSFER_CHUNK_BYTES) return false
         val roots = getPermittedRootFolders().map { it.absolutePath }
