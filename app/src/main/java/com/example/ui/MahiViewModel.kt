@@ -32,6 +32,7 @@ import com.example.signaling.SignalingMessage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
@@ -138,12 +139,19 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         }
         signalingClient.connect()
 
-        // Register initial pairing code with backend signaling server
-        pairingManager.currentPairingCode.value?.let { pCode ->
-            signalingClient.send(
-                "REGISTER_PAIRING_CODE",
-                """{"code":"${pCode.code}","expiresAt":${pCode.expiresAtMillis}}"""
-            )
+        // Register the current receiver code after every successful signaling connection.
+        // This also covers reconnects and code rotation; sending before WebSocket onOpen loses the packet.
+        viewModelScope.launch {
+            combine(signalingClient.connectionStatus, pairingManager.currentPairingCode) { status, code ->
+                if (status == ConnectionStatus.AUTHENTICATED) code else null
+            }.collect { code ->
+                code?.let { activeCode ->
+                    signalingClient.send(
+                        "REGISTER_PAIRING_CODE",
+                        """{"code":"${activeCode.code}","expiresAt":${activeCode.expiresAtMillis}}"""
+                    )
+                }
+            }
         }
 
         refreshFiles()
