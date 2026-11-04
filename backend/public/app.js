@@ -587,7 +587,8 @@
 
       const fileName = String(file.name || '').trim();
       if (!fileName || fileName.length > 128 || fileName === '.' || fileName === '..' ||
-          /[\\/\\\\\\u0000]/.test(fileName)) {
+          fileName.includes('/') || fileName.includes(String.fromCharCode(92)) ||
+          fileName.includes(String.fromCharCode(0))) {
         logAudit('FILES', 'The selected file name is not safe for remote storage.', 'critical');
         event.target.value = '';
         return;
@@ -598,7 +599,8 @@
         return;
       }
 
-      const remotePath = state.currentPath.replace(/\\/$/, '') + '/' + fileName;
+      const basePath = state.currentPath.endsWith('/') ? state.currentPath.slice(0, -1) : state.currentPath;
+      const remotePath = basePath + '/' + fileName;
       const chunkSize = 32768;
       let offset = 0;
       el.btnTriggerUpload.disabled = true;
