@@ -14,6 +14,13 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -36,7 +43,11 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -50,6 +61,9 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -157,11 +171,23 @@ fun MainAppScaffold(
     val activeSession by viewModel.pairingManager.activeSession.collectAsState()
     val showDisconnectDialog by viewModel.showDisconnectDialog.collectAsState()
     val streamState by viewModel.screenStreamState.collectAsState()
+    val signalingStatus by viewModel.signalingClient.connectionStatus.collectAsState()
+    val serverUrl by viewModel.signalingClient.serverUrl.collectAsState()
 
-    // If Controller has an active session, display the full-screen remote viewer
-    if (appRole == com.example.controller.AppRole.CONTROLLER && activeControllerSession != null) {
+    var showHome by remember { mutableStateOf(true) }
+    var showMore by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+
+    if (!showHome && appRole == com.example.controller.AppRole.CONTROLLER && activeControllerSession != null) {
         com.example.ui.screens.ControllerViewerScreen(viewModel = viewModel)
         return
+    }
+
+    val statusColor = when {
+        activeSession != null || activeControllerSession != null -> MintAccent
+        streamState is ScreenStreamState.Active -> CyanAccent
+        signalingStatus == com.example.signaling.ConnectionStatus.AUTHENTICATED -> CyanAccent
+        else -> WarningAmber
     }
 
     Scaffold(
@@ -169,117 +195,78 @@ fun MainAppScaffold(
         containerColor = DarkCharcoalBg,
         topBar = {
             CenterAlignedTopAppBar(
+                navigationIcon = {
+                    if (!showHome) {
+                        TextButton(
+                            onClick = {
+                                showHome = true
+                                showMore = false
+                                viewModel.setAppRole(com.example.controller.AppRole.RECEIVER)
+                            }
+                        ) { Text("Back", color = TextSecondary) }
+                    }
+                },
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Box(
                             modifier = Modifier
                                 .size(8.dp)
                                 .clip(CircleShape)
-                                .background(
-                                    when {
-                                        activeSession != null -> MintAccent
-                                        activeControllerSession != null -> MintAccent
-                                        streamState is ScreenStreamState.Active -> CyanAccent
-                                        else -> WarningAmber
-                                    }
-                                )
+                                .background(statusColor)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (appRole == com.example.controller.AppRole.CONTROLLER) "MAHI CONTROLLER" else "MAHI RECEIVER",
+                            text = "Mahi Remote",
                             color = TextPrimary,
-                            fontSize = 15.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 1.5.sp
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.SemiBold
                         )
                     }
                 },
                 actions = {
-                    // Quick Role Switcher Button
-                    IconButton(
-                        onClick = {
-                            val newRole = if (appRole == com.example.controller.AppRole.RECEIVER) {
-                                com.example.controller.AppRole.CONTROLLER
-                            } else {
-                                com.example.controller.AppRole.RECEIVER
-                            }
-                            viewModel.setAppRole(newRole)
-                        },
-                        modifier = Modifier.testTag("appbar_role_switch_btn")
-                    ) {
-                        Icon(
-                            imageVector = if (appRole == com.example.controller.AppRole.RECEIVER) Icons.Default.PhoneAndroid else Icons.Default.Security,
-                            contentDescription = "Switch Role",
-                            tint = CyanAccent
-                        )
+                    IconButton(onClick = { showSettings = true }) {
+                        Icon(Icons.Default.Security, contentDescription = "Connection settings", tint = TextSecondary)
                     }
-
-                    if (appRole == com.example.controller.AppRole.RECEIVER) {
+                    if (!showHome && appRole == com.example.controller.AppRole.RECEIVER) {
+                        Box {
+                            IconButton(onClick = { showMore = true }) {
+                                Icon(Icons.Default.Dashboard, contentDescription = "More tools", tint = TextSecondary)
+                            }
+                            DropdownMenu(expanded = showMore, onDismissRequest = { showMore = false }) {
+                                val menuItems = listOf(
+                                    MainTab.DASHBOARD,
+                                    MainTab.PAIRING,
+                                    MainTab.SERVICES,
+                                    MainTab.DIAGNOSTICS,
+                                    MainTab.FILES,
+                                    MainTab.APPS,
+                                    MainTab.AUDIT
+                                )
+                                menuItems.forEach { tab ->
+                                    DropdownMenuItem(
+                                        text = { Text(tab.title) },
+                                        onClick = {
+                                            showMore = false
+                                            viewModel.selectTab(tab)
+                                        }
+                                    )
+                                }
+                            }
+                        }
                         IconButton(
                             onClick = { viewModel.setShowDisconnectDialog(true) },
                             modifier = Modifier.testTag("appbar_emergency_btn")
                         ) {
                             Icon(
                                 Icons.Default.Warning,
-                                contentDescription = "Emergency Disconnect",
+                                contentDescription = "Emergency Stop",
                                 tint = if (activeSession != null) ErrorCoral else TextMuted
                             )
                         }
                     }
                 },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                    containerColor = DarkSurface
-                )
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = DarkSurface)
             )
-        },
-        bottomBar = {
-            if (appRole == com.example.controller.AppRole.RECEIVER) {
-                NavigationBar(
-                    containerColor = DarkSurface,
-                    tonalElevation = 8.dp
-                ) {
-                    val tabs = listOf(
-                        MainTab.DASHBOARD to Icons.Default.Dashboard,
-                        MainTab.PAIRING to Icons.Default.QrCode,
-                        MainTab.SERVICES to Icons.Default.CastConnected,
-                        MainTab.DIAGNOSTICS to Icons.Default.Speed,
-                        MainTab.FILES to Icons.Default.Folder,
-                        MainTab.APPS to Icons.Default.Apps,
-                        MainTab.AUDIT to Icons.Default.Security
-                    )
-
-                    tabs.forEach { (tab, icon) ->
-                        val isSelected = selectedTab == tab
-                        NavigationBarItem(
-                            selected = isSelected,
-                            onClick = { viewModel.selectTab(tab) },
-                            icon = {
-                                Icon(
-                                    icon,
-                                    contentDescription = tab.title,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            },
-                            label = {
-                                Text(
-                                    text = tab.title,
-                                    fontSize = 9.sp,
-                                    maxLines = 1,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                )
-                            },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = CyanAccent,
-                                selectedTextColor = CyanAccent,
-                                unselectedIconColor = TextMuted,
-                                unselectedTextColor = TextMuted,
-                                indicatorColor = DarkSurfaceElevated
-                            ),
-                            modifier = Modifier.testTag("tab_${tab.name.lowercase()}")
-                        )
-                    }
-                }
-            }
         }
     ) { innerPadding ->
         Box(
@@ -287,7 +274,91 @@ fun MainAppScaffold(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            if (appRole == com.example.controller.AppRole.CONTROLLER) {
+            if (showHome) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 22.dp, vertical = 28.dp),
+                    verticalArrangement = Arrangement.spacedBy(18.dp)
+                ) {
+                    Text(
+                        "Control your devices remotely",
+                        color = TextPrimary,
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        "Connect over the internet. Both devices do not need to use the same Wi-Fi network.",
+                        color = TextSecondary,
+                        fontSize = 14.sp,
+                        lineHeight = 20.sp
+                    )
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 116.dp)
+                            .clickable {
+                                viewModel.setAppRole(com.example.controller.AppRole.CONTROLLER)
+                                showHome = false
+                            },
+                        colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, DarkSurfaceBorder),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(20.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.PhoneAndroid, contentDescription = null, tint = CyanAccent, modifier = Modifier.size(30.dp))
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Text("Control another device", color = TextPrimary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                                Text("Connect to another Android phone using a six-digit code or QR.", color = TextSecondary, fontSize = 13.sp)
+                            }
+                        }
+                    }
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 116.dp)
+                            .clickable {
+                                viewModel.setAppRole(com.example.controller.AppRole.RECEIVER)
+                                viewModel.selectTab(MainTab.PAIRING)
+                                showHome = false
+                            },
+                        colors = CardDefaults.cardColors(containerColor = DarkSurface),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, DarkSurfaceBorder),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(20.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.CastConnected, contentDescription = null, tint = MintAccent, modifier = Modifier.size(30.dp))
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                                Text("Share this phone", color = TextPrimary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                                Text("Let another phone or a browser request permission to control this device.", color = TextSecondary, fontSize = 13.sp)
+                            }
+                        }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(7.dp).clip(CircleShape).background(statusColor))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            text = when (signalingStatus) {
+                                com.example.signaling.ConnectionStatus.AUTHENTICATED -> "Connected to signaling server"
+                                com.example.signaling.ConnectionStatus.CONNECTING -> "Connecting to remote service…"
+                                com.example.signaling.ConnectionStatus.ERROR -> "Remote service configuration or connection error"
+                                else -> "Remote service not connected"
+                            },
+                            color = TextMuted,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            } else if (appRole == com.example.controller.AppRole.CONTROLLER) {
                 com.example.ui.screens.ControllerDashboardScreen(viewModel = viewModel)
             } else {
                 when (selectedTab) {
@@ -303,7 +374,26 @@ fun MainAppScaffold(
         }
     }
 
-    // Modal: Operator Approval Request
+    if (showSettings) {
+        AlertDialog(
+            onDismissRequest = { showSettings = false },
+            containerColor = DarkSurface,
+            title = { Text("Connection settings", color = TextPrimary) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Signaling status: ${signalingStatus.name}", color = TextSecondary)
+                    Text("Signaling URL: ${serverUrl.ifBlank { "Not configured" }}", color = TextSecondary)
+                    Text("Public URL and ICE settings are loaded from the backend runtime configuration.", color = TextMuted, fontSize = 12.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSettings = false }) {
+                    Text("Done", color = CyanAccent)
+                }
+            }
+        )
+    }
+
     if (pendingRequest != null) {
         OperatorApprovalDialog(
             request = pendingRequest!!,
@@ -312,7 +402,6 @@ fun MainAppScaffold(
         )
     }
 
-    // Modal: Emergency Disconnect Confirmation
     if (showDisconnectDialog) {
         AlertDialog(
             onDismissRequest = { viewModel.setShowDisconnectDialog(false) },
@@ -321,12 +410,12 @@ fun MainAppScaffold(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Warning, contentDescription = null, tint = ErrorCoral)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Emergency Killswitch", color = TextPrimary, fontWeight = FontWeight.Bold)
+                    Text("Emergency Stop", color = TextPrimary, fontWeight = FontWeight.Bold)
                 }
             },
             text = {
                 Text(
-                    text = "This will immediately terminate all active remote screen streams, disconnect the Windows operator in Sylhet, and revoke current session tokens.",
+                    text = "Stop the current remote session and revoke its server-side authorization immediately.",
                     color = TextSecondary,
                     fontSize = 13.sp
                 )
@@ -338,7 +427,7 @@ fun MainAppScaffold(
                     shape = RoundedCornerShape(8.dp),
                     modifier = Modifier.testTag("confirm_emergency_killswitch")
                 ) {
-                    Text("Sever Connection Now", fontWeight = FontWeight.Bold)
+                    Text("Stop session", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
