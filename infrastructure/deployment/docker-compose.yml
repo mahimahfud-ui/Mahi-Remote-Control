@@ -10,10 +10,13 @@ services:
       - "8080:8080"
     environment:
       - PORT=8080
-      - DATABASE_URL=postgres://mahi_admin:SecureMahiPass2026@postgres-db:5432/mahi_remote
-      - JWT_SECRET=mahi-remote-production-ecdsa-jwt-secret-key-32b
-      - TURN_SERVER_URL=turn:turn.mahi-remote.cloud:3478
-      - TURN_SECRET=mahi-turn-shared-secret-auth-key
+      - NODE_ENV=production
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL to your HTTPS browser host}
+      - JWT_SECRET=${JWT_SECRET:?Set a random JWT_SECRET of at least 32 bytes}
+      - STUN_SERVER_URL=${STUN_SERVER_URL:-stun:stun.l.google.com:19302}
+      - TURN_SERVER_URL=${TURN_SERVER_URL:?Set TURN_SERVER_URL to your deployed Coturn endpoint}
+      - TURN_SHARED_SECRET=${TURN_SHARED_SECRET:?Set TURN_SHARED_SECRET in the deployment environment}
+      - DATABASE_URL=postgres://mahi_admin:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres-db:5432/mahi_remote
     depends_on:
       - postgres-db
     restart: always
@@ -25,7 +28,7 @@ services:
       - "5432:5432"
     environment:
       - POSTGRES_USER=mahi_admin
-      - POSTGRES_PASSWORD=SecureMahiPass2026
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the deployment environment}
       - POSTGRES_DB=mahi_remote
     volumes:
       - mahi-postgres-data:/var/lib/postgresql/data
@@ -38,6 +41,10 @@ services:
     network_mode: "host"
     volumes:
       - ./coturn.conf:/etc/coturn/turnserver.conf:ro
+    command:
+      - -n
+      - --log-file=stdout
+      - --static-auth-secret=${TURN_SHARED_SECRET:?Set TURN_SHARED_SECRET in the deployment environment}
     restart: always
 
   prometheus:
