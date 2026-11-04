@@ -147,14 +147,23 @@ class FileManager(private val context: Context) {
 
     fun moveFile(sourcePath: String, targetDir: String): Boolean {
         val src = File(sourcePath)
-        val dest = File(targetDir, src.name)
+        val destinationDirectory = File(targetDir)
+        if (!src.exists() || !destinationDirectory.isDirectory) return false
+
         val roots = getPermittedRootFolders().map { it.absolutePath }
-        if (AllowlistValidator.validateFilePath(src.absolutePath, roots) !is AllowlistValidator.ValidationResult.Valid ||
-            AllowlistValidator.validateFilePath(dest.absolutePath, roots) !is AllowlistValidator.ValidationResult.Valid) {
+        val dest = File(destinationDirectory, src.name)
+        if (AllowlistValidator.validateFilePath(src.path, roots) !is AllowlistValidator.ValidationResult.Valid ||
+            AllowlistValidator.validateFilePath(dest.path, roots) !is AllowlistValidator.ValidationResult.Valid ||
+            dest.exists()) {
             return false
         }
         val success = src.renameTo(dest)
-        AuditLogger.log("FILE", "MOVED", "Moved ${src.name} to $targetDir (success=$success)", AuditSeverity.INFO)
+        AuditLogger.log(
+            "FILE",
+            "MOVED",
+            "Moved ${src.name} to ${destinationDirectory.name} (success=$success)",
+            AuditSeverity.INFO
+        )
         return success
     }
 
