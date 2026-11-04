@@ -40,7 +40,7 @@
       <div class="connection-info-card">
         <h4>Access Host</h4>
         <div id="hostPill" class="mono-pill">Detecting...</div>
-        <p class="micro-text">Supports Public IP &amp; Cloudflare Tunnel</p>
+        <p class="micro-text">Public HTTPS access is configured by the backend</p>
       </div>
     </aside>
 
@@ -65,8 +65,8 @@
 
         <div class="toolbar-divider"></div>
 
-        <div class="quality-selector">
-          <label for="qualitySelect">Quality:</label>
+        <div class="quality-selector" title="Media quality control will become available after the Android WebRTC sender is implemented">
+          <label for="qualitySelect">Requested quality:</label>
           <select id="qualitySelect">
             <option value="1080p">1080p (60 FPS)</option>
             <option value="720p" selected>720p (30 FPS)</option>
@@ -74,7 +74,7 @@
           </select>
         </div>
 
-        <div id="streamStats" class="stream-stats-text">30 FPS | 2048 Kbps</div>
+        <div id="streamStats" class="stream-stats-text">No active media stream</div>
       </div>
 
       <!-- Phone Bezel & Screen Canvas -->
@@ -86,8 +86,8 @@
             <video id="remoteVideo" autoplay playsinline muted style="display: none;"></video>
             <div id="streamPlaceholder" class="stream-placeholder">
               <div class="placeholder-icon">📱</div>
-              <h3>Mahi Remote Display Active</h3>
-              <p>Click anywhere on the screen to tap, drag to swipe, or use keyboard to type into active inputs.</p>
+              <h3>No active remote screen</h3>
+              <p>Enter a temporary pairing code, wait for receiver approval, then the actual remote video will appear here.</p>
             </div>
           </div>
         </div>
@@ -108,12 +108,12 @@
         <button id="btnRunDiag" class="btn btn-primary btn-block">Run Remote Diagnostics</button>
         <div class="telemetry-card">
           <h4>DEVICE TELEMETRY</h4>
-          <div class="telemetry-row"><span>Device Model:</span><strong id="diagModel">Samsung Galaxy S24 Ultra</strong></div>
-          <div class="telemetry-row"><span>OS Version:</span><strong id="diagOs">Android 14 (API 34)</strong></div>
-          <div class="telemetry-row"><span>Battery:</span><strong id="diagBattery" class="text-mint">86% (Charging)</strong></div>
-          <div class="telemetry-row"><span>Temperature:</span><strong id="diagTemp">31.2°C</strong></div>
-          <div class="telemetry-row"><span>Storage:</span><strong id="diagStorage">182.4 GB free</strong></div>
-          <div class="telemetry-row"><span>DNS &amp; Route:</span><strong class="text-mint">Verified (18ms)</strong></div>
+          <div class="telemetry-row"><span>Device Model:</span><strong id="diagModel">Not available</strong></div>
+          <div class="telemetry-row"><span>OS Version:</span><strong id="diagOs">Not available</strong></div>
+          <div class="telemetry-row"><span>Battery:</span><strong id="diagBattery" class="text-mint">Not available</strong></div>
+          <div class="telemetry-row"><span>Temperature:</span><strong id="diagTemp">Not available</strong></div>
+          <div class="telemetry-row"><span>Storage:</span><strong id="diagStorage">Not available</strong></div>
+          <div class="telemetry-row"><span>DNS &amp; Route:</span><strong>Not available</strong></div>
         </div>
       </div>
 
