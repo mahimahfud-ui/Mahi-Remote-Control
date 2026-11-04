@@ -485,6 +485,10 @@
       logAudit('INPUT', 'No approved receiver session is active.', 'critical');
       return false;
     }
+    if (!state.isVideoLive) {
+      logAudit('INPUT', 'Remote input is disabled until a real receiver video frame is decoded.', 'critical');
+      return false;
+    }
     const seq = state.commandSequence++;
     const payload = {
       type: 'INPUT_EVENT',
@@ -526,12 +530,9 @@
     document.getElementById('btnVolDown').onclick = () => sendCommand('Volume', { action: 'DOWN' });
     document.getElementById('btnVolUp').onclick = () => sendCommand('Volume', { action: 'UP' });
 
-    el.qualitySelect.onchange = () => {
-      const q = el.qualitySelect.value;
-      const stats = q === '1080p' ? '60 FPS | 4000 Kbps' : q === '720p' ? '30 FPS | 2048 Kbps' : '15 FPS | 800 Kbps';
-      el.streamStats.textContent = stats;
-      logAudit('STREAM', `Video profile switched to ${q} (${stats})`);
-    };
+    el.qualitySelect.disabled = true;
+    el.streamStats.textContent = 'Waiting for a real remote video stream';
+    el.qualitySelect.title = 'Quality presets are unavailable until the native video pipeline is implemented';
 
     el.btnEmergencyKill.onclick = () => {
       if (confirm('Sever connection and terminate all remote sessions on the phone immediately?')) {
