@@ -13,6 +13,10 @@ android {
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
+    val publicBaseUrl = (project.findProperty("PUBLIC_BASE_URL") as String?)
+      ?: System.getenv("PUBLIC_BASE_URL")
+      ?: ""
+    buildConfigField("String", "PUBLIC_BASE_URL", "\"${publicBaseUrl}\"")
     applicationId = "com.aistudio.mahiremote.rcvkm"
     minSdk = 26
     targetSdk = 36
