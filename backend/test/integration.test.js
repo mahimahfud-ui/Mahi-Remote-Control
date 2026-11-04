@@ -144,6 +144,19 @@ async function runTests() {
     assert.strictEqual(relayed.sender, 'controller-test');
     console.log('✓ approved peer-only command relay');
 
+    const storedSession = DeviceService.getSession(controllerAuth.sessionId);
+    assert(storedSession);
+    assert.deepStrictEqual(storedSession.grantedScopes, ['SCREEN_VIEW', 'REMOTE_INPUT']);
+    const deniedFileCommand = waitForMessage(controller, 'SCOPE_REQUIRED');
+    controller.send(JSON.stringify({
+      type: 'FILE_COMMAND',
+      action: 'LIST',
+      path: '/',
+    }));
+    const scopeDenial = await deniedFileCommand;
+    assert.strictEqual(scopeDenial.requiredScope, 'FILE_TRANSFER');
+    console.log('✓ peer relay enforces only the scopes approved by the receiver');
+
     const turn = await fetch(BASE + '/api/v1/turn/credentials', {
       method: 'POST', headers: { Authorization: 'Bearer ' + controllerAuth.sessionToken },
     });
