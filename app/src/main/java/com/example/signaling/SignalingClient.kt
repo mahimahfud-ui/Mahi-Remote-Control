@@ -17,6 +17,8 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import org.json.JSONObject
+import org.json.JSONTokener
 import java.util.concurrent.TimeUnit
 
 enum class ConnectionStatus {
@@ -28,7 +30,7 @@ enum class ConnectionStatus {
 }
 
 data class SignalingMessage(
-    val type: String, // "REGISTER", "PAIR_REQUEST", "SDP_OFFER", "SDP_ANSWER", "ICE_CANDIDATE", "PING", "PONG"
+    val type: String,
     val sender: String,
     val recipient: String? = null,
     val payload: String
@@ -46,6 +48,7 @@ class SignalingClient(
     private var webSocket: WebSocket? = null
     private val scope = CoroutineScope(Dispatchers.IO + Job())
     private var reconnectJob: Job? = null
+    @Volatile private var sessionToken: String? = null
 
     private val _connectionStatus = MutableStateFlow(ConnectionStatus.DISCONNECTED)
     val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus.asStateFlow()
@@ -70,12 +73,14 @@ class SignalingClient(
     fun connect() {
         if (_connectionStatus.value == ConnectionStatus.CONNECTING ||
             _connectionStatus.value == ConnectionStatus.CONNECTED ||
-            _connectionStatus.value == ConnectionStatus.AUTHENTICATED) {
-            return
-        }
+            _connectionStatus.value == ConnectionStatus.AUTHENTICATED) return
 
         _connectionStatus.value = ConnectionStatus.CONNECTING
-        AuditLogger.log("SIGNALING", "CONNECTING", "Establishing signaling channel to ${_serverUrl.value} as $currentRole", AuditSeverity.INFO)
+        AuditLogger.log(
+            "SIGNALING", "CONNECTING",
+            "Connecting to " + _serverUrl.value + " as " + currentRole,
+            AuditSeverity.INFO
+        )
 
         val request = try {
             Request.Builder()
@@ -84,68 +89,100 @@ class SignalingClient(
                 .addHeader("X-Device-Fingerprint", deviceIdentity.fingerprint)
                 .addHeader("X-Device-Name", deviceIdentity.deviceName)
                 .addHeader("X-Client-Role", currentRole)
+                .apply {
+                    sessionToken?.takeIf { it.isNotBlank() }?.let {
+                        addHeader("Authorization", "Bearer " + it)
+                    }
+                }
                 .build()
         } catch (e: Exception) {
             _connectionStatus.value = ConnectionStatus.DISCONNECTED
-            AuditLogger.log("SIGNALING", "INVALID_URL", "Could not build request for ${_serverUrl.value}: ${e.message}", AuditSeverity.WARNING)
+            AuditLogger.log("SIGNALING", "INVALID_URL", "Invalid signaling URL: " + e.message, AuditSeverity.WARNING)
             return
         }
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 _connectionStatus.value = ConnectionStatus.AUTHENTICATED
-                AuditLogger.log("SIGNALING", "CONNECTED", "Authenticated with signaling server as ${deviceIdentity.deviceId}", AuditSeverity.SECURITY)
-                
-                // Send registration packet
-                send("REGISTER", """{"deviceId":"${deviceIdentity.deviceId}","model":"${deviceIdentity.deviceName}"}""")
+                AuditLogger.log("SIGNALING", "CONNECTED", "Secure signaling socket opened", AuditSeverity.INFO)
+                send(
+                    "REGISTER",
+                    JSONObject()
+                        .put("deviceId", deviceIdentity.deviceId)
+                        .put("model", deviceIdentity.deviceName)
+                        .toString()
+                )
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
                 parseAndDispatch(text)
+                try {
+                    val message = JSONObject(text)
+                    when (message.optString("type")) {
+                        "SESSION_AUTHORIZED" -> {
+                            val nextToken = message.optString("sessionToken")
+                            if (nextToken.isNotBlank() && nextToken != sessionToken) {
+                                sessionToken = nextToken
+                                reconnectJob?.cancel()
+                                reconnectJob = scope.launch {
+                                    delay(250)
+                                    reconnect()
+                                }
+                            }
+                        }
+                        "SESSION_REVOKED", "AUTHENTICATION_FAILED" -> {
+                            sessionToken = null
+                        }
+                    }
+                } catch (_: Exception) {
+                    // Other signaling messages are parsed by the application callback.
+                }
             }
 
             override fun onClosing(ws: WebSocket, code: Int, reason: String) {
                 ws.close(1000, null)
                 _connectionStatus.value = ConnectionStatus.DISCONNECTED
-                AuditLogger.log("SIGNALING", "CLOSING", "Signaling connection closing: $reason", AuditSeverity.INFO)
+                AuditLogger.log("SIGNALING", "CLOSING", "Signaling connection closing: " + reason, AuditSeverity.INFO)
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                 _connectionStatus.value = ConnectionStatus.ERROR
-                AuditLogger.log("SIGNALING", "ERROR", "Signaling socket error: ${t.message}. Reconnection armed.", AuditSeverity.WARNING)
+                AuditLogger.log("SIGNALING", "ERROR", "Signaling socket error: " + t.message, AuditSeverity.WARNING)
                 scheduleReconnect()
             }
         })
     }
 
     fun send(type: String, payload: String, recipient: String? = null): Boolean {
-        val json = """
-            {
-              "type": "$type",
-              "sender": "${deviceIdentity.deviceId}",
-              "recipient": ${if (recipient != null) "\"$recipient\"" else "null"},
-              "payload": ${if (payload.startsWith("{") || payload.startsWith("[")) payload else "\"$payload\""},
-              "timestamp": ${System.currentTimeMillis()}
-            }
-        """.trimIndent()
+        val payloadValue = try {
+            JSONTokener(payload).nextValue()
+        } catch (_: Exception) {
+            payload
+        }
+        val json = JSONObject()
+            .put("type", type)
+            .put("sender", deviceIdentity.deviceId)
+            .put("recipient", recipient)
+            .put("payload", payloadValue)
+            .put("timestamp", System.currentTimeMillis())
+            .toString()
 
         val sent = webSocket?.send(json) ?: false
         if (!sent && _connectionStatus.value == ConnectionStatus.AUTHENTICATED) {
-            AuditLogger.log("SIGNALING", "SEND_FAILED", "Failed to dispatch message type $type", AuditSeverity.WARNING)
+            AuditLogger.log("SIGNALING", "SEND_FAILED", "Failed to send message type " + type, AuditSeverity.WARNING)
         }
         return sent
     }
 
     private fun parseAndDispatch(text: String) {
-        // Minimal JSON extraction
         try {
-            val type = Regex(""""type"\s*:\s*"([^"]+)"""").find(text)?.groupValues?.get(1) ?: "UNKNOWN"
-            val sender = Regex(""""sender"\s*:\s*"([^"]+)"""").find(text)?.groupValues?.get(1) ?: "UNKNOWN"
-            val recipient = Regex(""""recipient"\s*:\s*"([^"]+)"""").find(text)?.groupValues?.get(1)
-            
+            val root = JSONObject(text)
+            val type = root.optString("type", "UNKNOWN")
+            val sender = root.optString("sender", root.optString("senderId", "UNKNOWN"))
+            val recipient = root.optString("recipient").takeIf { it.isNotBlank() }
             onMessageReceived(SignalingMessage(type, sender, recipient, text))
         } catch (e: Exception) {
-            // Log parse issue
+            AuditLogger.log("SIGNALING", "PARSE_ERROR", "Invalid signaling response received", AuditSeverity.WARNING)
         }
     }
 
@@ -154,7 +191,7 @@ class SignalingClient(
         reconnectJob = scope.launch {
             delay(5000L)
             if (isActive && _connectionStatus.value != ConnectionStatus.AUTHENTICATED) {
-                AuditLogger.log("SIGNALING", "RECONNECTING", "Attempting automatic signaling reconnect...", AuditSeverity.INFO)
+                AuditLogger.log("SIGNALING", "RECONNECTING", "Attempting signaling reconnect", AuditSeverity.INFO)
                 connect()
             }
         }
@@ -170,5 +207,10 @@ class SignalingClient(
         webSocket?.close(1000, "Device disconnecting")
         webSocket = null
         _connectionStatus.value = ConnectionStatus.DISCONNECTED
+    }
+
+    fun clearSessionToken() {
+        sessionToken = null
+        reconnect()
     }
 }
