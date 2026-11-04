@@ -2,6 +2,7 @@ package com.example.ui
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.appmanager.AppItem
@@ -29,6 +30,8 @@ import com.example.security.DeviceIdentity
 import com.example.signaling.ConnectionStatus
 import com.example.signaling.SignalingClient
 import com.example.signaling.SignalingMessage
+import com.example.webrtc.WebRtcSessionManager
+import org.webrtc.SurfaceViewRenderer
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -121,10 +124,17 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     val remoteMetrics: StateFlow<StreamMetrics> = _remoteMetrics.asStateFlow()
 
     val signalingClient: SignalingClient
+    private var controllerWebRtcSession: WebRtcSessionManager? = null
+    private var attachedRemoteRenderer: SurfaceViewRenderer? = null
+    private val _remoteVideoHasFrames = MutableStateFlow(false)
+    val remoteVideoHasFrames: StateFlow<Boolean> = _remoteVideoHasFrames.asStateFlow()
 
     init {
         signalingClient = SignalingClient(identity) { msg ->
             handleIncomingSignalingMessage(msg)
+        }
+        ScreenCaptureService.signalingSender = { type, payload, recipient ->
+            signalingClient.send(type, payload, recipient)
         }
         signalingClient.connect()
 
