@@ -1,6 +1,9 @@
 package com.example.ui.screens
 
 import android.content.Context
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
 import android.content.Intent
 import android.provider.Settings
 import android.widget.Toast
@@ -334,6 +337,81 @@ fun RemoteServicesScreen(
                     NavButton(label = "Notifs", modifier = Modifier.weight(1f)) {
                         MahiAccessibilityService.performGlobal("NOTIFICATIONS")
                     }
+                }
+            }
+        }
+
+        // Section: Optional owner-approved shared storage access
+        val hasAllFilesAccess = Build.VERSION.SDK_INT < Build.VERSION_CODES.R ||
+            Environment.isExternalStorageManager()
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = DarkSurface),
+            border = androidx.compose.foundation.BorderStroke(1.dp, DarkSurfaceBorder),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Shared Storage Access",
+                        color = TextPrimary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = if (hasAllFilesAccess) "ENABLED" else "OPTIONAL",
+                        color = if (hasAllFilesAccess) MintAccent else WarningAmber,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Text(
+                    text = if (hasAllFilesAccess) {
+                        "The owner has enabled broad shared-storage access for remote file browsing. Android still protects private app data and certain system directories."
+                    } else {
+                        "Without this optional Android permission, remote file browsing is limited to app-owned folders and shared folders the OS already exposes. The phone owner must enable broader shared-storage access manually."
+                    },
+                    color = TextSecondary,
+                    fontSize = 12.sp,
+                    lineHeight = 16.sp
+                )
+                OutlinedButton(
+                    onClick = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            val appSettings = Intent(
+                                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                Uri.parse("package:${context.packageName}")
+                            )
+                            try {
+                                context.startActivity(appSettings)
+                            } catch (_: Exception) {
+                                try {
+                                    context.startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                                } catch (_: Exception) {
+                                    Toast.makeText(context, "Android storage settings are unavailable", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        } else {
+                            Toast.makeText(context, "This Android version uses its standard storage permissions.", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().testTag("open_all_files_access_settings_btn"),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = CyanAccent),
+                    border = ButtonDefaults.outlinedButtonBorder.copy(
+                        brush = androidx.compose.ui.graphics.SolidColor(CyanAccent)
+                    ),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(if (hasAllFilesAccess) "Review Shared Storage Permission" else "Open Android All Files Access Settings")
                 }
             }
         }
