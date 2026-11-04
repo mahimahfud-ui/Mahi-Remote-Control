@@ -30,39 +30,47 @@ Status date: 2026-11-04
 - Added a backend integration test covering pending pairing, pre-approval blocking, owner approval, session-scoped command relay, TURN token authorization, expiry, rate limiting and emergency revocation.
 - Added GitHub Actions workflow to run backend tests and Android debug build/unit tests/lint.
 
-## Not complete — do not ship as a working remote-control release
+## Not release-verified
 
-### Critical Android/WebRTC gap
+### Android/WebRTC implementation added; verification pending
 
-The repository snapshot did not include a native Android WebRTC PeerConnection implementation or WebRTC dependency. The Android service still does not create a real `VirtualDisplay`/MediaCodec/WebRTC video publisher. It deliberately reports an error after the Android consent prompt. Android does not yet handle SDP offers/answers and ICE candidates, attach a real video track, or render a received track in the Android controller viewer.
+The working branch now includes:
 
-The browser can create a receive-only offer, but the Android receiver cannot currently answer it with a real video track. Browser-to-Android video and Android-to-Android video are therefore NOT IMPLEMENTED end-to-end in this branch.
+- A native io.github.webrtc-sdk:android dependency.
+- A receiver-side ScreenCapturerAndroid MediaProjection publisher that starts only after pairing approval, Android screen-share consent, and the owner-visible foreground service being ready.
+- A controller-side receive-only video offer, an Android receiver answer, SDP/ICE exchange, and a real SurfaceViewRenderer in the controller viewer.
+- A persistent foreground notification with an explicit Stop action, server-revocation cleanup, and no remote-input execution until the receiver's stream is active and the controller has a real incoming video track.
+- Touch-coordinate mapping from the controller's normalized portrait viewport to the receiver's actual display dimensions.
+- Cloudflare Realtime managed TURN credential support using server-only key/API-token environment variables, in addition to self-hosted Coturn.
+- Backend integration-test coverage for approved WebRTC offer, answer and ICE relay.
 
-### Other blockers
+These are source-code changes, not proof of successful live streaming. Android CI, APK build, codec compatibility, decoded frames and control gestures still require verification on two physical phones.
 
-- Backend device, pending-pairing and active-session registries are in-memory Maps. They are lost on restart and are not backed by the included PostgreSQL schema yet.
-- No real TURN server has been deployed or connectivity-checked. The compose files only describe how to configure one.
-- `PUBLIC_BASE_URL`, DNS, TLS reverse proxy and TURN firewall/range configuration require deployment to a public host.
+### Remaining blockers
+
+- Backend device, pending-pairing and active-session registries are in-memory Maps. They are lost on process restart and are not backed by the included PostgreSQL schema yet.
+- TURN is not configured in the current Render service. STUN may connect directly, but restrictive mobile networks/CGNAT may require a configured relay. Cloudflare managed TURN is metered when used without its Realtime SFU; do not enable it without the account owner's billing approval.
 - Windows desktop controller has not been updated or built in this branch.
+- Browser-to-Android must be tested separately; existing browser offer code alone does not establish end-to-end interoperability.
 - Files/apps/diagnostics features have source code but are not yet proven over the new session protocol end-to-end.
-- Session expiry cleanup is enforced in the backend process, but persistent session revocation across multiple backend instances is not implemented.
-- Android-to-Android QR scanning UX, browser URL display and mobile browser responsive validation need further work.
+- Session revocation is not persistent across multiple backend instances; session/pairing Maps are in memory.
+- Android-to-Android QR scanning UX and mobile network behavior need physical-device validation.
+- Android Accessibility must be enabled manually by the receiving owner. OS-protected FLAG_SECURE content and some system-owned UI cannot be bypassed.
 
 ## Verification truth table
 
 | Check | Status | Evidence required next |
 |---|---|---|
-| Source changes pushed to working branch | Implemented | GitHub branch history |
-| Backend TypeScript build | Not run in this environment | GitHub Actions backend job |
-| Backend integration suite | Not run in this environment | GitHub Actions test output |
-| Android debug build | Not run in this environment | GitHub Actions Android job |
-| Android unit/Robolectric tests | Not run in this environment | GitHub Actions Android job |
-| Android release APK | Not generated | Signing keystore and release build |
-| Browser app syntax check | Not run in this environment | GitHub Actions backend job |
-| Two physical Android devices | Not tested | Pair Phone A and Phone B using same APK |
-| Browser Chrome/Edge/Safari to receiver | Not tested | Browser + Android receiver test |
-| Real decoded WebRTC video frames | Not implemented | Native Android WebRTC publisher/receiver required first |
-| Different mobile networks / CGNAT / TURN relay | Not tested | Deployed Coturn and two external networks |
+| WebRTC Android publisher/receiver source | Implemented | Android CI compile and code review |
+| Approved WebRTC SDP/ICE backend relay | Integration test added | Successful CI backend job |
+| Backend TypeScript build/integration suite | Pending verification | Current GitHub Actions run |
+| Android debug build/unit tests/lint | Pending verification | Current GitHub Actions Android job |
+| Android release APK | Not generated | Build after CI and device fixes |
+| Two physical Android devices | Not tested | Same APK on Phone A and Phone B |
+| Real decoded video frames | Implemented in source, unverified | Live SurfaceViewRenderer frame on controller |
+| Tap/swipe/navigation | Implemented in source, unverified | Confirm Accessibility enabled and actions execute |
+| Cross-network relay | Not configured on Render | Coturn or Cloudflare TURN key/API token plus external-network test |
+| Browser controller to Android | Unverified | Browser + receiver end-to-end test |
 | Windows controller | Not tested | Windows .NET 10 build and device test |
 
 ## Source-of-truth warning
