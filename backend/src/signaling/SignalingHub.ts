@@ -80,8 +80,8 @@ export class SignalingHub {
       });
 
       ws.on('close', () => {
-        if (this.clients.get(clientId) === client) {
-          this.clients.delete(clientId);
+        if (this.clients.get(client.id) === client) {
+          this.clients.delete(client.id);
           if (deviceId) DeviceService.markOffline(deviceId);
         }
       });
@@ -122,6 +122,17 @@ export class SignalingHub {
     if (type === 'AUTHENTICATE') {
       if (sender.sessionId) return;
       const token = String(msg.sessionToken || payload.sessionToken || '');
+      const preview = AuthService.verifySessionToken(token);
+      // Browser WebSocket clients cannot set custom HTTP headers. Rebind their transient
+      // connection ID to the signed controller ID after validating the server-issued token.
+      if (sender.type === 'BROWSER' && preview?.entityType === 'OPERATOR' && preview.entityId && preview.fingerprint) {
+        if (this.clients.get(sender.id) === sender) this.clients.delete(sender.id);
+        const existing = this.clients.get(preview.entityId);
+        if (existing && existing !== sender) existing.ws.close(4001, 'Replaced by reauthenticated browser controller');
+        sender.id = preview.entityId;
+        sender.fingerprint = preview.fingerprint;
+        this.clients.set(sender.id, sender);
+      }
       if (!this.attachSession(sender, token)) {
         sendJson(sender, { type: 'AUTHENTICATION_FAILED', error: 'Invalid, expired, or revoked session.' });
         return;
