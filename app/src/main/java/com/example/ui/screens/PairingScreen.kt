@@ -102,7 +102,7 @@ fun PairingScreen(viewModel: MahiViewModel) {
                 )
 
                 Text(
-                    text = "Share this 6-digit code with your authorized Windows desktop operator in Sylhet to establish end-to-end encrypted connection:",
+                    text = "Share this temporary code or QR with the phone or browser that will control this device. Every request requires your approval.",
                     color = TextSecondary,
                     fontSize = 13.sp,
                     lineHeight = 18.sp
@@ -183,20 +183,6 @@ fun PairingScreen(viewModel: MahiViewModel) {
                     }
                 }
 
-                // Operator simulation button
-                TextButton(
-                    onClick = { viewModel.simulateOperatorConnection() },
-                    modifier = Modifier.testTag("simulate_operator_request_btn")
-                ) {
-                    Icon(Icons.Default.SupportAgent, contentDescription = null, tint = MintAccent, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "Simulate Operator Connection Request (Sylhet)",
-                        color = MintAccent,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
             }
         }
 
@@ -266,7 +252,7 @@ fun PairingScreen(viewModel: MahiViewModel) {
             shape = RoundedCornerShape(20.dp),
             title = {
                 Text(
-                    text = "Scan with Mahi Windows Controller",
+                    text = "Scan with Mahi Remote on another device",
                     color = TextPrimary,
                     fontSize = 16.sp,
                     fontWeight = FontWeight.Bold
