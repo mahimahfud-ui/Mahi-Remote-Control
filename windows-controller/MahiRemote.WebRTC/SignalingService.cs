@@ -386,6 +386,24 @@ public class SignalingService
         });
     }
 
+    public async Task EmergencyDisconnectAsync(string reason)
+    {
+        try
+        {
+            await SendJsonAsync(new
+            {
+                type = "EMERGENCY_DISCONNECT",
+                payload = new { reason }
+            });
+            // Allow the signaling server to revoke the peer session before closing the socket.
+            await Task.Delay(150);
+        }
+        finally
+        {
+            await DisconnectAsync();
+        }
+    }
+
     public async Task DisconnectAsync()
     {
         _cts?.Cancel();
