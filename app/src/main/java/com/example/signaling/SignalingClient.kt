@@ -2,6 +2,7 @@ package com.example.signaling
 
 import com.example.security.AuditLogger
 import com.example.security.AuditSeverity
+import com.example.BuildConfig
 import com.example.security.DeviceIdentity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -51,8 +52,12 @@ class SignalingClient(
     private val _connectionStatus = MutableStateFlow(ConnectionStatus.DISCONNECTED)
     val connectionStatus: StateFlow<ConnectionStatus> = _connectionStatus.asStateFlow()
 
-    private val _serverUrl = MutableStateFlow("wss://signaling.mahi-remote.cloud/ws")
+    private val _serverUrl = MutableStateFlow("")
     val serverUrl: StateFlow<String> = _serverUrl.asStateFlow()
+
+    private val _runtimeConfigJson = MutableStateFlow<String?>(null)
+    val runtimeConfigJson: StateFlow<String?> = _runtimeConfigJson.asStateFlow()
+    @Volatile private var configRequestInFlight = false
 
     fun updateServerUrl(newUrl: String) {
         _serverUrl.value = newUrl
@@ -73,6 +78,76 @@ class SignalingClient(
     }
 
     fun connect() {
+        if (_serverUrl.value.isBlank()) {
+            loadRuntimeConfiguration()
+            return
+        }
+        connectWebSocket()
+    }
+
+    private fun loadRuntimeConfiguration() {
+        if (configRequestInFlight) return
+        val baseUrl = BuildConfig.PUBLIC_BASE_URL.trim().trimEnd('/')
+        if (baseUrl.isBlank()) {
+            _connectionStatus.value = ConnectionStatus.ERROR
+            AuditLogger.log(
+                "CONFIG",
+                "PUBLIC_BASE_URL_MISSING",
+                "Set PUBLIC_BASE_URL in the Android build environment. No default public signaling host is assumed.",
+                AuditSeverity.CRITICAL
+            )
+            return
+        }
+
+        configRequestInFlight = true
+        _connectionStatus.value = ConnectionStatus.CONNECTING
+        val request = try {
+            Request.Builder().url("$baseUrl/api/v1/config").get().build()
+        } catch (e: Exception) {
+            configRequestInFlight = false
+            _connectionStatus.value = ConnectionStatus.ERROR
+            AuditLogger.log("CONFIG", "INVALID_BASE_URL", "Invalid PUBLIC_BASE_URL: ${e.message}", AuditSeverity.CRITICAL)
+            return
+        }
+
+        client.newCall(request).enqueue(object : okhttp3.Callback {
+            override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
+                configRequestInFlight = false
+                _connectionStatus.value = ConnectionStatus.ERROR
+                AuditLogger.log("CONFIG", "FETCH_FAILED", "Could not load backend runtime configuration: ${e.message}", AuditSeverity.WARNING)
+            }
+
+            override fun onResponse(call: okhttp3.Call, response: Response) {
+                response.use {
+                    configRequestInFlight = false
+                    val responseText = it.body?.string().orEmpty()
+                    if (!it.isSuccessful) {
+                        _connectionStatus.value = ConnectionStatus.ERROR
+                        AuditLogger.log("CONFIG", "HTTP_ERROR", "Runtime configuration returned HTTP ${it.code}", AuditSeverity.WARNING)
+                        return
+                    }
+                    try {
+                        val config = org.json.JSONObject(responseText)
+                        val url = config.optString("signalingUrl")
+                        if (!url.startsWith("wss://")) {
+                            _connectionStatus.value = ConnectionStatus.ERROR
+                            AuditLogger.log("CONFIG", "PUBLIC_URL_UNAVAILABLE", "Backend has no configured HTTPS/WSS public URL.", AuditSeverity.CRITICAL)
+                            return
+                        }
+                        _runtimeConfigJson.value = responseText
+                        _serverUrl.value = url
+                        AuditLogger.log("CONFIG", "LOADED", "Loaded public signaling URL and runtime ICE configuration.", AuditSeverity.INFO)
+                        connectWebSocket()
+                    } catch (e: Exception) {
+                        _connectionStatus.value = ConnectionStatus.ERROR
+                        AuditLogger.log("CONFIG", "PARSE_FAILED", "Invalid runtime configuration response: ${e.message}", AuditSeverity.WARNING)
+                    }
+                }
+            }
+        })
+    }
+
+    private fun connectWebSocket() {
         if (_connectionStatus.value == ConnectionStatus.CONNECTING ||
             _connectionStatus.value == ConnectionStatus.CONNECTED ||
             _connectionStatus.value == ConnectionStatus.AUTHENTICATED) {
@@ -99,9 +174,7 @@ class SignalingClient(
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 _connectionStatus.value = ConnectionStatus.AUTHENTICATED
-                AuditLogger.log("SIGNALING", "CONNECTED", "Authenticated with signaling server as ${deviceIdentity.deviceId}", AuditSeverity.SECURITY)
-                
-                // Send registration packet
+                AuditLogger.log("SIGNALING", "CONNECTED", "Connected to configured signaling server as ${deviceIdentity.deviceId}", AuditSeverity.INFO)
                 send("REGISTER", """{"deviceId":"${deviceIdentity.deviceId}","model":"${deviceIdentity.deviceName}"}""")
             }
 
