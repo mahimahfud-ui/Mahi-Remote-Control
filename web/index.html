@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mahi Remote Control</title>
+<link rel="stylesheet" href="css/tokens.css"><link rel="stylesheet" href="css/base.css"><link rel="stylesheet" href="css/components.css">
+</head><body>
+<main class="pair" id="pair"><section class="card pair-card" aria-labelledby="t">
+<div class="logo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg></div>
+<h1 id="t">Connect to your phone</h1>
+<p>Enter the 6-digit code shown in the Mahi app on your Android device.</p>
+<div class="code" role="group" aria-label="Pairing code"><input inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 1" autofocus><input inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 2"><input inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 3"><input inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 4"><input inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 5"><input inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 6"></div>
+<div class="status" id="pair-status" role="status" aria-live="polite"></div>
+<button class="btn primary" id="connect">Connect</button>
+<div class="trust"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg> End-to-end encrypted. Your phone asks for approval first.</div>
+</section></main>
+
+<div class="app" id="app" hidden>
+<header class="topbar">
+ <div class="device"><span class="logo" style="width:32px;height:32px;margin:0;border-radius:9px"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/></svg></span><div>Pixel 8 Pro<small>Android 15 · Paired</small></div></div>
+ <span class="chip"><i class="dot"></i>Excellent · 38 ms</span>
+ <span class="chip hide-sm mono" title="Session duration" id="dur">00:00:00</span>
+ <span class="chip hide-sm"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>Encrypted</span>
+ <div class="spacer"></div>
+ <button class="btn danger" data-stop title="Ctrl+Shift+X"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v9"/><path d="M6.3 7a8 8 0 1 0 11.4 0"/></svg> Stop</button>
+</header>
+
+<div class="workspace">
+ <div class="stage">
+  <div class="screen" id="screen">
+   <div class="placeholder" id="live">
+    <div class="phone">
+     <div class="notch"></div>
+     <div class="content">
+      <div class="status-bar"><span>9:41</span><span class="icons">●●● 100%</span></div>
+      <div class="home">
+       <div class="time">9:41</div>
+       <div class="date">Wednesday, November 4</div>
+       <div class="apps">
+        <div class="app-icon"></div><div class="app-icon"></div><div class="app-icon"></div><div class="app-icon"></div>
+       </div>
+      </div>
+     </div>
+    </div>
+    <div class="hint">Live screen preview · Click or drag to interact</div>
+   </div>
+   <div class="state loading" id="loading" hidden><div class="spinner"></div><p>Connecting to device…</p></div>
+   <div class="state error" id="error" hidden><svg viewBox="0 0 24 24"><path d="M12 9v4m0 4h.01M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z"/></svg><p>Connection lost</p><button class="btn" data-reconnect>Reconnect</button></div>
+   <div class="state empty" id="empty" hidden><svg viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/></svg><p>Screen is off</p></div>
+  </div>
+  <nav class="dock">
+   <button class="dock-btn active" data-panel="null" title="Remote"><svg viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/></svg></button>
+   <button class="dock-btn" data-panel="files" title="Files"><svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg></button>
+   <button class="dock-btn" data-panel="apps" title="Apps"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></button>
+   <button class="dock-btn" data-panel="diag" title="Diagnostics"><svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-4"/><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z"/></svg></button>
+   <button class="dock-btn" data-panel="settings" title="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+  </nav>
+ </div>
+
+ <aside class="drawer" id="drawer" hidden>
+  <div class="drawer-head"><h2 id="drawer-title">Panel</h2><button class="icon-btn" data-close aria-label="Close"><svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg></button></div>
+  <div class="drawer-body" id="drawer-body">
+   <div class="panel" data-panel="files">
+    <div class="file"><svg viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M13 2v7h7"/></svg><div><b>Download</b><span>2.4 MB · Today</span></div></div>
+    <div class="file"><svg viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M13 2v7h7"/></svg><div><b>Screenshot_2026.png</b><span>1.1 MB · Yesterday</span></div></div>
+    <div class="file"><svg viewBox="0 0 24 24"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M13 2v7h7"/></svg><div><b>Notes.txt</b><span>4 KB · 2 days ago</span></div></div>
+   </div>
+   <div class="panel" data-panel="apps" hidden>
+    <div class="app-row"><div class="app-icon sm"></div><div><b>Chrome</b><span>com.android.chrome</span></div><button class="btn sm">Open</button></div>
+    <div class="app-row"><div class="app-icon sm"></div><div><b>Settings</b><span>com.android.settings</span></div><button class="btn sm">Open</button></div>
+    <div class="app-row"><div class="app-icon sm"></div><div><b>Photos</b><span>com.google.android.apps.photos</span></div><button class="btn sm">Open</button></div>
+   </div>
+   <div class="panel" data-panel="diag" hidden>
+    <div class="metric ok"><b>Internet</b><span>Online · 38 ms</span></div>
+    <div class="metric ok"><b>DNS</b><span>Resolved · 12 ms</span></div>
+    <div class="metric ok"><b>Play Services</b><span>Healthy</span></div>
+    <div class="metric warn"><b>Storage</b><span>68% used</span></div>
+    <div class="metric ok"><b>Battery</b><span>84% · Charging</span></div>
+   </div>
+   <div class="panel" data-panel="settings" hidden>
+    <div class="setting"><div><b>Video quality</b><span>Lower it on slow networks</span></div><select aria-label="Video quality"><option>Auto</option><option>High</option><option>Balanced</option><option>Low</option></select></div>
+    <div class="setting"><div><b>Show touch ripples</b><span>Visual feedback on tap</span></div><input class="switch" type="checkbox" role="switch" checked aria-label="Show touch ripples"></div>
+    <div class="setting"><div><b>Keep phone awake</b><span>Prevent screen timeout</span></div><input class="switch" type="checkbox" role="switch" checked aria-label="Keep phone awake"></div>
+    <div class="setting"><div><b>Block clipboard sync</b><span>Stop copy and paste between devices</span></div><input class="switch" type="checkbox" role="switch" aria-label="Block clipboard sync"></div>
+    <div class="setting"><div><b>Preview screen state</b><span>For design review only</span></div><select id="state-select" aria-label="Preview screen state"><option value="live">Live</option><option value="loading">Loading</option><option value="error">Error</option><option value="empty">Screen off</option></select></div>
+    <button class="btn danger" style="width:100%;margin-top:20px" data-stop>End session</button>
+   </div>
+  </div>
+ </aside>
+</div></div>
+
+<div class="modal" id="modal" hidden role="alertdialog" aria-modal="true" aria-labelledby="mt"><div class="card"><h2 id="mt">Stop remote control?</h2><p>This ends the session right away and your phone will no longer accept input. You can pair again with a new code.</p><div class="acts"><button class="btn" id="cancel">Keep connected</button><button class="btn danger" id="confirm">Stop session</button></div></div></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="js/app.js"></script>
+</body></html>
