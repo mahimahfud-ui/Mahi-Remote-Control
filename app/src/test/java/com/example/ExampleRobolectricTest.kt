@@ -59,6 +59,18 @@ class ExampleRobolectricTest {
         // Invalid swipe duration
         val invalidDuration = AllowlistValidator.validateSwipe(100f, 200f, 300f, 800f, 10L, 1080, 2400)
         assertTrue(invalidDuration is AllowlistValidator.ValidationResult.Rejected)
+
+        // A sibling directory with the same prefix is not a child of the allowed root.
+        val filesRoot = context.filesDir.canonicalPath
+        val siblingPrefix = File(context.filesDir.parentFile, context.filesDir.name + "-outside").canonicalPath
+        assertTrue(
+            AllowlistValidator.validateFilePath(filesRoot, listOf(filesRoot)) is
+                AllowlistValidator.ValidationResult.Valid
+        )
+        assertTrue(
+            AllowlistValidator.validateFilePath(siblingPrefix, listOf(filesRoot)) is
+                AllowlistValidator.ValidationResult.Rejected
+        )
     }
 
     @Test
@@ -108,6 +120,18 @@ class ExampleRobolectricTest {
         val readBytes = fileManager.readFileChunk(testFile.absolutePath, 0, sampleData.size)
         assertNotNull(readBytes)
         assertEquals("Hello from Mahi Remote Windows Controller!", String(readBytes!!))
+        assertEquals(null, fileManager.readFileChunk(testFile.absolutePath, -1, 10))
+        assertEquals(
+            null,
+            fileManager.readFileChunk(testFile.absolutePath, 0, FileManager.MAX_TRANSFER_CHUNK_BYTES + 1)
+        )
+        assertFalse(
+            fileManager.writeFileChunk(
+                testFile.absolutePath,
+                ByteArray(FileManager.MAX_TRANSFER_CHUNK_BYTES + 1),
+                append = true
+            )
+        )
 
         // 3. Verify SHA-256 calculation
         val checksum = fileManager.calculateSha256(testFile.absolutePath)
