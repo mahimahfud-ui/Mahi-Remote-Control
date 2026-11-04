@@ -315,7 +315,7 @@ fun MainAppScaffold(
                             Spacer(modifier = Modifier.width(16.dp))
                             Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                                 Text("Control another device", color = TextPrimary, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
-                                Text("Connect to another Android phone using a six-digit code or QR.", color = TextSecondary, fontSize = 13.sp)
+                                Text("Connect to another Android phone using a code or QR. Shared Wi-Fi is not required.", color = TextSecondary, fontSize = 13.sp)
                             }
                         }
                     }
