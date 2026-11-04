@@ -33,14 +33,27 @@ export class DeviceService {
     this.pairingCodes.set(code, { code, deviceId, expiresAt });
   }
 
-  public static validateAndConsumePairingCode(code: string): string | null {
-    const record = this.pairingCodes.get(code);
+  /**
+   * Read a still-valid code without consuming it. Pairing requests must remain
+   * pending until the receiver explicitly approves them.
+   */
+  public static getPairingCode(code: string): PairingCodeRecord | null {
+    const normalized = String(code || '').replace(/[^0-9]/g, '');
+    if (!/^\d{6}$/.test(normalized)) return null;
+    const record = this.pairingCodes.get(normalized);
     if (!record) return null;
-    if (Date.now() > record.expiresAt) {
-      this.pairingCodes.delete(code);
+    if (Date.now() >= record.expiresAt) {
+      this.pairingCodes.delete(normalized);
       return null;
     }
-    this.pairingCodes.delete(code);
+    return { ...record };
+  }
+
+  public static validateAndConsumePairingCode(code: string): string | null {
+    const normalized = String(code || '').replace(/[^0-9]/g, '');
+    const record = this.getPairingCode(normalized);
+    if (!record) return null;
+    this.pairingCodes.delete(normalized);
     return record.deviceId;
   }
 
