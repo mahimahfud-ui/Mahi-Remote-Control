@@ -4,7 +4,7 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
-        Title="Mahi Remote Control — Operator Workstation (Sylhet NOC)" Height="800" Width="1280"
+        Title="Mahi Remote Control — Windows Operator" Height="800" Width="1280"
         Background="{StaticResource BgDark}"
         WindowStartupLocation="CenterScreen">
     
@@ -21,7 +21,7 @@
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <Ellipse Width="10" Height="10" Fill="{StaticResource MintAccent}" Margin="0,0,8,0" />
                     <TextBlock Text="MAHI REMOTE CONTROL" Foreground="{StaticResource CyanAccent}" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" />
-                    <TextBlock Text=" | Windows Controller v1.0.0 (Operator: Sylhet NOC)" Foreground="{StaticResource TextSecondary}" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0" />
+                    <TextBlock Text=" | Windows Controller v1.0.0" Foreground="{StaticResource TextSecondary}" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0" />
                 </StackPanel>
 
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
@@ -54,7 +54,7 @@
                                         <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                                             <TextBlock Text="{Binding NetworkType}" Foreground="{StaticResource TextSecondary}" FontSize="11" />
                                             <TextBlock Text=" • " Foreground="{StaticResource TextSecondary}" FontSize="11" />
-                                            <TextBlock Text="{Binding BatteryPercent, StringFormat='{}{0}% Batt'}" Foreground="{StaticResource MintAccent}" FontSize="11" />
+                                            <TextBlock Text="{Binding BatteryPercent, TargetNullValue='Not reported', StringFormat='{}{0}% Batt'}" Foreground="{StaticResource MintAccent}" FontSize="11" />
                                         </StackPanel>
                                     </StackPanel>
                                 </Border>
@@ -81,13 +81,13 @@
 
                         <Separator Style="{StaticResource {x:Static ToolBar.SeparatorStyleKey}}" Margin="0,6,12,6" />
 
-                        <ComboBox Name="CmbQuality" SelectedIndex="1" Width="130" Background="{StaticResource SurfaceElevated}" Foreground="{StaticResource TextPrimary}" SelectionChanged="CmbQuality_SelectionChanged">
+                        <ComboBox Name="CmbQuality" SelectedIndex="1" Width="130" IsEnabled="False" ToolTip="Video quality presets will be available when live streaming is implemented" Background="{StaticResource SurfaceElevated}" Foreground="{StaticResource TextPrimary}">
                             <ComboBoxItem Content="1080p (60 FPS)" />
                             <ComboBoxItem Content="720p (30 FPS)" />
                             <ComboBoxItem Content="480p (15 FPS)" />
                         </ComboBox>
 
-                        <TextBlock Name="TxtStreamMetrics" Text="30 FPS | 2048 Kbps | 32 ms RTT" Foreground="{StaticResource TextSecondary}" FontSize="11" FontFamily="Consolas" VerticalAlignment="Center" Margin="14,0,0,0" />
+                        <TextBlock Name="TxtStreamMetrics" Text="Waiting for real remote video frames" Foreground="{StaticResource TextSecondary}" FontSize="11" FontFamily="Consolas" VerticalAlignment="Center" Margin="14,0,0,0" />
                     </StackPanel>
                 </Border>
 
@@ -101,8 +101,8 @@
                             <!-- Placeholder Overlay if stream offline -->
                             <StackPanel Name="PnlStreamPlaceholder" VerticalAlignment="Center" HorizontalAlignment="Center">
                                 <TextBlock Text="📱" FontSize="48" HorizontalAlignment="Center" />
-                                <TextBlock Text="Mahi Remote Screen Stream" Foreground="{StaticResource CyanAccent}" FontWeight="Bold" FontSize="14" HorizontalAlignment="Center" Margin="0,8,0,0" />
-                                <TextBlock Text="Click anywhere on canvas to send tap / gesture" Foreground="{StaticResource TextSecondary}" FontSize="11" HorizontalAlignment="Center" Margin="0,4,0,0" />
+                                <TextBlock Text="Live screen streaming is not available in this build" Foreground="{StaticResource CyanAccent}" FontWeight="Bold" FontSize="14" HorizontalAlignment="Center" Margin="0,8,0,0" />
+                                <TextBlock Text="Remote input stays disabled until real video is received" Foreground="{StaticResource TextSecondary}" FontSize="11" HorizontalAlignment="Center" Margin="0,4,0,0" />
                             </StackPanel>
                         </Grid>
                     </Border>
@@ -120,11 +120,11 @@
                             <TextBlock Text="SYSTEM HEALTH &amp; TELEMETRY" Foreground="{StaticResource TextSecondary}" FontSize="11" FontWeight="Bold" Margin="0,14,0,6" />
                             <Border Background="{StaticResource SurfaceElevated}" BorderBrush="{StaticResource BorderDark}" BorderThickness="1" CornerRadius="6" Padding="10">
                                 <StackPanel>
-                                    <TextBlock Text="Device: Samsung S24 Ultra (Noakhali)" Foreground="{StaticResource TextPrimary}" FontSize="12" />
-                                    <TextBlock Text="OS: Android 14 (Security Patch 2026-09)" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,2,0,0" />
-                                    <TextBlock Text="Battery: 86% (Good, 31.2°C, Charging)" Foreground="{StaticResource MintAccent}" FontSize="11" Margin="0,2,0,0" />
-                                    <TextBlock Text="Storage: 182.4 GB free / 256 GB total" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,2,0,0" />
-                                    <TextBlock Text="DNS &amp; Internet: Verified (18ms to 8.8.8.8)" Foreground="{StaticResource MintAccent}" FontSize="11" Margin="0,2,0,0" />
+                                    <TextBlock Text="Device: Not connected" Foreground="{StaticResource TextPrimary}" FontSize="12" />
+                                    <TextBlock Text="OS: Not reported" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,2,0,0" />
+                                    <TextBlock Text="Battery: Not reported" Foreground="{StaticResource MintAccent}" FontSize="11" Margin="0,2,0,0" />
+                                    <TextBlock Text="Storage: Not reported" Foreground="{StaticResource TextSecondary}" FontSize="11" Margin="0,2,0,0" />
+                                    <TextBlock Text="Network: Not reported" Foreground="{StaticResource MintAccent}" FontSize="11" Margin="0,2,0,0" />
                                 </StackPanel>
                             </Border>
 
@@ -152,8 +152,8 @@
         <!-- Status Bottom Bar -->
         <Border Grid.Row="2" Background="{StaticResource SurfaceElevated}" BorderBrush="{StaticResource BorderDark}" BorderThickness="0,1,0,0" Padding="12,0">
             <DockPanel LastChildFill="False">
-                <TextBlock Name="TxtStatusBar" Text="Ready. End-to-end encrypted session established with Noakhali device." Foreground="{StaticResource TextSecondary}" FontSize="11" VerticalAlignment="Center" />
-                <TextBlock DockPanel.Dock="Right" Text="Mahi Remote Protocol v1.0 | WebRTC H.264 / DataChannel" Foreground="{StaticResource TextSecondary}" FontSize="11" VerticalAlignment="Center" />
+                <TextBlock Name="TxtStatusBar" Text="Not connected. Pair with an online Android receiver." Foreground="{StaticResource TextSecondary}" FontSize="11" VerticalAlignment="Center" />
+                <TextBlock DockPanel.Dock="Right" Text="Mahi Remote Control | Remote media integration pending" Foreground="{StaticResource TextSecondary}" FontSize="11" VerticalAlignment="Center" />
             </DockPanel>
         </Border>
     </Grid>
