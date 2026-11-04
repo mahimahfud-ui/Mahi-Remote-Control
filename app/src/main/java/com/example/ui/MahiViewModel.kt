@@ -775,7 +775,10 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun setRemoteVideoResolution(width: Int, height: Int, rotation: Int) {
-        if (width <= 0 || height <= 0) return
+        if (width <= 0 || height <= 0) {
+            _remoteVideoResolution.value = null
+            return
+        }
         val normalizedRotation = ((rotation % 360) + 360) % 360
         _remoteVideoResolution.value = if (normalizedRotation == 90 || normalizedRotation == 270) {
             height to width
