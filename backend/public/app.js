@@ -13,6 +13,8 @@
     pairingRequestId: null,
     sessionId: null,
     sessionToken: null,
+    sessionId: null,
+    pendingIceCandidates: [],
     runtimeConfig: null,
     commandSequence: 1,
     dragStart: null,
@@ -239,8 +241,32 @@
         break;
       }
       case 'SDP_ANSWER': {
-        const answer = msg.payload && msg.payload.sdp ? msg.payload.sdp : msg.sdp;
-        if (answer) handleSdpAnswer(answer);
+        if (!state.sessionId || msg.sessionId !== state.sessionId) break;
+        const payload = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};
+        const answer = payload.sdp || msg.sdp;
+        if (answer) {
+          handleSdpAnswer(answer).catch(error => {
+            logAudit('WEBRTC', 'Unable to apply remote SDP answer: ' + error.message, 'critical');
+          });
+        }
+        break;
+      }
+      case 'ICE_CANDIDATE': {
+        if (!state.sessionId || msg.sessionId !== state.sessionId) break;
+        const payload = msg.payload && typeof msg.payload === 'object' ? msg.payload : {};
+        if (!payload.candidate) break;
+        const candidate = new RTCIceCandidate({
+          candidate: payload.candidate,
+          sdpMid: payload.sdpMid || null,
+          sdpMLineIndex: Number.isInteger(payload.sdpMLineIndex) ? payload.sdpMLineIndex : 0
+        });
+        if (!state.peerConnection || !state.peerConnection.remoteDescription) {
+          state.pendingIceCandidates.push(candidate);
+        } else {
+          state.peerConnection.addIceCandidate(candidate).catch(error => {
+            logAudit('WEBRTC', 'Unable to add remote ICE candidate: ' + error.message, 'critical');
+          });
+        }
         break;
       }
     }
@@ -345,6 +371,7 @@
     state.video.srcObject = null;
     state.sessionToken = null;
     state.sessionId = null;
+    state.pendingIceCandidates = [];
     state.activeDeviceId = null;
     state.pairedDevices = [];
     el.placeholder.style.display = 'block';
@@ -356,8 +383,12 @@
   }
 
   async function handleSdpAnswer(sdp) {
-    if (!state.peerConnection) await initWebRTC();
+    if (!state.peerConnection) throw new Error('The local WebRTC offer has not been created.');
     await state.peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }));
+    const queued = state.pendingIceCandidates.splice(0);
+    for (const candidate of queued) {
+      await state.peerConnection.addIceCandidate(candidate);
+    }
   }
 
   // Mouse to Touch Translation Engine
