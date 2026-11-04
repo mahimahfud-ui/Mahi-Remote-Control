@@ -60,6 +60,14 @@ class FileManager(private val context: Context) {
         roots.add(context.filesDir)
         context.getExternalFilesDir(null)?.let { roots.add(it) }
 
+        // Wider shared-storage browsing is available only after the owner explicitly
+        // grants Android's special "All files access" permission in system settings.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R &&
+            Environment.isExternalStorageManager()
+        ) {
+            roots.add(Environment.getExternalStorageDirectory())
+        }
+
         val downloads = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
         if (downloads != null && downloads.exists()) roots.add(downloads)
 
