@@ -25,6 +25,7 @@ data class StreamMetrics(
 sealed class ScreenStreamState {
     object Idle : ScreenStreamState()
     object RequestingConsent : ScreenStreamState()
+    object WaitingForController : ScreenStreamState()
     data class Active(val metrics: StreamMetrics, val preset: VideoPreset) : ScreenStreamState()
     object Stopped : ScreenStreamState()
     data class Error(val message: String) : ScreenStreamState()
