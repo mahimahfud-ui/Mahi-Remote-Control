@@ -1,99 +1,87 @@
-# Mahi Remote Control — Branch Implementation Status
+# Mahi Remote Control — Implementation and Verification Status
 
 **Assessment date:** 2026-11-04  
-**Working branch:** `work/remote-access-hardening`  
-**Base branch:** `main`  
-**Base commit:** `41d6bab20a822b1f5f87c4a88bdc32769377516d`
+**Branch:** `work/remote-access-hardening`  
+**PR:** [#2](https://github.com/mahimahfud-ui/Mahi-Remote-Control/pull/2)  
+**Latest branch commit at assessment:** `ea75c9e544a5f917eb19ab7f7cbf3bf58505acfe`  
+**Current default branch at assessment:** `main` (`949fea654cc501d75ce8bebae1a0420dc6cc35c0`)
 
 ## Executive status
 
-This branch is a security and UI hardening pass over the GitHub snapshot. It is **not a completed remote-control release**. It does not merge into or modify `main`.
+This branch contains a real Android WebRTC media pipeline and browser WebRTC receive path in source. It is not yet a verified end-to-end remote-control release. Backend CI passed on the latest source commit at the time of this update. Android CI is running again after two Kotlin compilation fixes; do not report it as passed until the corresponding GitHub Actions run is completed successfully.
 
-The current Google AI Studio Remix workspace was not available during this work. The branch therefore cannot claim to contain, preserve, or integrate newer workspace-only WebRTC work. Before merging anything, compare this branch against the current Remix workspace and resolve the differences.
+The branch was created from an earlier main commit and is currently two commits behind `main`. Reconcile it with the two newer main commits, especially the restored full browser UI, before merging. PR #1 (`work/anywhere-remote-control`) is a separate, overlapping implementation and must not be blindly merged over this branch.
 
-## Implemented in this branch (source changes; not yet built or executed)
+## Source implementation
 
-| Area | Change | Status |
+| Area | Current source state | What remains unverified |
 |---|---|---|
-| Android home UI | Replaced crowded seven-item primary navigation with “Control another device” and “Share this phone”; moved advanced receiver destinations into More | IMPLEMENTED_NOT_TESTED |
-| Android pairing QR | Replaced decorative QR-like pattern with a standards-compliant ZXing QR encoder | IMPLEMENTED_NOT_TESTED |
-| Android QR scanner | Uses Google Play Services Code Scanner instead of a manual fake scanner dialog | IMPLEMENTED_NOT_TESTED |
-| Pairing screen | Removed seeded demo operator and added a real-backend-configured browser URL display | IMPLEMENTED_NOT_TESTED |
-| Browser demo data | Removed hardcoded Samsung device, static telemetry and synthetic remote screen canvas | IMPLEMENTED_NOT_TESTED |
-| Browser pairing | Sends `PAIR_BY_CODE`, waits for receiver approval, and accepts server-issued session credentials | IMPLEMENTED_NOT_TESTED |
-| Browser WebRTC client | Creates a receive-only video transceiver and sends an SDP offer; displays LIVE only after a real video frame callback | PARTIAL — no Android video sender exists yet |
-| Backend approval | Pair code remains pending until explicit receiver approval; rejection does not create a session; code is consumed after approval | IMPLEMENTED_NOT_TESTED |
-| Pairing lifecycle | One active code per receiver, 5-minute maximum code lifetime, 2-minute pending request lifetime, one pending request per receiver | IMPLEMENTED_NOT_TESTED |
-| Session authorization | 30-minute signed session JWTs, issuer/audience/session ID checks, per-participant authorization on signaling relay | IMPLEMENTED_NOT_TESTED |
-| Rate limits | Pairing attempts limited by source IP and controller fingerprint; code regeneration limited by receiver ID | IMPLEMENTED_NOT_TESTED |
-| Emergency stop | Authenticated session is revoked server-side even if the other peer is offline | IMPLEMENTED_NOT_TESTED |
-| TURN secrets | Hardcoded TURN/JWT/database credentials removed from source and Compose configuration | IMPLEMENTED_NOT_TESTED |
-| Runtime configuration | Backend exposes HTTPS/WSS URL and short-lived TURN REST credentials from server environment | IMPLEMENTED_NOT_TESTED |
-| Android server config | Android reads the public backend URL at build time and gets WSS/ICE data from the runtime config endpoint | IMPLEMENTED_NOT_TESTED |
-| Screen capture truthfulness | Fake FPS/bitrate/frame counters were removed; the app now reports that video transport is not implemented rather than claiming LIVE | BLOCKED — actual WebRTC sender required |
+| Android app roles | Controller and receiver flows in one APK | Full device lifecycle and role-switch testing |
+| Pairing UI | Six-digit code and QR generation/scanning | Real-device camera/QR pairing |
+| Owner approval | Receiver approval required before session issuance | Abuse/race testing under concurrent requests |
+| Session authorization | Signed participant session JWTs; session-scoped relay checks | Durable revocation and device-key proof |
+| Android screen capture | MediaProjection foreground service and visible Stop notification | Physical permission/revocation/background tests |
+| Android WebRTC | PeerConnectionFactory, ScreenCapturerAndroid, video source/track, SDP offer/answer, ICE buffering/relay | Actual frames between two devices and different networks |
+| Android viewer | SurfaceViewRenderer attaches to received video track; waits for real decoded frame before enabling live state | Physical frame/render and touch-coordinate testing |
+| Browser controller | Receive-only RTCPeerConnection, real video element/frame-driven LIVE state | Browser-to-Android validation on Chrome/Edge and mobile browsers |
+| Remote input | Session-authorized command relay and Android input dispatch path | Accessibility opt-in and gesture/system-action compatibility matrix |
+| Files/apps/diagnostics | Android and browser UI/action paths exist | Storage permission, file limits, supported Android versions and failure handling |
+| Runtime configuration | HTTPS/WSS origin and approved-session TURN credential endpoint | Real DNS/TLS/Coturn/relay validation |
+| Windows controller | Legacy project remains in repository | Migration to current pairing and participant-token protocol |
+| Backend persistence | PostgreSQL package/schema/Compose service exist, but DeviceService is still process-local | PostgreSQL repository, migrations and atomic transactions |
+| Device identity | Fingerprint participates in authorization | Challenge/response using Android Keystore-held private key |
+
+## Automated verification
+
+| Check | Latest known result |
+|---|---|
+| Backend TypeScript build | PASS on commit `ea75c9e544a5f917eb19ab7f7cbf3bf58505acfe` (run [41814514970](https://github.com/mahimahfud-ui/Mahi-Remote-Control/actions/runs/41814514970)) |
+| Earlier Android build | FAIL before Kotlin fixes: unresolved `hasVideoFrames` in `ControllerViewerScreen.kt` and delegated-property smart-cast in `PairingScreen.kt` (run [41813904010](https://github.com/mahimahfud-ui/Mahi-Remote-Control/actions/runs/41813904010)) |
+| Android after fixes | IN PROGRESS at this assessment; see [latest Actions runs](https://github.com/mahimahfud-ui/Mahi-Remote-Control/actions) |
+| Backend integration tests | PASS in the successful backend workflow above |
+| Browser JS syntax check | Included in backend workflow; check full workflow output for the specific step |
+| Android unit/Robolectric tests | Pending completion of the current Android workflow |
+| Real two-Android-device test | NOT RUN |
+| Browser-to-Android test | NOT RUN |
+| Cross-network / forced TURN test | NOT RUN |
+| Windows-to-Android test | NOT RUN |
+
+The KSP IntelliJ Application null-pointer message appeared as an AWT event-thread exception, but Gradle continued through KSP and reached Kotlin compilation. The two reported Kotlin errors were the actual build-stopping failures. Do not treat the KSP log line as fixed or harmless without monitoring future CI logs; investigate it if it remains or causes a failing task.
 
 ## Release blockers
 
-### 1. Android WebRTC media pipeline — NOT IMPLEMENTED
+### 1. Durable backend state
 
-The Android code does not yet create a `PeerConnectionFactory`, capture a `MediaProjection` stream into a WebRTC video source, encode frames, add a video track, exchange SDP/ICE, or deliver remote frames to the Android viewer. The screen-capture service deliberately stops after reporting this gap, instead of fabricating telemetry.
+`backend/src/device-management/DeviceService.ts` stores devices, pairing codes and active sessions in static in-memory Maps. `AuthService` also stores rate limits in process memory, and `SignalingHub` stores connected clients and pending approval requests in memory. The presence of `pg`, `DATABASE_URL`, a PostgreSQL schema and a Compose service does not mean the application currently persists to PostgreSQL. Implement a database-backed repository and atomic one-time code consumption/session creation; define the intended behavior for ephemeral WebSocket connections and reconnect after restart.
 
-The browser client can now make a receive-only SDP offer, but it cannot show an Android screen until the Android receiver has a working WebRTC answerer and video sender. Android-to-Android remote viewing is also blocked by this missing media implementation.
+### 2. Cryptographic device identity
 
-### 2. Google AI Studio workspace — NOT REVIEWED
+Registration currently accepts a device ID and fingerprint supplied by the connecting client. Add a device-key enrollment and challenge/response flow using Android Keystore, signed nonces, server-side public-key storage, key rotation/recovery and replay protection. Never treat a client-submitted fingerprint as cryptographic proof.
 
-The user identified the current Remix workspace as the source of truth and said it may contain newer WebRTC work. It was not available in this session. This branch is based only on the public GitHub `main` snapshot. Do not overwrite the AI Studio workspace with this branch without a source comparison.
+### 3. Production TURN and public origin
 
-### 3. Public infrastructure — NOT CONFIGURED
+Configure public HTTPS/WSS, DNS/TLS, Coturn, matching private shared secrets, relay port ranges and firewall access. Test a forced-relay session on unrelated networks. A successful backend health check or a non-empty TURN URL is not proof that media can traverse TURN.
 
-A real deployment still needs:
-- A public HTTPS origin in `PUBLIC_BASE_URL`.
-- Valid TLS for HTTPS and WSS.
-- A reachable Coturn host, a random private `TURN_SHARED_SECRET`, and matching Coturn configuration.
-- Firewall access to the TURN listener and relay UDP port range.
-- A deployed backend serving both `/connect` and `/ws`.
+### 4. Android end-to-end verification
 
-The runtime config intentionally reports browser access as unavailable when `PUBLIC_BASE_URL` is missing or not HTTPS. A private phone IP is not a public endpoint. Cloudflare Tunnel can expose HTTP/WSS but does not replace TURN media relay.
+Run the current build on at least two physical Android devices. Confirm owner approval, Android MediaProjection permission, actual first decoded frame, stable video, coordinate scaling, remote input, disconnect, Stop notification, permission revocation, app restart, network loss and session expiry. Respect protected `FLAG_SECURE` content and Android OS permission boundaries.
 
-### 4. Backend persistence — NOT IMPLEMENTED
+### 5. Browser interoperability
 
-`DeviceService` currently stores devices, pairing codes and sessions in process-local Maps. The PostgreSQL schema and Compose service exist, but the service code does not persist or load these records from PostgreSQL. A restart loses state, and multiple backend replicas will not share pairing/session state. Do not treat this as production-ready or horizontally scalable.
+Test the production browser controller against the Android sender in current Chrome and Edge. Confirm SDP/ICE exchange, TURN relay, real video decode, browser cleanup, reconnect, file/app operations and authorization on every control message. Test browser page reload and stale-session handling.
 
-### 5. Device identity proof — INCOMPLETE
+### 6. Windows client
 
-Session tokens are signed and checked against the claimed connection ID and fingerprint, but the current WebSocket registration trusts the device ID and fingerprint supplied in client headers. A cryptographic challenge/response proving possession of the Android Keystore private key has not yet been integrated into this branch. The current fingerprint field is therefore not a complete mutual-authentication proof.
+The Windows WPF code has not been proven compatible with the new protocol. Either port it to the approved-session lifecycle and the current signaling schema with a real native WebRTC renderer, or explicitly scope Windows out of the first release. Do not show a fake or static stream.
 
-### 6. Windows client compatibility — NOT VERIFIED
+### 7. Branch and workspace reconciliation
 
-The legacy Windows client has not been migrated to the new approval and session-token protocol. Do not assume the existing Windows executable still connects successfully to this hardened signaling protocol.
+PR #2 is two commits behind current `main`; preserve the two newer UI commits when reconciling. PR #1 contains overlapping older/newer Android and Windows changes. Compare the current Google AI Studio Remix workspace and both PR branches, select one canonical WebRTC architecture, and port only unique valid work. Do not merge the branches wholesale or force-push over owner changes.
 
-## Verification state
+## Safety / product requirements
 
-| Verification | Status |
-|---|---|
-| Source review against GitHub snapshot | COMPLETED |
-| Feature branch created; `main` untouched | COMPLETED |
-| Backend TypeScript build | NOT RUN |
-| Backend integration tests | NOT RUN |
-| GitHub Actions backend workflow | Added; no run/check result available at report time |
-| Android debug build | NOT RUN |
-| Android release build | NOT RUN |
-| Android unit/Robolectric tests | NOT RUN |
-| Browser tests | NOT RUN |
-| Real Android-to-Android test | NOT RUN |
-| Real browser-to-Android test | NOT RUN |
-| Same-Wi-Fi test | NOT RUN |
-| Different-network/TURN relay test | NOT RUN |
-| Windows controller test | NOT RUN |
-
-The old `dist/REAL-DEVICE-TEST-REPORT.md` and older “VERIFIED” feature tables must not be treated as evidence of physical-device tests. The checked-in instrumented test is only a basic app-context assertion, and the Robolectric tests exercise local components rather than two physical phones.
-
-## Safe next steps
-
-1. Compare this branch to the current Google AI Studio Remix workspace.
-2. Implement the actual Android WebRTC media sender/answerer and Android controller video renderer using the workspace's current architecture.
-3. Integrate database-backed atomic pairing/session state and cryptographic device challenge/response.
-4. Deploy HTTPS/WSS and Coturn using strong environment secrets.
-5. Run the backend workflow and both Android build variants.
-6. Test with at least two physical Android devices, then separately test browser-to-Android on another network with TURN forced.
-7. Only then mark each scenario VERIFIED.
+- Every session starts with receiver-initiated approval.
+- Android's native screen-capture consent remains mandatory and visible.
+- The receiver can stop sharing immediately; stop/revoke must tear down the media peer and invalidate the backend session.
+- No hidden persistence, stealth capture, permission bypass, fabricated telemetry or placeholder screen may be represented as live.
+- Keep Android, browser and Windows user interfaces explicit about connection, approval, capture, media and authorization states.
