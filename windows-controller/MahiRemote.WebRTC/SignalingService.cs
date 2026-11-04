@@ -49,6 +49,7 @@ public class SignalingService
         _ws.Options.SetRequestHeader("X-Operator-Fingerprint", _crypto.OperatorFingerprint);
         _ws.Options.SetRequestHeader("X-Operator-Name", operatorName);
         _ws.Options.SetRequestHeader("X-Operator-Location", location);
+        _ws.Options.SetRequestHeader("X-Device-Name", operatorName);
 
         OnStatusChanged?.Invoke($"Connecting to signaling server at {serverUrl}...");
 
@@ -77,8 +78,12 @@ public class SignalingService
         {
             type = "PAIR_REQUEST",
             targetDeviceId,
+            code = pairingCode,
             pairingCode,
+            fingerprint = _crypto.OperatorFingerprint,
             operatorFingerprint = _crypto.OperatorFingerprint,
+            controllerName = _lastOperatorName ?? "Windows controller",
+            operatorName = _lastOperatorName ?? "Windows controller",
             requestedScopes = scopes,
             timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()
         };
