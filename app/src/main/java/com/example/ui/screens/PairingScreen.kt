@@ -43,6 +43,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.pairing.TrustedController
 import com.example.ui.MahiViewModel
+import org.json.JSONObject
 import com.example.ui.components.QrCodeView
 import com.example.ui.theme.CyanAccent
 import com.example.ui.theme.DarkCharcoalBg
@@ -73,6 +75,13 @@ fun PairingScreen(viewModel: MahiViewModel) {
     val currentCode by viewModel.pairingManager.currentPairingCode.collectAsState()
     val trustedControllers by viewModel.pairingManager.trustedControllers.collectAsState()
     val showQr by viewModel.showQrDialog.collectAsState()
+    val runtimeConfigJson by viewModel.signalingClient.runtimeConfigJson.collectAsState()
+    val browserAccessUrl = remember(runtimeConfigJson) {
+        runCatching {
+            JSONObject(runtimeConfigJson ?: "{}").optString("browserAccessUrl")
+                .takeIf { it.isNotBlank() && it != "null" }
+        }.getOrNull()
+    }
 
     Column(
         modifier = Modifier
@@ -183,6 +192,49 @@ fun PairingScreen(viewModel: MahiViewModel) {
                     }
                 }
 
+            }
+        }
+
+        // Public browser access is shown only when the backend returns a real HTTPS URL.
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = DarkSurface),
+            border = androidx.compose.foundation.BorderStroke(1.dp, DarkSurfaceBorder),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Laptop, contentDescription = null, tint = CyanAccent)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Browser access", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                }
+                Text(
+                    text = browserAccessUrl ?: "Not configured. The backend must have a valid HTTPS PUBLIC_BASE_URL.",
+                    color = if (browserAccessUrl != null) TextSecondary else WarningAmber,
+                    fontSize = 13.sp
+                )
+                if (browserAccessUrl != null) {
+                    OutlinedButton(
+                        onClick = {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("Mahi Remote browser URL", browserAccessUrl))
+                            Toast.makeText(context, "Browser URL copied", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Copy browser URL")
+                    }
+                }
+                Text(
+                    "The remote controller still needs the temporary code shown above, and this phone must approve its request.",
+                    color = TextMuted,
+                    fontSize = 12.sp
+                )
             }
         }
 
