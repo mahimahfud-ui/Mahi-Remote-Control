@@ -157,19 +157,20 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 when (msg.type) {
                     "PAIR_REQUEST" -> {
-                        val root = JSONObject(msg.payload)
-                        val opName = root.optString("operatorName", root.optString("controllerName", "Mahi Remote Controller"))
-                        val opLoc = root.optString("operatorLocation", "Remote Android Controller")
-                        val opFp = root.optString("fingerprint", root.optString("controllerFingerprint", "UNKNOWN-FP"))
-                        val cId = root.optString("controllerId", msg.sender)
-                        val scopesJson = root.optJSONArray("requestedScopes")
+                        val envelope = JSONObject(msg.payload)
+                        val root = envelope.optJSONObject("payload") ?: envelope
+                        val opName = envelope.optString("operatorName",
+                            root.optString("operatorName", envelope.optString("controllerName", root.optString("controllerName", "Remote controller"))))
+                        val opLoc = envelope.optString("operatorLocation", root.optString("operatorLocation", "Remote controller"))
+                        val opFp = envelope.optString("fingerprint",
+                            root.optString("fingerprint", envelope.optString("controllerFingerprint", "UNKNOWN-FP")))
+                        val cId = envelope.optString("controllerId", root.optString("controllerId", msg.sender))
+                        val scopesJson = envelope.optJSONArray("requestedScopes") ?: root.optJSONArray("requestedScopes")
                         val scopes = mutableListOf<String>()
                         if (scopesJson != null) {
-                            for (i in 0 until scopesJson.length()) {
-                                scopes.add(scopesJson.getString(i))
-                            }
+                            for (i in 0 until scopesJson.length()) scopes.add(scopesJson.getString(i))
                         } else {
-                            scopes.addAll(listOf("Screen Mirroring", "Remote Interaction", "File Transfer", "Diagnostics"))
+                            scopes.addAll(listOf("Screen Mirroring", "Remote Interaction"))
                         }
                         pairingManager.recordIncomingOperatorRequest(
                             controllerId = cId,
@@ -180,24 +181,23 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         )
                     }
                     "PAIR_ACCEPT" -> {
-                        // Handled on Controller side: target device approved!
-                        val root = JSONObject(msg.payload)
-                        val sessionId = root.optString("sessionId", UUID.randomUUID().toString())
-                        val receiverName = root.optString("receiverName", "Android Receiver Phone")
-                        val targetFp = root.optString("fingerprint", "TARGET-FP")
-                        val session = ControllerSession(
+                        // This confirms receiver approval; the server sends a separate session token.
+                        val envelope = JSONObject(msg.payload)
+                        val root = envelope.optJSONObject("payload") ?: envelope
+                        val sessionId = root.optString("sessionId", "")
+                        val receiverName = root.optString("receiverName", "Android Receiver")
+                        val targetFp = root.optString("fingerprint", "")
+                        _activeControllerSession.value = ControllerSession(
                             sessionId = sessionId,
                             targetDeviceId = msg.sender,
                             targetDeviceName = receiverName,
                             targetFingerprint = targetFp,
-                            sessionToken = UUID.randomUUID().toString(),
+                            sessionToken = "",
                             connectedAtMillis = System.currentTimeMillis()
                         )
-                        _activeControllerSession.value = session
-                        _isControllerConnecting.value = false
-                        _controllerErrorMessage.value = null
+                        _isControllerConnecting.value = true
+                        _controllerErrorMessage.value = "Approved. Authenticating secure session…"
 
-                        // Add to recent target devices
                         val updated = _recentTargetDevices.value.filter { it.deviceId != msg.sender } +
                             KnownTargetDevice(
                                 deviceId = msg.sender,
@@ -208,12 +208,25 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                                 isOnline = true
                             )
                         _recentTargetDevices.value = updated
-
-                        AuditLogger.log("CONTROLLER", "SESSION_ESTABLISHED", "Connected to remote phone: $receiverName", AuditSeverity.SECURITY)
-
-                        // Request initial remote app and file catalog
-                        fetchRemoteApps()
-                        fetchRemoteFiles()
+                    }
+                    "SESSION_AUTHORIZED" -> {
+                        val envelope = JSONObject(msg.payload)
+                        val sessionId = envelope.optString("sessionId", "")
+                        val token = envelope.optString("sessionToken", "")
+                        if (token.isNotBlank() && sessionId.isNotBlank()) {
+                            _activeControllerSession.value = _activeControllerSession.value?.copy(
+                                sessionId = sessionId,
+                                sessionToken = token
+                            )
+                            _isControllerConnecting.value = false
+                            _controllerErrorMessage.value = null
+                            AuditLogger.log("CONTROLLER", "SESSION_AUTHENTICATED", "Owner-approved remote session authenticated", AuditSeverity.SECURITY)
+                        }
+                    }
+                    "SESSION_REVOKED", "DISCONNECTED" -> {
+                        _activeControllerSession.value = null
+                        _isControllerConnecting.value = false
+                        _controllerErrorMessage.value = "Remote session was disconnected."
                     }
                     "PAIR_REJECT" -> {
                         _isControllerConnecting.value = false
