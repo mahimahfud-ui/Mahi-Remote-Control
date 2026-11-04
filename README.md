@@ -1,24 +1,32 @@
 # Mahi Remote Control
 
-> Production-grade, secure remote Android device support and control platform connecting Windows desktop operators to Android phones over the internet.
+> Owner-approved remote support architecture for Android-to-Android and browser-to-Android connections. Same-Wi-Fi is not a design requirement; both endpoints need Internet access and a reachable public signaling service plus STUN/TURN for difficult NAT paths.
 
----
+## Current implementation status
 
-## 🌟 Overview
+**This repository is not yet a complete or release-ready remote-control product.** The latest GitHub snapshot did not contain a native Android WebRTC publisher/receiver. The current working branch deliberately fails closed after MediaProjection consent instead of pretending simulated metrics are live video. The browser client now has a real pairing/offer path, but it cannot receive actual screen frames until the native Android WebRTC media pipeline is implemented.
 
-**Mahi Remote Control** allows an authorized Windows desktop operator (e.g. located in **Sylhet, Bangladesh**) to securely view, diagnose, and troubleshoot an Android phone (e.g. located in **Noakhali, Bangladesh**) across different cellular or Wi-Fi networks without physical USB connections, shared local networks, or rooting requirements.
+All work described here is on `work/anywhere-remote-control`. GitHub `main` has not been changed. The Google AI Studio Remix workspace was not available in this implementation session; compare this branch against that workspace before merging so newer workspace work is not overwritten.
 
-### Key Capabilities
-- **Non-Root by Design:** Works immediately on stock, unrooted Android 8.0+ devices using official **MediaProjection** and **AccessibilityService** APIs.
-- **WebRTC Screen Mirroring:** Hardware-accelerated H.264 video pipeline with adaptive bitrate (1080p 60fps, 720p 30fps, 480p 15fps) and automatic orientation handling.
-- **Touch & Gesture Interaction:** Mouse clicks translate to taps, drags translate to swipes, scroll wheels translate to vertical scrolls, and physical keyboards input text into focused fields.
-- **Automated Diagnostics:** One-click automated diagnostics for Internet connectivity, DNS latency, Google Play Services status, storage capacity, battery subsystem health, system clock sync, and remote permissions.
-- **Scoped File Manager:** Secure browsing of internal and external Documents/Downloads directories with download, upload, rename, and confirmation-gated file deletion.
-- **Application Management:** Query installed packages, inspect version/target SDK details, launch applications, open application settings, or request system uninstallation prompts.
-- **Cryptographic Security:** Ed25519 / ECDSA device identity, 6-digit expiring pairing codes, QR-code pairing, zero-trust command allowlists, persistent user notifications, and an instant emergency killswitch.
-- **Optional Magisk Integration:** Automatic detection of Magisk on rooted phones. If present, privileged mode is strictly opt-in and restricted to signed allowlists.
+### Current branch improvements
 
----
+- Receiver-approved pairing request lifecycle with hashed, short-lived codes.
+- Session-bound tokens and peer-only signaling relay; no broadcast fallback for remote commands.
+- Dynamic TURN credential endpoint and explicit public HTTPS/WSS configuration.
+- Browser controller no longer uses a fake demo device or synthetic phone screen.
+- Simplified Android home screen with two primary actions and a More menu.
+- Demo devices, fake default telemetry and synthetic screen-stream metrics removed.
+- Backend/Android CI workflow and honest implementation/deployment documentation added.
+
+### Critical remaining work
+
+- Implement Android native WebRTC PeerConnection, MediaProjection video capture/encoding, SDP/ICE handling and remote video rendering.
+- Complete Android-to-Android and browser-to-Android end-to-end command/video paths.
+- Persist pairing/session state in PostgreSQL or another shared durable store; current backend maps are process memory.
+- Deploy and verify a public HTTPS/WSS backend and a real Coturn relay.
+- Run the new CI workflow, generate a signed release APK, and test with physical devices and external networks.
+
+See [implementation status](docs/IMPLEMENTATION-STATUS.md) and [public remote deployment](docs/PUBLIC-REMOTE-DEPLOYMENT.md) before using or distributing this branch.
 
 ## 📐 Architecture & Monorepo Structure
 
