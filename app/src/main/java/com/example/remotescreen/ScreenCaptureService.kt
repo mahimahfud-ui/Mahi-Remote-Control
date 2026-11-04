@@ -216,6 +216,8 @@ class ScreenCaptureService : Service() {
                 error.message ?: "Could not start the screen-sharing session."
             )
             stopCurrentWebRtcSession()
+            activeSessionId = null
+            pendingSignals.clear()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
