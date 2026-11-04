@@ -358,6 +358,12 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     "SESSION_REVOKED", "DISCONNECTED" -> {
                         remoteWebRtcSession.endFromServer()
+                        if (appRole.value == AppRole.RECEIVER) {
+                            pairingManager.emergencyDisconnect("The approved remote session was revoked by a participant")
+                            if (ScreenCaptureService.isStreaming()) {
+                                ScreenCaptureService.stopAfterSessionRevoked(getApplication())
+                            }
+                        }
                         _activeControllerSession.value = null
                         _isControllerConnecting.value = false
                         _controllerErrorMessage.value = "Remote session was disconnected."
@@ -518,18 +524,19 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                 MahiAccessibilityService.performSwipe(x1, y1, x2, y2, duration, screenW, screenH)
             }
             "DRAG" -> {
-                val x1 = cmd.optDouble("x", -1.0).toFloat()
-                val y1 = cmd.optDouble("y", -1.0).toFloat()
-                val x2 = cmd.optDouble("x2", -1.0).toFloat()
-                val y2 = cmd.optDouble("y2", -1.0).toFloat()
+                val x1 = mapX(cmd.optDouble("x", -1.0).toFloat())
+                val y1 = mapY(cmd.optDouble("y", -1.0).toFloat())
+                val x2 = mapX(cmd.optDouble("x2", -1.0).toFloat())
+                val y2 = mapY(cmd.optDouble("y2", -1.0).toFloat())
                 val duration = cmd.optLong("durationMs", 600L)
                 MahiAccessibilityService.performDrag(x1, y1, x2, y2, duration, screenW, screenH)
             }
             "SCROLL" -> {
                 val action = cmd.optString("action", "DOWN")
-                val startY = if (action.equals("UP", ignoreCase = true)) 1400f else 600f
-                val endY = if (action.equals("UP", ignoreCase = true)) 600f else 1400f
-                MahiAccessibilityService.performSwipe(540f, startY, 540f, endY, 250L, screenW, screenH)
+                val startY = mapY(if (action.equals("UP", ignoreCase = true)) 1400f else 600f)
+                val endY = mapY(if (action.equals("UP", ignoreCase = true)) 600f else 1400f)
+                val centerX = mapX(540f)
+                MahiAccessibilityService.performSwipe(centerX, startY, centerX, endY, 250L, screenW, screenH)
             }
             "GLOBALACTION", "GLOBAL_ACTION" -> {
                 val action = cmd.optString("action", "BACK")
