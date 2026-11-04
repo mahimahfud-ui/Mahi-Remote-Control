@@ -10,6 +10,7 @@ interface ClientConnection {
   id: string;
   type: ClientType;
   fingerprint: string;
+  remoteAddress: string;
 }
 
 interface PendingPairingRequest {
@@ -74,6 +75,7 @@ export class SignalingHub {
         id: clientId,
         type: clientType,
         fingerprint: (req.headers['x-device-fingerprint'] || operatorFp || '') as string,
+        remoteAddress: req.socket.remoteAddress || 'unknown',
       };
       this.clients.set(clientId, client);
 
@@ -129,6 +131,13 @@ export class SignalingHub {
 
     if (!/^\d{6}$/.test(code) || fingerprint.length < 8 || fingerprint.length > 256) {
       this.send(sender, { type: 'PAIR_ERROR', error: 'A valid six-digit code and controller fingerprint are required.' });
+      return;
+    }
+    if (
+      !AuthService.checkRateLimit(`pair-ip:${sender.remoteAddress}`, 12, 60_000) ||
+      !AuthService.checkRateLimit(`pair-fp:${fingerprint}`, 5, 60_000)
+    ) {
+      this.send(sender, { type: 'PAIR_ERROR', error: 'Too many pairing attempts. Try again later.' });
       return;
     }
     sender.fingerprint = fingerprint;
@@ -317,6 +326,10 @@ export class SignalingHub {
       const expiresAt = Number(msg.expiresAt || payload.expiresAt || (Date.now() + 5 * 60 * 1000));
       if (!/^\d{6}$/.test(code) || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
         this.send(sender, { type: 'PAIR_ERROR', error: 'Invalid pairing-code registration.' });
+        return;
+      }
+      if (!AuthService.checkRateLimit(`code-register:${sender.id}`, 12, 60_000)) {
+        this.send(sender, { type: 'PAIR_ERROR', error: 'Pairing code regeneration is temporarily rate limited.' });
         return;
       }
       DeviceService.storePairingCode(sender.id, code, Math.min(expiresAt, Date.now() + 5 * 60 * 1000));
