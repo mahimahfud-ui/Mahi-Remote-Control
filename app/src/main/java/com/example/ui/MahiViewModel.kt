@@ -357,10 +357,11 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         remoteWebRtcSession.onSignal(msg.type, msg.sender, envelope.optString("sessionId", ""), messagePayload(msg))
                     }
                     "SESSION_REVOKED", "DISCONNECTED" -> {
+                        val receiverWasSharing = appRole.value == AppRole.RECEIVER && ScreenCaptureService.isStreaming()
                         remoteWebRtcSession.endFromServer()
                         if (appRole.value == AppRole.RECEIVER) {
                             pairingManager.emergencyDisconnect("The approved remote session was revoked by a participant")
-                            if (ScreenCaptureService.isStreaming()) {
+                            if (receiverWasSharing) {
                                 ScreenCaptureService.stopAfterSessionRevoked(getApplication())
                             }
                         }
