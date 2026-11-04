@@ -369,7 +369,7 @@ fun MainAppScaffold(
             } else {
                 when (selectedTab) {
                     MainTab.DASHBOARD -> DashboardScreen(viewModel, onRequestScreenShare)
-                    MainTab.PAIRING -> PairingScreen(viewModel)
+                    MainTab.PAIRING -> PairingScreen(viewModel, onRequestScreenShare)
                     MainTab.SERVICES -> RemoteServicesScreen(viewModel, onRequestScreenShare)
                     MainTab.DIAGNOSTICS -> DiagnosticsScreen(viewModel)
                     MainTab.FILES -> FileManagerScreen(viewModel)
