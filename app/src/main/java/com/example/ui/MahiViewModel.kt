@@ -3,6 +3,7 @@ package com.example.ui
 import android.app.Application
 import com.example.BuildConfig
 import android.content.Context
+import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.appmanager.AppItem
@@ -19,6 +20,7 @@ import com.example.filetransfer.FileManager
 import com.example.pairing.OperatorRequest
 import com.example.pairing.PairingManager
 import com.example.remoteinput.MahiAccessibilityService
+import com.example.remotescreen.AndroidWebRtcSession
 import com.example.remotescreen.ScreenCaptureService
 import com.example.remotescreen.ScreenStreamState
 import com.example.remotescreen.StreamMetrics
@@ -40,6 +42,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
+import org.webrtc.PeerConnection
+import org.webrtc.VideoTrack
 import java.util.UUID
 import java.net.HttpURLConnection
 import java.net.URL
@@ -132,11 +136,18 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     private val _remoteMetrics = MutableStateFlow(StreamMetrics())
     val remoteMetrics: StateFlow<StreamMetrics> = _remoteMetrics.asStateFlow()
 
+    val remoteWebRtcSession: AndroidWebRtcSession
+    val remoteVideoTrack: StateFlow<VideoTrack?> get() = remoteWebRtcSession.remoteVideo
+    val remoteWebRtcStatus: StateFlow<String> get() = remoteWebRtcSession.status
+
     val signalingClient: SignalingClient
 
     init {
         signalingClient = SignalingClient(identity) { msg ->
             handleIncomingSignalingMessage(msg)
+        }
+        remoteWebRtcSession = AndroidWebRtcSession(application) { type, payload, recipient ->
+            signalingClient.send(type, payload, recipient)
         }
         loadPublicBackendConfig()
 
@@ -164,6 +175,49 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             runDiagnostics()
         }
+    }
+
+    private suspend fun fetchIceServers(token: String): List<PeerConnection.IceServer> = withContext(Dispatchers.IO) {
+        val servers = mutableListOf(
+            PeerConnection.IceServer.builder("stun:stun.cloudflare.com:3478").createIceServer(),
+            PeerConnection.IceServer.builder("stun:stun.l.google.com:19302").createIceServer()
+        )
+        val base = BuildConfig.MAHI_PUBLIC_BASE_URL.trim().trimEnd('/')
+        if (base.isBlank() || token.isBlank()) return@withContext servers
+        var connection: HttpURLConnection? = null
+        try {
+            connection = (URL(base + "/api/v1/turn/credentials").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 8000
+                readTimeout = 8000
+                doOutput = true
+                setRequestProperty("Authorization", "Bearer " + token)
+                setRequestProperty("Content-Type", "application/json")
+            }
+            connection.outputStream.use { it.write("{}".toByteArray(Charsets.UTF_8)) }
+            if (connection.responseCode !in 200..299) return@withContext servers
+            val response = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+            val array = response.optJSONArray("iceServers") ?: return@withContext servers
+            for (i in 0 until array.length()) {
+                val item = array.optJSONObject(i) ?: continue
+                val urlsValue = item.opt("urls")
+                val urls = when (urlsValue) {
+                    is JSONArray -> (0 until urlsValue.length()).mapNotNull { urlsValue.optString(it).takeIf(String::isNotBlank) }
+                    is String -> listOf(urlsValue).filter(String::isNotBlank)
+                    else -> emptyList()
+                }
+                if (urls.isEmpty()) continue
+                val builder = PeerConnection.IceServer.builder(urls)
+                item.optString("username").takeIf(String::isNotBlank)?.let(builder::setUsername)
+                item.optString("credential").takeIf(String::isNotBlank)?.let(builder::setPassword)
+                servers.add(builder.createIceServer())
+            }
+        } catch (_: Exception) {
+            AuditLogger.log("WEBRTC", "TURN_UNAVAILABLE", "Using STUN-only connectivity; relay credentials are unavailable", AuditSeverity.WARNING)
+        } finally {
+            connection?.disconnect()
+        }
+        servers
     }
 
     private fun loadPublicBackendConfig() {
@@ -281,16 +335,29 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         val sessionId = envelope.optString("sessionId", "")
                         val token = envelope.optString("sessionToken", "")
                         if (token.isNotBlank() && sessionId.isNotBlank()) {
-                            _activeControllerSession.value = _activeControllerSession.value?.copy(
-                                sessionId = sessionId,
-                                sessionToken = token
-                            )
-                            _isControllerConnecting.value = false
-                            _controllerErrorMessage.value = null
-                            AuditLogger.log("CONTROLLER", "SESSION_AUTHENTICATED", "Owner-approved remote session authenticated", AuditSeverity.SECURITY)
+                            val controllerSession = _activeControllerSession.value
+                            viewModelScope.launch {
+                                val iceServers = fetchIceServers(token)
+                                if (controllerSession != null && appRole.value == AppRole.CONTROLLER) {
+                                    val authenticated = controllerSession.copy(sessionId = sessionId, sessionToken = token)
+                                    _activeControllerSession.value = authenticated
+                                    _isControllerConnecting.value = false
+                                    _controllerErrorMessage.value = null
+                                    remoteWebRtcSession.startController(sessionId, authenticated.targetDeviceId, iceServers)
+                                    AuditLogger.log("CONTROLLER", "SESSION_AUTHENTICATED", "Approved session authenticated; starting video negotiation", AuditSeverity.SECURITY)
+                                } else {
+                                    remoteWebRtcSession.setIceServers(iceServers)
+                                    AuditLogger.log("RECEIVER", "SESSION_AUTHENTICATED", "Approved controller session authenticated", AuditSeverity.SECURITY)
+                                }
+                            }
                         }
                     }
+                    "SDP_OFFER", "SDP_ANSWER", "ICE_CANDIDATE", "STREAM_STATUS" -> {
+                        val envelope = JSONObject(msg.payload)
+                        remoteWebRtcSession.onSignal(msg.type, msg.sender, envelope.optString("sessionId", ""), messagePayload(msg))
+                    }
                     "SESSION_REVOKED", "DISCONNECTED" -> {
+                        remoteWebRtcSession.endFromServer()
                         _activeControllerSession.value = null
                         _isControllerConnecting.value = false
                         _controllerErrorMessage.value = "Remote session was disconnected."
@@ -416,30 +483,33 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         val cmd = if (root.has("command")) root.getJSONObject("command") else root
         val type = cmd.optString("type", "")
 
-        val screenW = 1080
-        val screenH = 1920
+        val display = getApplication<Application>().resources.displayMetrics
+        val screenW = display.widthPixels.coerceAtLeast(1)
+        val screenH = display.heightPixels.coerceAtLeast(1)
+        fun mapX(value: Float) = (value / 1080f * screenW).coerceIn(0f, (screenW - 1).toFloat())
+        fun mapY(value: Float) = (value / 1920f * screenH).coerceIn(0f, (screenH - 1).toFloat())
 
         when (type.uppercase()) {
             "TAP" -> {
-                val x = cmd.optDouble("x", -1.0).toFloat()
-                val y = cmd.optDouble("y", -1.0).toFloat()
+                val x = mapX(cmd.optDouble("x", -1.0).toFloat())
+                val y = mapY(cmd.optDouble("y", -1.0).toFloat())
                 MahiAccessibilityService.performTap(x, y, screenW, screenH)
             }
             "DOUBLETAP", "DOUBLE_TAP" -> {
-                val x = cmd.optDouble("x", -1.0).toFloat()
-                val y = cmd.optDouble("y", -1.0).toFloat()
+                val x = mapX(cmd.optDouble("x", -1.0).toFloat())
+                val y = mapY(cmd.optDouble("y", -1.0).toFloat())
                 MahiAccessibilityService.performDoubleTap(x, y, screenW, screenH)
             }
             "LONGPRESS", "LONG_PRESS" -> {
-                val x = cmd.optDouble("x", -1.0).toFloat()
-                val y = cmd.optDouble("y", -1.0).toFloat()
+                val x = mapX(cmd.optDouble("x", -1.0).toFloat())
+                val y = mapY(cmd.optDouble("y", -1.0).toFloat())
                 MahiAccessibilityService.performLongPress(x, y, screenW, screenH)
             }
             "SWIPE" -> {
-                val x1 = cmd.optDouble("x", -1.0).toFloat()
-                val y1 = cmd.optDouble("y", -1.0).toFloat()
-                val x2 = cmd.optDouble("x2", -1.0).toFloat()
-                val y2 = cmd.optDouble("y2", -1.0).toFloat()
+                val x1 = mapX(cmd.optDouble("x", -1.0).toFloat())
+                val y1 = mapY(cmd.optDouble("y", -1.0).toFloat())
+                val x2 = mapX(cmd.optDouble("x2", -1.0).toFloat())
+                val y2 = mapY(cmd.optDouble("y2", -1.0).toFloat())
                 val duration = cmd.optLong("durationMs", 300L)
                 MahiAccessibilityService.performSwipe(x1, y1, x2, y2, duration, screenW, screenH)
             }
@@ -662,13 +732,21 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     fun disconnectControllerSession() {
         val session = _activeControllerSession.value
         if (session != null) {
+            remoteWebRtcSession.stop()
             signalingClient.send("EMERGENCY_DISCONNECT", """{"reason":"Controller disconnected"}""", session.targetDeviceId)
             _activeControllerSession.value = null
             AuditLogger.log("CONTROLLER", "DISCONNECTED", "Disconnected from ${session.targetDeviceName}", AuditSeverity.INFO)
         }
     }
 
+    private fun remoteInputReady(): Boolean {
+        if (remoteWebRtcSession.remoteVideo.value != null) return true
+        _controllerErrorMessage.value = "Waiting for a real remote screen frame. Remote input is disabled until video is connected."
+        return false
+    }
+
     fun sendRemoteTap(x: Float, y: Float, canvasW: Float, canvasH: Float) {
+        if (!remoteInputReady()) return
         val session = _activeControllerSession.value ?: return
         val targetX = (x / canvasW) * 1080f
         val targetY = (y / canvasH) * 1920f
@@ -687,6 +765,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendRemoteDoubleTap(x: Float, y: Float, canvasW: Float, canvasH: Float) {
+        if (!remoteInputReady()) return
         val session = _activeControllerSession.value ?: return
         val targetX = (x / canvasW) * 1080f
         val targetY = (y / canvasH) * 1920f
@@ -705,6 +784,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendRemoteLongPress(x: Float, y: Float, canvasW: Float, canvasH: Float) {
+        if (!remoteInputReady()) return
         val session = _activeControllerSession.value ?: return
         val targetX = (x / canvasW) * 1080f
         val targetY = (y / canvasH) * 1920f
@@ -723,6 +803,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendRemoteSwipe(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long, canvasW: Float, canvasH: Float) {
+        if (!remoteInputReady()) return
         val session = _activeControllerSession.value ?: return
         val targetX1 = (x1 / canvasW) * 1080f
         val targetY1 = (y1 / canvasH) * 1920f
@@ -746,6 +827,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendRemoteGlobalAction(action: String) {
+        if (!remoteInputReady()) return
         val session = _activeControllerSession.value ?: return
         val payload = """
             {
@@ -760,6 +842,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendRemoteTextInput(text: String) {
+        if (!remoteInputReady()) return
         val session = _activeControllerSession.value ?: return
         val safeText = JSONObject.quote(text)
         val payload = """
@@ -775,6 +858,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendRemoteVolume(direction: String) {
+        if (!remoteInputReady()) return
         val session = _activeControllerSession.value ?: return
         val payload = """
             {
@@ -849,6 +933,11 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setVideoPreset(preset: VideoPreset) {
         _videoPreset.value = preset
+        remoteWebRtcSession.updatePreset(preset)
+    }
+
+    fun setScreenCaptureConsent(resultCode: Int, resultData: Intent) {
+        remoteWebRtcSession.setScreenConsent(resultCode, resultData, _videoPreset.value)
     }
 
     fun setAppSearchQuery(query: String) {
@@ -908,6 +997,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
             """{"reason":"Emergency Stop activated by receiver owner"}"""
         )
         pairingManager.emergencyDisconnect("Emergency Stop activated by receiver owner")
+        remoteWebRtcSession.stop()
         ScreenCaptureService.stop(getApplication())
         _activeControllerSession.value?.let { session ->
             signalingClient.send(
@@ -952,6 +1042,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        remoteWebRtcSession.close()
         signalingClient.disconnect()
         super.onCleared()
     }
