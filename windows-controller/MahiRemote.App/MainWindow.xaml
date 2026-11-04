@@ -20,7 +20,7 @@
             <DockPanel LastChildFill="False">
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <Ellipse Width="10" Height="10" Fill="{StaticResource MintAccent}" Margin="0,0,8,0" />
-                    <TextBlock Text="MAHI REMOTE CONTROL" Foreground="{StaticResource CyanAccent}" FontWeight="Bold" FontSize="14" LetterSpacing="2" VerticalAlignment="Center" />
+                    <TextBlock Text="MAHI REMOTE CONTROL" Foreground="{StaticResource CyanAccent}" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" />
                     <TextBlock Text=" | Windows Controller v1.0.0 (Operator: Sylhet NOC)" Foreground="{StaticResource TextSecondary}" FontSize="12" VerticalAlignment="Center" Margin="8,0,0,0" />
                 </StackPanel>
 
@@ -42,7 +42,7 @@
             <!-- Left Sidebar: Devices List -->
             <Border Grid.Column="0" Background="{StaticResource SurfaceDark}" BorderBrush="{StaticResource BorderDark}" BorderThickness="0,0,1,0" Padding="12">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="PAIRED ANDROID DEVICES" Foreground="{StaticResource TextSecondary}" FontSize="11" FontWeight="Bold" LetterSpacing="1" Margin="0,0,0,10" />
+                    <TextBlock DockPanel.Dock="Top" Text="PAIRED ANDROID DEVICES" Foreground="{StaticResource TextSecondary}" FontSize="11" FontWeight="Bold" Margin="0,0,0,10" />
                     
                     <ListBox Name="LstDevices" Background="Transparent" BorderThickness="0" SelectionChanged="LstDevices_SelectionChanged">
                         <ListBox.ItemTemplate>
