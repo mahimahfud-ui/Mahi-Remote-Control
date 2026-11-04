@@ -1,0 +1,47 @@
+name: Android verification
+
+on:
+  push:
+    branches:
+      - work/remote-access-hardening
+    paths:
+      - "app/**"
+      - "gradle/**"
+      - "build.gradle.kts"
+      - "settings.gradle.kts"
+      - ".github/workflows/android-verification.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android 36 SDK packages
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Compile debug APK
+        run: gradle :app:assembleDebug -PPUBLIC_BASE_URL=https://remote.example.invalid
+
+      - name: Run Android unit and Robolectric tests
+        run: gradle :app:testDebugUnitTest -PPUBLIC_BASE_URL=https://remote.example.invalid
