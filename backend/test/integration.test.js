@@ -172,7 +172,7 @@ async function runTests() {
     console.log('✓ Authorized WebSocket SDP answer relay PASSED');
 
     // Missing/invalid session credentials must not be relayed.
-    const unauthorizedPromise = nextMessage(wsDevice, msg => msg.type === 'SESSION_ERROR', 'unauthorized command rejection');
+    const unauthorizedPromise = nextMessage(wsOperator, msg => msg.type === 'SESSION_ERROR', 'unauthorized command rejection');
     wsOperator.send(JSON.stringify({
       type: 'INPUT_EVENT',
       targetDeviceId: 'MAHI-WS-DEVICE',
