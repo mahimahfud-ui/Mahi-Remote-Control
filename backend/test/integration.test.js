@@ -163,7 +163,7 @@ async function runTests() {
     const sdpAnswerPromise = nextMessage(wsOperator, msg => msg.type === 'SDP_ANSWER', 'authorized SDP answer relay');
     wsDevice.send(JSON.stringify({
       type: 'SDP_ANSWER',
-      recipient: wsOperator ? controllerApproval.sender : '',
+      recipient: receiverAuthorization.sender,
       sessionToken: receiverAuthorization.sessionToken,
       payload: { sdp: 'v=0\\r\\no=- 5678 2 IN IP4 0.0.0.0...' }
     }));
