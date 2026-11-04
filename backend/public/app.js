@@ -165,10 +165,10 @@
       case 'SESSION_AUTHORIZED':
         state.sessionToken = msg.sessionToken || payload.sessionToken || null;
         state.activeDeviceId = msg.peerId || payload.peerId || state.activeDeviceId;
-        state.sessionActive = !!state.sessionToken;
-        if (state.sessionActive) {
-          logAudit('SECURITY', 'Owner-approved remote session established.', 'security');
-          startBrowserOffer().catch(error => logAudit('WEBRTC', 'Could not start WebRTC: ' + error.message, 'critical'));
+        state.sessionActive = false;
+        if (state.sessionToken) {
+          logAudit('SECURITY', 'Receiver approved. Authenticating the browser session.');
+          sendWs({ type: 'AUTHENTICATE', sessionToken: state.sessionToken });
         }
         break;
       case 'AUTHENTICATED':
