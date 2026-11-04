@@ -600,6 +600,13 @@
 
   // Pairing Modal
   function setupModal() {
+    const queryCode = new URL(window.location.href).searchParams.get('code');
+    if (queryCode && /^\\d{6}$/.test(queryCode.replace(/[^0-9]/g, ''))) {
+      el.inputPairCode.value = queryCode.replace(/[^0-9]/g, '');
+      el.pairModal.style.display = 'flex';
+      logAudit('PAIRING', 'Temporary code was prefilled from the receiver QR link.');
+    }
+
     el.btnPair.onclick = () => {
       el.pairModal.style.display = 'flex';
       el.inputPairCode.focus();
