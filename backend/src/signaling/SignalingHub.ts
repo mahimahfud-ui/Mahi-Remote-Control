@@ -290,9 +290,34 @@ export class SignalingHub {
       sendJson(sender, { type: 'ERROR', error: 'Unsupported signaling message.' });
       return;
     }
-    if (!sender.sessionId || !sender.peerId ||
+    const activeSession = sender.sessionId ? DeviceService.getSession(sender.sessionId) : undefined;
+    if (!sender.sessionId || !sender.peerId || !activeSession ||
         !DeviceService.isSessionParticipant(sender.sessionId, sender.id, sender.peerId)) {
       sendJson(sender, { type: 'SESSION_REQUIRED', error: 'An owner-approved active session is required.' });
+      return;
+    }
+
+    const requiredScopeByMessage: Record<string, string> = {
+      SDP_OFFER: 'SCREEN_VIEW',
+      SDP_ANSWER: 'SCREEN_VIEW',
+      ICE_CANDIDATE: 'SCREEN_VIEW',
+      STREAM_STATUS: 'SCREEN_VIEW',
+      INPUT_EVENT: 'REMOTE_INPUT',
+      FILE_COMMAND: 'FILE_TRANSFER',
+      FILE_LIST_RESPONSE: 'FILE_TRANSFER',
+      FILE_CHUNK_RESPONSE: 'FILE_TRANSFER',
+      APP_COMMAND: 'APP_MANAGEMENT',
+      APP_LIST_RESPONSE: 'APP_MANAGEMENT',
+      DIAGNOSTICS_RUN: 'DIAGNOSTICS',
+      DIAGNOSTICS_RESULT: 'DIAGNOSTICS',
+    };
+    const requiredScope = requiredScopeByMessage[type];
+    if (requiredScope && !activeSession.grantedScopes.includes(requiredScope)) {
+      sendJson(sender, {
+        type: 'SCOPE_REQUIRED',
+        requiredScope,
+        error: 'This operation was not included in the receiver-approved permission request.',
+      });
       return;
     }
 
