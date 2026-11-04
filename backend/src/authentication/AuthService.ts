@@ -72,7 +72,7 @@ export class AuthService {
       throw new Error('TURN_SECRET is not configured with a sufficiently strong secret.');
     }
     const expiresAt = Math.floor(Date.now() / 1000) + Math.min(Math.max(ttlSeconds, 60), 3600);
-    const username = \${expiresAt}:\${identity};
+    const username = String(expiresAt) + ':' + identity;
     const credential = crypto.createHmac('sha1', secret).update(username).digest('base64');
     return { username, credential, expiresAt };
   }
