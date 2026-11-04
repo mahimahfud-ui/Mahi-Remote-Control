@@ -54,7 +54,7 @@ class PairingManager(private val context: Context) {
             qrPayloadJson = qrPayload
         )
         _currentPairingCode.value = data
-        AuditLogger.log("PAIRING", "CODE_GENERATED", "Generated 6-digit code: $formattedCode (expires in 5m)", AuditSeverity.INFO)
+        AuditLogger.log("PAIRING", "CODE_GENERATED", "Generated a short-lived pairing code (expires in 5m)", AuditSeverity.INFO)
         return data
     }
 
