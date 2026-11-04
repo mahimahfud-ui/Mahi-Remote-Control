@@ -127,6 +127,16 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         }
         signalingClient.connect()
 
+        viewModelScope.launch {
+            signalingClient.runtimeConfigJson.collect { rawConfig ->
+                val browserUrl = runCatching {
+                    JSONObject(rawConfig ?: "{}").optString("browserAccessUrl")
+                        .takeIf { it.startsWith("https://") }
+                }.getOrNull()
+                pairingManager.setBrowserAccessUrl(browserUrl)
+            }
+        }
+
         refreshFiles()
         refreshApps()
 
@@ -475,12 +485,16 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
 
     fun connectToTargetWithQr(qrJson: String) {
         try {
-            val root = JSONObject(qrJson)
-            val code = root.optString("pairingCode", "")
-            if (code.isNotBlank()) {
+            val trimmed = qrJson.trim()
+            val code = if (trimmed.startsWith("{")) {
+                JSONObject(trimmed).optString("pairingCode", "")
+            } else {
+                android.net.Uri.parse(trimmed).getQueryParameter("code").orEmpty()
+            }
+            if (code.filter(Char::isDigit).length == 6) {
                 connectToTargetWithCode(code)
             } else {
-                _controllerErrorMessage.value = "QR payload does not contain a valid pairing code."
+                _controllerErrorMessage.value = "QR code does not contain a valid six-digit pairing code."
             }
         } catch (e: Exception) {
             _controllerErrorMessage.value = "Invalid QR code format: ${e.message}"
