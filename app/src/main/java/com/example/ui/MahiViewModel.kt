@@ -464,11 +464,16 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
 
         when (action.uppercase()) {
             "LIST" -> {
-                val apps = appManager.getInstalledApps(false)
-                val jsonArr = apps.take(50).joinToString(",") {
-                    """{"name":"${it.appName}","pkg":"${it.packageName}","ver":"${it.versionName}"}"""
+                val response = JSONArray()
+                appManager.getInstalledApps(false).take(50).forEach { app ->
+                    response.put(
+                        JSONObject()
+                            .put("name", app.appName)
+                            .put("pkg", app.packageName)
+                            .put("ver", app.versionName)
+                    )
                 }
-                signalingClient.send("APP_LIST_RESPONSE", "[$jsonArr]", msg.sender)
+                signalingClient.send("APP_LIST_RESPONSE", response.toString(), msg.sender)
             }
             "LAUNCH" -> {
                 if (pkg.isNotEmpty()) appManager.launchApp(pkg)
@@ -489,34 +494,76 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
 
         when (action.uppercase()) {
             "LIST" -> {
-                val files = fileManager.listFiles(path)
-                val jsonArr = files.joinToString(",") {
-                    """{"name":"${it.name}","path":"${it.path}","isDir":${it.isDirectory},"size":${it.sizeBytes}}"""
+                val response = JSONArray()
+                fileManager.listFiles(path).forEach { file ->
+                    response.put(
+                        JSONObject()
+                            .put("name", file.name)
+                            .put("path", file.path)
+                            .put("isDir", file.isDirectory)
+                            .put("size", file.sizeBytes)
+                            .put("mimeType", file.mimeType)
+                    )
                 }
-                signalingClient.send("FILE_LIST_RESPONSE", "[$jsonArr]", msg.sender)
+                signalingClient.send("FILE_LIST_RESPONSE", response.toString(), msg.sender)
             }
             "DELETE" -> {
-                fileManager.deleteFile(path, true)
-                refreshFiles()
+                val success = fileManager.deleteFile(path, true)
+                signalingClient.send(
+                    "COMMAND_ACK",
+                    JSONObject().put("command", "DELETE").put("success", success).toString(),
+                    msg.sender
+                )
+                if (success) refreshFiles()
             }
             "CREATE_FOLDER" -> {
                 val name = root.optString("name", "NewFolder")
-                fileManager.createFolder(path, name)
-                refreshFiles()
+                val success = fileManager.createFolder(path, name)
+                signalingClient.send(
+                    "COMMAND_ACK",
+                    JSONObject().put("command", "CREATE_FOLDER").put("success", success).toString(),
+                    msg.sender
+                )
+                if (success) refreshFiles()
             }
             "READ_CHUNK" -> {
                 val offset = root.optLong("offset", 0L)
-                val len = root.optInt("length", 32768)
-                val bytes = fileManager.readFileChunk(path, offset, len)
-                val base64 = if (bytes != null) android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP) else ""
-                signalingClient.send("FILE_CHUNK_RESPONSE", """{"path":"$path","offset":$offset,"data":"$base64"}""", msg.sender)
+                val length = root.optInt("length", 32768)
+                val bytes = fileManager.readFileChunk(path, offset, length)
+                if (bytes == null) {
+                    signalingClient.send(
+                        "COMMAND_ACK",
+                        JSONObject().put("command", "READ_CHUNK").put("success", false).toString(),
+                        msg.sender
+                    )
+                } else {
+                    val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                    val response = JSONObject()
+                        .put("path", path)
+                        .put("offset", offset)
+                        .put("data", base64)
+                    signalingClient.send("FILE_CHUNK_RESPONSE", response.toString(), msg.sender)
+                }
             }
             "WRITE_CHUNK" -> {
-                val base64 = root.optString("data", "")
-                val append = root.optBoolean("append", true)
-                val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
-                fileManager.writeFileChunk(path, bytes, append)
-                refreshFiles()
+                try {
+                    val base64 = root.optString("data", "")
+                    val append = root.optBoolean("append", true)
+                    val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
+                    val success = fileManager.writeFileChunk(path, bytes, append)
+                    signalingClient.send(
+                        "COMMAND_ACK",
+                        JSONObject().put("command", "WRITE_CHUNK").put("success", success).toString(),
+                        msg.sender
+                    )
+                    if (success) refreshFiles()
+                } catch (_: IllegalArgumentException) {
+                    signalingClient.send(
+                        "COMMAND_ACK",
+                        JSONObject().put("command", "WRITE_CHUNK").put("success", false).toString(),
+                        msg.sender
+                    )
+                }
             }
         }
     }
