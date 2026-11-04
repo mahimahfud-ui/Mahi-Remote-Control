@@ -6,7 +6,7 @@ This document describes how to compile and build the Android application, Window
 
 ## Important status notice
 
-This build guide covers reproducible build/deployment mechanics. It does not mean real WebRTC screen streaming is complete. The current Android source deliberately fails closed because its native WebRTC publisher/receiver is not implemented. Read `docs/IMPLEMENTATION-STATUS.md` before distributing an APK.
+This build guide covers reproducible build/deployment mechanics. The working branch now contains a native Android WebRTC publisher/receiver and a real controller video renderer, but those source changes are not yet verified as a release. Android CI, codec/runtime checks and two-physical-device tests must pass before distributing an APK. The Windows WPF project still does not contain a native WebRTC media decoder, and browser-to-Android must be validated separately. Read `docs/IMPLEMENTATION-STATUS.md` before using or distributing a build.
 
 ## 📋 Prerequisites
 
