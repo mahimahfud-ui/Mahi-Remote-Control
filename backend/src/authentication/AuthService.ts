@@ -16,15 +16,24 @@ export interface AuthContext {
 export class AuthService {
   private static rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
-  public static generateSessionToken(ctx: AuthContext, expiresIn = '4h'): string {
+  public static generateSessionToken(ctx: AuthContext, expiresIn = '30m'): string {
+    if (!ctx.sessionId) {
+      throw new Error('A backend-issued sessionId is required before issuing a session token.');
+    }
     return jwt.sign(
       {
         sub: ctx.entityId,
         type: ctx.entityType,
         fp: ctx.fingerprint,
+        sid: ctx.sessionId,
       },
       JWT_SECRET,
-      { expiresIn: expiresIn as any }
+      {
+        expiresIn: expiresIn as any,
+        algorithm: 'HS256',
+        issuer: 'mahi-remote',
+        audience: 'mahi-remote-session',
+      }
     );
   }
 
