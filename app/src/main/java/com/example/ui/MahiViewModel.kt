@@ -206,6 +206,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         val sessionId = root.optString("sessionId")
                         if (issuedToken.isNotBlank() && sessionId.isNotBlank()) {
                             signalingClient.setSessionToken(issuedToken)
+                            pairingManager.markSessionAuthorized(sessionId)
                             AuditLogger.log("SESSION", "SESSION_AUTHORIZED", "Backend authorized the receiver session.", AuditSeverity.SECURITY)
                         }
                     }
@@ -512,6 +513,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         val session = _activeControllerSession.value
         if (session != null) {
             signalingClient.send("EMERGENCY_DISCONNECT", """{"reason":"Controller disconnected"}""", session.targetDeviceId)
+            signalingClient.setSessionToken(null)
             _activeControllerSession.value = null
             AuditLogger.log("CONTROLLER", "DISCONNECTED", "Disconnected from ${session.targetDeviceName}", AuditSeverity.INFO)
         }
