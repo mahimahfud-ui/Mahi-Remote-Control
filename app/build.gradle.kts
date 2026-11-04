@@ -137,7 +137,7 @@ dependencies {
   // Standards-compliant QR generation and Google Play Services QR scanning.
   implementation("com.google.zxing:core:3.5.4")
   implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
-  implementation("io.github.webrtc-sdk:android:150.7871.01")
+  implementation("io.github.webrtc-sdk:android:150.7871.04")
   // implementation(libs.play.services.location)
   implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)
