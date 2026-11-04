@@ -546,9 +546,9 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
             }
             "SCROLL" -> {
                 val action = cmd.optString("action", "DOWN")
-                val startY = mapY(if (action.equals("UP", ignoreCase = true)) 1400f else 600f)
-                val endY = mapY(if (action.equals("UP", ignoreCase = true)) 600f else 1400f)
-                val centerX = mapX(540f)
+                val startY = mapY(if (action.equals("UP", ignoreCase = true)) 1400f else 600f) ?: return
+                val endY = mapY(if (action.equals("UP", ignoreCase = true)) 600f else 1400f) ?: return
+                val centerX = mapX(540f) ?: return
                 MahiAccessibilityService.performSwipe(centerX, startY, centerX, endY, 250L, screenW, screenH)
             }
             "GLOBALACTION", "GLOBAL_ACTION" -> {
