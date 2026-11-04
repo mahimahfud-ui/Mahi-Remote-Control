@@ -13,8 +13,14 @@ android {
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
+    val dotEnvFile = rootProject.file(".env")
+    val publicBaseUrlFromDotEnv = if (dotEnvFile.exists()) {
+      dotEnvFile.readLines().firstOrNull { it.trim().startsWith("PUBLIC_BASE_URL=") }
+        ?.substringAfter("=")?.trim()?.trim('"')
+    } else null
     val publicBaseUrl = (project.findProperty("PUBLIC_BASE_URL") as String?)
       ?: System.getenv("PUBLIC_BASE_URL")
+      ?: publicBaseUrlFromDotEnv
       ?: ""
     buildConfigField("String", "PUBLIC_BASE_URL", "\"${publicBaseUrl}\"")
     applicationId = "com.aistudio.mahiremote.rcvkm"
