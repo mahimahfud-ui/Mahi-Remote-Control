@@ -214,8 +214,9 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         _activeControllerSession.value = session
                         _isControllerConnecting.value = false
                         _controllerErrorMessage.value = null
+                        startControllerWebRtc(msg.sender)
 
-                        AuditLogger.log("CONTROLLER", "SESSION_ESTABLISHED", "Connected to remote phone: $receiverName", AuditSeverity.SECURITY)
+                        AuditLogger.log("CONTROLLER", "SESSION_ESTABLISHED", "Approved controller session established with $receiverName", AuditSeverity.SECURITY)
 
                         // Request initial remote app and file catalog
                         fetchRemoteApps()
@@ -231,8 +232,33 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                             AuditLogger.log("SESSION", "SESSION_AUTHORIZED", "Backend authorized the receiver session.", AuditSeverity.SECURITY)
                         }
                     }
+                    "SDP_ANSWER" -> {
+                        if (_appRole.value == AppRole.CONTROLLER) {
+                            val root = JSONObject(msg.payload)
+                            val payload = root.optJSONObject("payload") ?: root
+                            val sdp = payload.optString("sdp", root.optString("sdp"))
+                            if (sdp.isNotBlank()) controllerWebRtcSession?.handleAnswer(sdp)
+                        }
+                    }
+                    "SDP_OFFER" -> {
+                        if (_appRole.value == AppRole.RECEIVER) {
+                            ScreenCaptureService.handleSignalingMessage(msg.type, msg.payload)
+                        }
+                    }
+                    "ICE_CANDIDATE" -> {
+                        if (_appRole.value == AppRole.CONTROLLER && controllerWebRtcSession != null) {
+                            val root = JSONObject(msg.payload)
+                            val payload = root.optJSONObject("payload") ?: root
+                            controllerWebRtcSession?.handleIceCandidate(payload)
+                        } else if (_appRole.value == AppRole.RECEIVER) {
+                            ScreenCaptureService.handleSignalingMessage(msg.type, msg.payload)
+                        }
+                    }
                     "SESSION_ENDED" -> {
                         signalingClient.setSessionToken(null)
+                        controllerWebRtcSession?.close()
+                        controllerWebRtcSession = null
+                        _remoteVideoHasFrames.value = false
                         _activeControllerSession.value = null
                         pairingManager.emergencyDisconnect("Remote session ended")
                         ScreenCaptureService.stop(getApplication())
@@ -799,6 +825,84 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                 req.controllerId
             )
         }
+    }
+
+    private fun startControllerWebRtc(receiverDeviceId: String) {
+        controllerWebRtcSession?.close()
+        controllerWebRtcSession = null
+        _remoteVideoHasFrames.value = false
+
+        signalingClient.fetchSessionIceConfig(
+            onSuccess = { iceConfig ->
+                if (_activeControllerSession.value?.targetDeviceId != receiverDeviceId) return@fetchSessionIceConfig
+                val manager = WebRtcSessionManager(
+                    context = getApplication(),
+                    sendSignal = { type, payload, recipient ->
+                        signalingClient.send(type, payload, recipient)
+                    },
+                    onFirstRemoteFrame = {
+                        _remoteVideoHasFrames.value = true
+                    },
+                    onError = { message ->
+                        _controllerErrorMessage.value = message
+                    }
+                )
+                controllerWebRtcSession = manager
+                attachedRemoteRenderer?.let(manager::initializeRenderer)
+                try {
+                    manager.startController(iceConfig, receiverDeviceId)
+                } catch (error: Exception) {
+                    manager.close()
+                    if (controllerWebRtcSession === manager) controllerWebRtcSession = null
+                    _controllerErrorMessage.value =
+                        error.message ?: "Could not start the remote video connection."
+                }
+            },
+            onFailure = { error ->
+                _controllerErrorMessage.value = error
+            }
+        )
+    }
+
+    fun attachRemoteVideoRenderer(renderer: SurfaceViewRenderer) {
+        attachedRemoteRenderer = renderer
+        controllerWebRtcSession?.initializeRenderer(renderer)
+    }
+
+    fun detachRemoteVideoRenderer(renderer: SurfaceViewRenderer) {
+        controllerWebRtcSession?.releaseRenderer(renderer)
+        if (attachedRemoteRenderer === renderer) attachedRemoteRenderer = null
+    }
+
+    fun startReceiverScreenShare(resultCode: Int, resultData: Intent) {
+        val session = pairingManager.activeSession.value
+        if (session == null || session.controllerId.isBlank() ||
+            signalingClient.connectionStatus.value != ConnectionStatus.AUTHENTICATED) {
+            AuditLogger.log(
+                "SCREEN",
+                "SHARE_NOT_AUTHORIZED",
+                "Screen sharing was not started because there is no approved, authenticated controller session.",
+                AuditSeverity.WARNING
+            )
+            return
+        }
+
+        signalingClient.fetchSessionIceConfig(
+            onSuccess = { iceConfig ->
+                val serviceIntent = Intent(getApplication(), ScreenCaptureService::class.java).apply {
+                    action = ScreenCaptureService.ACTION_START
+                    putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, resultCode)
+                    putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, resultData)
+                    putExtra(ScreenCaptureService.EXTRA_PRESET, _videoPreset.value.name)
+                    putExtra(ScreenCaptureService.EXTRA_ICE_CONFIG, iceConfig)
+                    putExtra(ScreenCaptureService.EXTRA_TARGET_DEVICE_ID, session.controllerId)
+                }
+                androidx.core.content.ContextCompat.startForegroundService(getApplication(), serviceIntent)
+            },
+            onFailure = { error ->
+                AuditLogger.log("SCREEN", "ICE_CONFIG_FAILED", error, AuditSeverity.WARNING)
+            }
+        )
     }
 
     private fun registerCurrentPairingCode() {
