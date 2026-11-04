@@ -74,7 +74,7 @@ export class DeviceService {
     const granted = new Set<string>();
     for (const scope of scopes) {
       if (typeof scope !== 'string' || scope.length > 64) continue;
-      const normalized = scope.trim().toUpperCase().replace(/[\\s-]+/g, '_');
+      const normalized = scope.trim().toUpperCase().replace(/[\s-]+/g, '_');
       const canonical = aliases[normalized];
       if (canonical) granted.add(canonical);
     }
