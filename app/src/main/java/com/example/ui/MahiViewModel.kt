@@ -763,8 +763,21 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun emergencyDisconnect() {
-        pairingManager.emergencyDisconnect("Emergency killswitch activated by user")
+        // Revoke the server-side peer session first, then stop any owner-visible capture service.
+        signalingClient.send(
+            "EMERGENCY_DISCONNECT",
+            """{"reason":"Emergency Stop activated by receiver owner"}"""
+        )
+        pairingManager.emergencyDisconnect("Emergency Stop activated by receiver owner")
         ScreenCaptureService.stop(getApplication())
+        _activeControllerSession.value?.let { session ->
+            signalingClient.send(
+                "EMERGENCY_DISCONNECT",
+                """{"reason":"Emergency Stop activated by controller"}""",
+                session.targetDeviceId
+            )
+        }
+        _activeControllerSession.value = null
         _showDisconnectDialog.value = false
     }
 
@@ -772,10 +785,9 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         pairingManager.approveRequest(req)
         // If request originated from an Android or Windows controller, send PAIR_ACCEPT back
         if (req.controllerId.isNotBlank()) {
-            val sessionId = UUID.randomUUID().toString()
             signalingClient.send(
                 "PAIR_ACCEPT",
-                """{"sessionId":"$sessionId","receiverName":"${identity.deviceName}","status":"APPROVED","fingerprint":"${identity.fingerprint}"}""",
+                """{"receiverName":"${identity.deviceName}","status":"APPROVED","fingerprint":"${identity.fingerprint}"}""",
                 req.controllerId
             )
         }
