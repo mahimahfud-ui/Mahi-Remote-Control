@@ -1,40 +1,30 @@
-# Mahi Remote Control — Comprehensive Feature Compatibility & Verification Matrix
+# Mahi Remote Control — Current Feature Matrix
 
-| Feature / Capability | Classification | Non-Root (Default) | Magisk Rooted (Optional) | Security Boundary / Enforcing API | Verification Details |
-|---|---|---|---|---|---|
-| **Live Screen Mirroring** | **VERIFIED** | Supported | Supported | Android `MediaProjection` API (Mandatory consent) | `ScreenCaptureService.kt` with H.264 AVC encoder pipeline. |
-| **Adaptive Video Presets (1080p/720p/480p)** | **VERIFIED** | Supported | Supported | Hardware `MediaCodec` configuration | Bitrate scaled dynamically from 800 Kbps to 4000 Kbps. |
-| **Single Tap & Click** | **VERIFIED** | Supported | Supported | `AccessibilityService.dispatchGesture()` | Tested with display coordinate bounds enforcement. |
-| **Double Tap & Multi-Tap** | **VERIFIED** | Supported | Supported | `AccessibilityService.dispatchGesture()` | Dual stroke sequence with 100ms interval. |
-| **Long Press (> 600ms)** | **VERIFIED** | Supported | Supported | `AccessibilityService.dispatchGesture()` | Sustained touch stroke with 800ms duration. |
-| **Swipe in All Directions** | **VERIFIED** | Supported | Supported | `AccessibilityService.dispatchGesture()` | Clamped stroke trajectory `[50..5000ms]`. |
-| **Continuous Drag & Drop** | **VERIFIED** | Supported | Supported | `AccessibilityService.dispatchGesture()` | Touch hold + smooth coordinate interpolation. |
-| **Pinch-to-Zoom Gesture** | **VERIFIED** | Supported | Supported | `AccessibilityService.dispatchGesture()` | Dual simultaneous strokes (`GestureDescription.Builder`). |
-| **Keyboard Text Entry** | **VERIFIED** | Supported | Supported | `AccessibilityNodeInfo.ACTION_SET_TEXT` | Injected into focused editable inputs. |
-| **Back Navigation** | **VERIFIED** | Supported | Supported | `GLOBAL_ACTION_BACK` | Built-in Android system action. |
-| **Home Navigation** | **VERIFIED** | Supported | Supported | `GLOBAL_ACTION_HOME` | Built-in Android system action. |
-| **Recent Apps Navigation** | **VERIFIED** | Supported | Supported | `GLOBAL_ACTION_RECENTS` | Built-in Android system action. |
-| **Notification Shade** | **VERIFIED** | Supported | Supported | `GLOBAL_ACTION_NOTIFICATIONS` | Built-in Android system action. |
-| **Quick Settings Access** | **VERIFIED** | Supported | Supported | `GLOBAL_ACTION_QUICK_SETTINGS` | Built-in Android system action. |
-| **Volume Control (Up/Down/Mute)** | **VERIFIED** | Supported | Supported | `AudioManager.adjustStreamVolume` | Audio stream control with system UI feedback. |
-| **Installed Apps Inspection** | **VERIFIED** | Supported | Supported | Android `PackageManager` | Package name, version, and SDK metadata. |
-| **Remote App Launching** | **VERIFIED** | Supported | Supported | `getLaunchIntentForPackage` | Non-intrusive standard intent dispatch. |
-| **Application Details Settings** | **VERIFIED** | Supported | Supported | `ACTION_APPLICATION_DETAILS_SETTINGS` | Direct deep-link to app settings. |
-| **App Uninstallation Request** | **VERIFIED** | Supported | Supported | `Intent.ACTION_DELETE` | Explicit user confirmation gate on phone screen. |
-| **Scoped File Browsing** | **VERIFIED** | Supported | Supported | Storage Access Framework (SAF) | App files, Documents, and Downloads. |
-| **Chunked File Upload (Win -> Phone)** | **VERIFIED** | Supported | Supported | `FileManager.writeFileChunk` | Chunked base64 writing; verified with unit tests. |
-| **Chunked File Download (Phone -> Win)** | **VERIFIED** | Supported | Supported | `FileManager.readFileChunk` | Chunked base64 reading; verified with unit tests. |
-| **SHA-256 File Integrity Checksum** | **VERIFIED** | Supported | Supported | `MessageDigest` SHA-256 | Verified byte-for-byte in automated tests. |
-| **Folder Creation & File Deletion** | **VERIFIED** | Supported | Supported | Scoped directory management | User confirmation flag required for file removal. |
-| **Automated System Diagnostics** | **VERIFIED** | Supported | Supported | Socket to 8.8.8.8, DNS query, BatteryManager | Automated 7-test suite with live indicators. |
-| **Safe Repair Workflows** | **VERIFIED** | Supported | Supported | Socket route refresh, cache cleanup advisor | Non-destructive safe repair actions. |
-| **6-Digit Pairing Code Lifecycle** | **VERIFIED** | Supported | Supported | `SecureRandom`, 5-minute TTL, single-use | Verified with replay attack tests (HTTP 401). |
-| **QR Code Pairing Generator** | **VERIFIED** | Supported | Supported | Compose Canvas Vector QR Renderer | Real-time vector rendering in UI. |
-| **Device Approval Gate** | **VERIFIED** | Supported | Supported | Blocking modal dialog (`OperatorApprovalDialog`) | Explicit owner tap required to initiate session. |
-| **Persistent Status Notification** | **VERIFIED** | Supported | Supported | Foreground Service (`ScreenCaptureService`) | High-priority notification with Stop action. |
-| **Emergency Killswitch** | **VERIFIED** | Supported | Supported | Instant session severance & token revocation | Available on Android top bar & Windows toolbar. |
-| **FLAG_SECURE Banking Protection** | **VERIFIED** | Protected | Protected | Android `SurfaceFlinger` compositor | Sensitive screens blanked automatically by OS. |
-| **Arbitrary Network Shell** | **PROHIBITED**| Blocked | Blocked | `AllowlistValidator.validateRawCommand` | Shell injection rejected and logged as CRITICAL. |
-| **WebSocket WebRTC Signaling** | **VERIFIED** | Supported | Supported | Node.js WebSocket Server | Tested live on port 8099 with SDP Offer/Answer relay. |
-| **NAT Traversal (STUN / TURN)** | **PARTIAL** | Configured | Configured | Coturn RFC 5766 / RFC 5389 | Configuration complete; requires public cloud IP for WAN relay. |
-| **Windows Controller UI (.NET 10)** | **PARTIAL** | Implemented | Implemented | C# .NET 10 WPF (`MahiRemote.sln`) | Codebase complete; requires Windows host to execute WinExe. |
+Status key: `IMPLEMENTED_NOT_TESTED`, `PARTIAL`, `BLOCKED`, `NOT_IMPLEMENTED`, `NOT_RUN`.
+
+| Feature | Current status | Notes |
+|---|---|---|
+| Same APK for Android controller/receiver | PARTIAL | Both roles exist in the same app; end-to-end pairing/video has not passed tests. |
+| Simplified two-action Android home | IMPLEMENTED_NOT_TESTED | Home screen offers Control another device and Share this phone; advanced areas are in More. |
+| Temporary six-digit pairing code | PARTIAL | Local code generation and backend hashed/expiring code registration are present; no integration run has been recorded. |
+| QR pairing | PARTIAL | QR payload generation/input code exists; full camera scan workflow still needs validation. |
+| Explicit receiver approval/rejection | IMPLEMENTED_NOT_TESTED | Backend creates active session only after receiver approval. Persistence and physical tests remain. |
+| Browser pairing | PARTIAL | Browser sends `PAIR_BY_CODE` and waits for owner approval; browser WebSocket re-authentication path is implemented but not tested. |
+| Runtime public URL configuration | IMPLEMENTED_NOT_TESTED | Android reads `/api/v1/config`; build requires `MAHI_PUBLIC_BASE_URL`. |
+| Public HTTPS/WSS deployment | BLOCKED | Requires domain, TLS reverse proxy and public backend host. |
+| Dynamic TURN credentials | IMPLEMENTED_NOT_TESTED | HMAC credentials are generated server-side when `TURN_SECRET` and `TURN_URL` exist. No live TURN relay test has been run. |
+| Android MediaProjection consent | PARTIAL | Android consent launcher exists. The current service explicitly fails closed after consent. |
+| Android native WebRTC video publisher | NOT_IMPLEMENTED | No native `PeerConnection`/video track pipeline was present in the source snapshot. |
+| Android native WebRTC video receiver | NOT_IMPLEMENTED | No remote video renderer or PeerConnection negotiation path exists. |
+| Browser WebRTC offer/receive UI | PARTIAL | Offer, answer, ICE and actual decoded-frame state are wired in browser code; no receiver video track exists yet. |
+| Real browser video frames | BLOCKED | Android video publisher must be implemented before real frames can arrive. |
+| Remote tap/swipe/navigation | PARTIAL | Accessibility service methods and protocol handlers exist; they are not end-to-end verified with an authenticated peer. |
+| App management | PARTIAL | Android app manager and command handlers exist; remote command flow is untested. |
+| File management | PARTIAL | Scoped file-manager source exists; browser upload/download and remote file flows are untested. |
+| Persistent pairing/session database | NOT_IMPLEMENTED | Backend state remains in-memory Maps and is lost on process restart. |
+| Emergency stop / session revocation | IMPLEMENTED_NOT_TESTED | Server session revoke handler and Android stop path exist; must be physically tested. |
+| Windows desktop controller | NOT_RUN | Existing code retained; this branch did not build it. |
+| Two-phone same-Wi-Fi test | NOT_RUN | Requires two physical Android devices. |
+| Cross-network / mobile-data / CGNAT test | NOT_RUN | Requires public deployment and TURN relay. |
+
+Do not use `VERIFIED` unless the feature has passed a reproducible physical-device test.
