@@ -40,7 +40,12 @@ class ScreenCaptureService : Service() {
         private val _streamState = MutableStateFlow<ScreenStreamState>(ScreenStreamState.Idle)
         val streamState: StateFlow<ScreenStreamState> = _streamState.asStateFlow()
 
-        fun isStreaming(): Boolean = _streamState.value is ScreenStreamState.Active
+        fun isStreaming(): Boolean = _streamState.value is ScreenStreamState.Active ||
+            _streamState.value is ScreenStreamState.WaitingForController
+
+        fun setStreamState(state: ScreenStreamState) {
+            _streamState.value = state
+        }
 
         fun stop(context: Context) {
             val intent = Intent(context, ScreenCaptureService::class.java).apply {
@@ -70,17 +75,15 @@ class ScreenCaptureService : Service() {
 
                 if (resultCode != 0 && resultData != null) {
                     startForegroundForSharing()
-                    val error = "Screen permission was granted, but this build has no native WebRTC video publisher. No screen frames are being sent."
-                    _streamState.value = ScreenStreamState.Error(error)
-                    AuditLogger.log("SCREEN", "STREAM_BLOCKED", error, AuditSeverity.WARNING)
-                    stopForeground(STOP_FOREGROUND_REMOVE)
-                    stopSelf(startId)
+                    _streamState.value = ScreenStreamState.WaitingForController
+                    AuditLogger.log("SCREEN", "CONSENT_GRANTED", "Owner granted Android screen-sharing consent; waiting for an approved controller", AuditSeverity.SECURITY)
                 } else {
                     _streamState.value = ScreenStreamState.Error("Android screen-sharing permission result was missing.")
                     stopSelf(startId)
                 }
             }
             ACTION_STOP -> {
+                AndroidWebRtcSession.stopActive()
                 _streamState.value = ScreenStreamState.Stopped
                 AuditLogger.log("SCREEN", "STREAM_STOPPED", "Screen sharing stop requested by the owner", AuditSeverity.INFO)
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -122,8 +125,8 @@ class ScreenCaptureService : Service() {
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Mahi Remote — sharing request")
-            .setContentText("Owner-controlled remote session")
+            .setContentTitle("Mahi Remote — screen sharing armed")
+            .setContentText("Only an owner-approved session can receive your screen. Tap Stop to revoke sharing.")
             .setSmallIcon(R.mipmap.ic_launcher)
             .setOngoing(true)
             .setContentIntent(openPendingIntent)
