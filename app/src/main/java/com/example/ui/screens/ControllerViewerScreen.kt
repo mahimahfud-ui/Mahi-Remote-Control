@@ -106,6 +106,7 @@ fun ControllerViewerScreen(viewModel: MahiViewModel) {
     val session = viewModel.activeControllerSession.collectAsState().value ?: return
     val selectedViewerTab by viewModel.remoteViewerTab.collectAsState()
     val remoteMetrics by viewModel.remoteMetrics.collectAsState()
+    val hasVideoFrames by viewModel.remoteVideoHasFrames.collectAsState()
     val remoteTelemetry by viewModel.remoteTelemetry.collectAsState()
 
     var keyboardInput by remember { mutableStateOf("") }
