@@ -1,6 +1,7 @@
 package com.example.ui
 
 import android.app.Application
+import com.example.BuildConfig
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -34,10 +35,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
+import java.net.HttpURLConnection
+import java.net.URL
 
 enum class MainTab(val title: String) {
     DASHBOARD("Dashboard"),
@@ -93,6 +98,12 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     val screenStreamState: StateFlow<ScreenStreamState> = ScreenCaptureService.streamState
     val auditEvents = AuditLogger.events
 
+    private val _browserAccessUrl = MutableStateFlow<String?>(null)
+    val browserAccessUrl: StateFlow<String?> = _browserAccessUrl.asStateFlow()
+
+    private val _publicBackendStatus = MutableStateFlow("Public backend is not configured for this build.")
+    val publicBackendStatus: StateFlow<String> = _publicBackendStatus.asStateFlow()
+
     // Controller Mode State
     private val _isControllerConnecting = MutableStateFlow(false)
     val isControllerConnecting: StateFlow<Boolean> = _isControllerConnecting.asStateFlow()
@@ -127,7 +138,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         signalingClient = SignalingClient(identity) { msg ->
             handleIncomingSignalingMessage(msg)
         }
-        signalingClient.connect()
+        loadPublicBackendConfig()
 
         // Register the current receiver code after every successful signaling connection.
         // This also covers reconnects and code rotation; sending before WebSocket onOpen loses the packet.
@@ -155,6 +166,59 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun loadPublicBackendConfig() {
+        val baseUrl = BuildConfig.MAHI_PUBLIC_BASE_URL.trim().trimEnd('/')
+        if (!baseUrl.startsWith("https://", ignoreCase = true)) {
+            _publicBackendStatus.value = "Browser access is disabled. Build with MAHI_PUBLIC_BASE_URL=https://your-domain."
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                val result = withContext(Dispatchers.IO) {
+                    val connection = (URL(baseUrl + "/api/v1/config").openConnection() as HttpURLConnection).apply {
+                        requestMethod = "GET"
+                        connectTimeout = 8000
+                        readTimeout = 8000
+                        setRequestProperty("Accept", "application/json")
+                    }
+                    try {
+                        if (connection.responseCode !in 200..299) {
+                            throw IllegalStateException("Backend configuration returned HTTP " + connection.responseCode)
+                        }
+                        JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+                    } finally {
+                        connection.disconnect()
+                    }
+                }
+
+                if (!result.optBoolean("publicAccessConfigured")) {
+                    _publicBackendStatus.value = result.optString(
+                        "message",
+                        "Backend has not enabled public browser access."
+                    )
+                    return@launch
+                }
+
+                val browserUrl = result.optString("browserUrl")
+                val signalingUrl = result.optString("signalingUrl")
+                if (!browserUrl.startsWith("https://") || !signalingUrl.startsWith("wss://")) {
+                    throw IllegalStateException("Backend returned invalid public HTTPS/WSS URLs.")
+                }
+
+                _browserAccessUrl.value = browserUrl
+                _publicBackendStatus.value = if (result.optBoolean("turnConfigured")) {
+                    "Public access configured. TURN credentials endpoint is available."
+                } else {
+                    "Public signaling configured. TURN relay is not configured; some mobile networks may not connect."
+                }
+                signalingClient.updateServerUrl(signalingUrl)
+            } catch (error: Exception) {
+                _publicBackendStatus.value = "Backend configuration unavailable: " + (error.message ?: "network error")
+                AuditLogger.log("CONFIG", "PUBLIC_CONFIG_ERROR", error.message ?: "Could not load public backend configuration", AuditSeverity.WARNING)
+            }
+        }
+    }
     private fun handleIncomingSignalingMessage(msg: SignalingMessage) {
         viewModelScope.launch {
             try {
