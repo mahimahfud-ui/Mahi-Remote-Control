@@ -132,8 +132,11 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         // Register the current receiver code after every successful signaling connection.
         // This also covers reconnects and code rotation; sending before WebSocket onOpen loses the packet.
         viewModelScope.launch {
-            combine(signalingClient.connectionStatus, pairingManager.currentPairingCode) { status, code ->
-                if (status == ConnectionStatus.AUTHENTICATED && pairingManager.activeSession.value == null) code else null
+            combine(signalingClient.connectionStatus, pairingManager.currentPairingCode, appRole) { status, code, role ->
+                if (status == ConnectionStatus.AUTHENTICATED &&
+                    role == AppRole.RECEIVER &&
+                    pairingManager.activeSession.value == null
+                ) code else null
             }.collect { code ->
                 code?.let { activeCode ->
                     signalingClient.send(
