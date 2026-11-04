@@ -44,6 +44,7 @@ class SignalingClient(
         .build()
 
     private var webSocket: WebSocket? = null
+    @Volatile private var sessionToken: String? = null
     private val scope = CoroutineScope(Dispatchers.IO + Job())
     private var reconnectJob: Job? = null
 
@@ -56,6 +57,10 @@ class SignalingClient(
     fun updateServerUrl(newUrl: String) {
         _serverUrl.value = newUrl
         reconnect()
+    }
+
+    fun setSessionToken(token: String?) {
+        sessionToken = token?.takeIf { it.isNotBlank() }
     }
 
     private var currentRole: String = "RECEIVER"
@@ -119,12 +124,14 @@ class SignalingClient(
     }
 
     fun send(type: String, payload: String, recipient: String? = null): Boolean {
+        val tokenJson = sessionToken?.let { org.json.JSONObject.quote(it) } ?: "null"
         val json = """
             {
               "type": "$type",
               "sender": "${deviceIdentity.deviceId}",
-              "recipient": ${if (recipient != null) "\"$recipient\"" else "null"},
-              "payload": ${if (payload.startsWith("{") || payload.startsWith("[")) payload else "\"$payload\""},
+              "recipient": ${if (recipient != null) org.json.JSONObject.quote(recipient) else "null"},
+              "sessionToken": $tokenJson,
+              "payload": ${if (payload.startsWith("{") || payload.startsWith("[")) payload else org.json.JSONObject.quote(payload)},
               "timestamp": ${System.currentTimeMillis()}
             }
         """.trimIndent()
