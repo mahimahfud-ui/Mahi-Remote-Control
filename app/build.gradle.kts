@@ -13,7 +13,17 @@ android {
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
+    val publicBaseUrl = (
+      project.findProperty("MAHI_PUBLIC_BASE_URL") as? String
+        ?: System.getenv("MAHI_PUBLIC_BASE_URL")
+        ?: ""
+    ).trim().trimEnd('/')
+    val escapedPublicBaseUrl = publicBaseUrl
+      .replace("\\", "\\\\")
+      .replace("\"", "\\\"")
+
     applicationId = "com.aistudio.mahiremote.rcvkm"
+    buildConfigField("String", "MAHI_PUBLIC_BASE_URL", "\"$escapedPublicBaseUrl\"")
     minSdk = 26
     targetSdk = 36
     versionCode = 1
