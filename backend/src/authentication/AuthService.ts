@@ -1,12 +1,16 @@
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'mahi-remote-secure-ecdsa-jwt-secret-key-32b';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET || Buffer.byteLength(JWT_SECRET, 'utf8') < 32) {
+  throw new Error('JWT_SECRET must be configured with at least 32 bytes. Refusing to start with an insecure fallback secret.');
+}
 
 export interface AuthContext {
   entityId: string;
   entityType: 'DEVICE' | 'OPERATOR';
   fingerprint: string;
+  sessionId?: string;
 }
 
 export class AuthService {
@@ -26,11 +30,22 @@ export class AuthService {
 
   public static verifySessionToken(token: string): AuthContext | null {
     try {
-      const decoded = jwt.verify(token, JWT_SECRET) as any;
+      const decoded = jwt.verify(token, JWT_SECRET, {
+        algorithms: ['HS256'],
+        issuer: 'mahi-remote',
+        audience: 'mahi-remote-session',
+      }) as any;
+      if (
+        typeof decoded.sub !== 'string' ||
+        !['DEVICE', 'OPERATOR'].includes(decoded.type) ||
+        typeof decoded.fp !== 'string' ||
+        typeof decoded.sid !== 'string'
+      ) return null;
       return {
         entityId: decoded.sub,
         entityType: decoded.type,
         fingerprint: decoded.fp,
+        sessionId: decoded.sid,
       };
     } catch {
       return null;
