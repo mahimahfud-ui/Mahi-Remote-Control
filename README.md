@@ -46,42 +46,36 @@ mahi-remote-control/
 
 See [Build Guide](BUILD.md) and [Remote Access Deployment](docs/REMOTE-ACCESS-DEPLOYMENT.md). The root `.env.example` contains only the public Android build URL. Private backend secrets belong in the backend/deployment environment and must never be placed in the APK or browser JavaScript.
 
-## 🚀 Quick Start Guide
+## Current development runbook
 
-### 1. Android Agent
-1. Open the Mahi Remote app on the Android phone.
-2. The dashboard shows device telemetry and a 6-digit pairing code (e.g. `729-415`).
-3. Tap **Share Screen** to launch the Android MediaProjection consent prompt.
-4. Ensure the **Mahi Remote Input Service** is enabled in Android Settings > Accessibility.
+The branch UI and server protocol are being developed, but the missing Android WebRTC sender means this is not yet a working remote-screen session.
 
-### 2. Windows Controller Options
+### Backend
 
-#### Option A: Zero-Install Web Browser Controller (Recommended)
-You can control the Android phone directly from **any Windows web browser** (Google Chrome, Microsoft Edge, Firefox, Brave) without installing any client software:
-- **Public IP Deployment:** Access via `http://<PUBLIC_IP>:8080` (see [IP Deployment Guide](docs/IP-DEPLOYMENT.md)).
-- **Cloudflare Quick Tunnel:** Access via automatically generated `https://<random>.trycloudflare.com` without purchasing a domain (see [Tunnel Deployment Guide](docs/TUNNEL-DEPLOYMENT.md)).
-- **Launch with one click:**
-  ```powershell
-  # For direct Public IPv4 deployment:
-  .\scripts\start-public-access.ps1 -Port 8080
+1. Set the private runtime variables from `backend/.env.example` in your deployment environment.
+2. Configure a real HTTPS `PUBLIC_BASE_URL`, WSS reverse proxy and public Coturn server.
+3. Open the required TURN listening and relay ports in the VPS firewall.
+4. From `backend/`, run `npm ci`, `npm run build` and `npm test`.
 
-  # For zero-domain Cloudflare Tunnel:
-  .\scripts\start-cloudflare-tunnel.ps1 -Port 8080
-  ```
+### Android
 
-#### Option B: Native Windows WPF Application
-1. Launch `MahiRemote.App.exe` on Windows.
-2. Click **+ Pair Device** and enter the 6-digit code shown on the phone.
-3. The Android phone displays an authorization dialog with the operator name, location (e.g. *Sylhet NOC*), and requested scopes.
-4. Once the phone owner taps **Authorize Session**, the screen mirrors in real-time.
-5. Interact with the phone using mouse clicks (taps) and drags (swipes).
+1. Set only the public `PUBLIC_BASE_URL` in the Android Gradle property or root `.env`.
+2. Build with a compatible JDK, Android SDK and Gradle installation.
+3. Install the same APK on both phones.
+4. The intended UI has “Control another device” and “Share this phone”; pairing approval requires interaction on the receiver.
+5. Do not expect live video until the Android WebRTC media pipeline is implemented.
 
----
+### Browser
 
-## 🔒 Security Principles
+The browser page is served from the backend's public HTTPS origin. It loads its WSS/ICE configuration from `/api/v1/config`, submits the same temporary pairing code, and waits for receiver approval. TURN must be actually deployed; a configured environment variable by itself does not prove reachability.
 
-1. **Explicit Consent Only:** No remote session can start without device-owner approval on the phone.
-2. **Visible Notification:** A persistent, non-dismissible foreground notification with a bright red **Stop Sharing** action is displayed during the entire streaming duration.
-3. **Emergency Killswitch:** Either party can immediately sever the connection and revoke tokens at any time.
-4. **Zero Arbitrary Shell:** Mahi Remote strictly forbids and blocks arbitrary network shell commands. All operations pass through a compiled allowlist validator.
-5. **Privacy Preserved:** Sensitive screens flagged with `FLAG_SECURE` (e.g., banking apps, password fields) are automatically blanked by the Android OS.
+## Platform/security boundaries
+
+- Receiver approval is required before the backend creates a session.
+- MediaProjection consent and the foreground screen-sharing notification are Android requirements; this branch currently does not stream video after consent because no WebRTC sender is present.
+- AccessibilityService must be manually enabled by the device owner.
+- Protected `FLAG_SECURE` surfaces remain protected.
+- Standard Android apps cannot bypass system permission dialogs, unlock secure lock screens, or silently install/uninstall apps.
+- Database persistence and cryptographic device challenge/response are still release blockers.
+
+See [Implementation Status](docs/IMPLEMENTATION-STATUS.md), [Remote Access Deployment](docs/REMOTE-ACCESS-DEPLOYMENT.md), and [Android API Limitations](docs/ANDROID_API_LIMITATIONS.md).
