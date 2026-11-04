@@ -21,9 +21,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.Socket
+import java.util.Collections
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -270,6 +273,21 @@ class DiagnosticsManager(private val context: Context) {
         }
     }
 
+    private fun getLocalIpAddress(): String {
+        return try {
+            val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
+            val address = interfaces
+                .filter { it.isUp && !it.isLoopback }
+                .flatMap { Collections.list(it.inetAddresses) }
+                .firstOrNull {
+                    it is Inet4Address && !it.isLoopbackAddress && !it.isLinkLocalAddress
+                }
+            address?.hostAddress ?: "Unavailable"
+        } catch (_: Exception) {
+            "Unavailable"
+        }
+    }
+
     private fun fetchCurrentTelemetry(): DeviceTelemetry {
         val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
         val memInfo = ActivityManager.MemoryInfo()
@@ -292,9 +310,17 @@ class DiagnosticsManager(private val context: Context) {
             status == BatteryManager.BATTERY_STATUS_CHARGING || status == BatteryManager.BATTERY_STATUS_FULL
         } ?: false
 
-        val tempTenths = bIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, 250) ?: 250
-        val tempC = tempTenths / 10.0f
-        val voltageMv = bIntent?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, 3800) ?: 3800
+        val tempTenths = bIntent?.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
+        val tempC = if (tempTenths >= 0) tempTenths / 10.0f else -1.0f
+        val voltageMv = bIntent?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) ?: -1
+        val batteryHealth = when (bIntent?.getIntExtra(BatteryManager.EXTRA_HEALTH, -1) ?: -1) {
+            BatteryManager.BATTERY_HEALTH_GOOD -> "Good"
+            BatteryManager.BATTERY_HEALTH_OVERHEAT -> "Overheating"
+            BatteryManager.BATTERY_HEALTH_DEAD -> "Dead"
+            BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE -> "Over voltage"
+            BatteryManager.BATTERY_HEALTH_UNSPECIFIED_FAILURE -> "Failure"
+            else -> "Unknown"
+        }
 
         // Network info
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -328,11 +354,11 @@ class DiagnosticsManager(private val context: Context) {
             model = Build.MODEL,
             androidVersion = "Android ${Build.VERSION.RELEASE}",
             apiLevel = Build.VERSION.SDK_INT,
-            securityPatch = Build.VERSION.SECURITY_PATCH ?: "2026-09-01",
+            securityPatch = Build.VERSION.SECURITY_PATCH.takeIf { it.isNotBlank() } ?: "Unknown",
             uptimeFormatted = uptimeFormatted,
             batteryPercent = batteryPercent,
             isCharging = isCharging,
-            batteryHealth = "Good",
+            batteryHealth = batteryHealth,
             batteryTempC = tempC,
             batteryVoltageMv = voltageMv,
             totalRamMb = totalRamMb,
@@ -340,7 +366,7 @@ class DiagnosticsManager(private val context: Context) {
             totalStorageGb = totalStorageGb,
             freeStorageGb = freeStorageGb,
             networkType = netType,
-            ipAddress = "192.168.1.145",
+            ipAddress = getLocalIpAddress(),
             wifiSsid = wifiSsid
         )
     }
