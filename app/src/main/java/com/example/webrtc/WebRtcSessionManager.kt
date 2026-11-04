@@ -256,8 +256,11 @@ class WebRtcSessionManager(
             permissionResult,
             object : MediaProjection.Callback() {
                 override fun onStop() {
-                    onError("Android stopped screen sharing.")
-                    close()
+                    // Ignore the callback produced by our own close() path.
+                    if (!closed.get()) {
+                        onError("Android stopped screen sharing.")
+                        close()
+                    }
                 }
             }
         )
