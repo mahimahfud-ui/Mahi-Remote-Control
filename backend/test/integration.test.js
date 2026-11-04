@@ -197,6 +197,7 @@ async function runTests() {
     }));
     const receivedOffer = await sdpOfferPromise;
     assert.strictEqual(receivedOffer.type, 'SDP_OFFER');
+    assert.strictEqual(receivedOffer.sessionId, controllerApproval.sessionId);
     assert(receivedOffer.payload.sdp.includes('v=0'), 'SDP payload corrupted');
     console.log('✓ Authorized WebSocket SDP offer relay PASSED');
 
@@ -209,6 +210,7 @@ async function runTests() {
     }));
     const receivedAnswer = await sdpAnswerPromise;
     assert.strictEqual(receivedAnswer.type, 'SDP_ANSWER');
+    assert.strictEqual(receivedAnswer.sessionId, controllerApproval.sessionId);
     console.log('✓ Authorized WebSocket SDP answer relay PASSED');
 
     // Missing/invalid session credentials must not be relayed.
