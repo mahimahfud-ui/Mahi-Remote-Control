@@ -110,7 +110,8 @@ export class DeviceService {
   } | undefined {
     const session = this.activeSessions.get(sessionId);
     if (session && Date.now() >= session.expiresAt) {
-      this.activeSessions.delete(sessionId);
+      // Keep the expired record until SignalingHub's expiry timer can notify both
+      // peers and close their media sessions.
       return undefined;
     }
     return session;
@@ -134,11 +135,10 @@ export class DeviceService {
   }
 
   public static hasActiveSessionForDevice(deviceId: string): boolean {
-    for (const [sessionId, session] of this.activeSessions.entries()) {
-      if (Date.now() >= session.expiresAt) {
-        this.activeSessions.delete(sessionId);
-        continue;
-      }
+    for (const session of this.activeSessions.values()) {
+      // Expired sessions are ignored here but retained for the signaling layer's
+      // expiry callback, which sends SESSION_ENDED to both peers.
+      if (Date.now() >= session.expiresAt) continue;
       if (session.deviceId === deviceId) return true;
     }
     return false;
