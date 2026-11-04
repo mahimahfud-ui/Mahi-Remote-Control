@@ -36,7 +36,19 @@ export class DeviceService {
   }
 
   public static storePairingCode(deviceId: string, code: string, expiresAt: number): void {
-    this.pairingCodes.set(code, { code, deviceId, expiresAt });
+    const normalized = String(code || '').replace(/[^0-9]/g, '');
+    if (!deviceId || !/^\d{6}$/.test(normalized) || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      throw new Error('Invalid pairing-code registration.');
+    }
+    // One currently valid code per receiver. A refresh invalidates the previous code.
+    for (const [existingCode, record] of this.pairingCodes.entries()) {
+      if (record.deviceId === deviceId) this.pairingCodes.delete(existingCode);
+    }
+    this.pairingCodes.set(normalized, {
+      code: normalized,
+      deviceId,
+      expiresAt: Math.min(expiresAt, Date.now() + 5 * 60 * 1000),
+    });
   }
 
   /**
