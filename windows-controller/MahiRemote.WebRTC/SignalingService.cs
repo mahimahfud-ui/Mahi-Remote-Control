@@ -194,10 +194,33 @@ public class SignalingService
 
     private static JsonElement GetPayload(JsonElement root)
     {
-        return root.ValueKind == JsonValueKind.Object &&
-               root.TryGetProperty("payload", out var payload)
-            ? payload
-            : root;
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("payload", out var payload))
+            return root;
+
+        if (payload.ValueKind == JsonValueKind.Object || payload.ValueKind == JsonValueKind.Array)
+            return payload;
+
+        // Android transports some JSON envelopes as a string-valued payload.
+        // Clone the parsed element so it remains valid after the temporary document is disposed.
+        if (payload.ValueKind == JsonValueKind.String)
+        {
+            var raw = payload.GetString();
+            if (!string.IsNullOrWhiteSpace(raw))
+            {
+                try
+                {
+                    using var document = JsonDocument.Parse(raw);
+                    return document.RootElement.Clone();
+                }
+                catch (JsonException)
+                {
+                    return payload;
+                }
+            }
+        }
+
+        return payload;
     }
 
     private static JsonElement FindValue(JsonElement root, JsonElement payload, string name)
