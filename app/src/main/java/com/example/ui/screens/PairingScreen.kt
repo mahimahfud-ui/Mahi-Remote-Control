@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.CastConnected
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Laptop
@@ -194,7 +195,6 @@ fun PairingScreen(viewModel: MahiViewModel, onRequestScreenShare: () -> Unit) {
                     Text("Start screen sharing", fontWeight = FontWeight.SemiBold)
                 }
             }
-        }
         }
 
         // Cryptographic Device Identity Card
