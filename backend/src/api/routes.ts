@@ -63,9 +63,42 @@ apiRouter.post('/pair/verify', (_req: Request, res: Response) => {
   });
 });
 
-apiRouter.post('/turn/credentials', (req: Request, res: Response) => {
+apiRouter.post('/turn/credentials', async (req: Request, res: Response) => {
   const auth = activeSessionContext(req);
   if (!auth) return res.status(401).json({ error: 'A valid owner-approved session token is required.' });
+
+  // Prefer Cloudflare's managed TURN service when a server-side key is configured.
+  // The long-lived key and API token are never returned to the app or browser.
+  const cloudflareKeyId = String(process.env.CLOUDFLARE_TURN_KEY_ID || '').trim();
+  const cloudflareApiToken = String(process.env.CLOUDFLARE_TURN_API_TOKEN || '').trim();
+  if (cloudflareKeyId && cloudflareApiToken) {
+    try {
+      const upstream = await fetch(
+        'https://rtc.live.cloudflare.com/v1/turn/keys/' +
+          encodeURIComponent(cloudflareKeyId) +
+          '/credentials/generate-ice-servers',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer ' + cloudflareApiToken,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify({ ttl: 3600 }),
+        }
+      );
+      if (!upstream.ok) {
+        return res.status(503).json({ error: 'Managed TURN credentials could not be issued. Check the server-side TURN key configuration.' });
+      }
+      const payload = await upstream.json() as { iceServers?: unknown };
+      if (!Array.isArray(payload.iceServers) || payload.iceServers.length === 0) {
+        return res.status(503).json({ error: 'Managed TURN returned no ICE servers.' });
+      }
+      return res.json(payload);
+    } catch {
+      return res.status(503).json({ error: 'Managed TURN is temporarily unavailable.' });
+    }
+  }
 
   const urls = String(process.env.TURN_URL || '').split(',').map(value => value.trim()).filter(Boolean);
   if (!urls.length || !process.env.TURN_SECRET) {
