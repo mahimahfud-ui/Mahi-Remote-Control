@@ -155,7 +155,25 @@ async function runTests() {
     }));
     const scopeDenial = await deniedFileCommand;
     assert.strictEqual(scopeDenial.requiredScope, 'FILE_TRANSFER');
-    console.log('✓ peer relay enforces only the scopes approved by the receiver');
+
+    const deniedDelete = waitForMessage(controller, 'SCOPE_REQUIRED');
+    controller.send(JSON.stringify({
+      type: 'FILE_COMMAND',
+      action: 'DELETE',
+      path: '/allowed-root/test.txt',
+    }));
+    const deleteDenial = await deniedDelete;
+    assert.strictEqual(deleteDenial.requiredScope, 'FILE_DELETE');
+
+    const deniedUninstall = waitForMessage(controller, 'SCOPE_REQUIRED');
+    controller.send(JSON.stringify({
+      type: 'APP_COMMAND',
+      action: 'UNINSTALL',
+      packageName: 'com.example.test',
+    }));
+    const uninstallDenial = await deniedUninstall;
+    assert.strictEqual(uninstallDenial.requiredScope, 'APP_UNINSTALL');
+    console.log('✓ file deletion and app uninstall require separate receiver-approved scopes');
 
     const turn = await fetch(BASE + '/api/v1/turn/credentials', {
       method: 'POST', headers: { Authorization: 'Bearer ' + controllerAuth.sessionToken },
