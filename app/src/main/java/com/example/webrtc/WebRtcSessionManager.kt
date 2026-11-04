@@ -80,6 +80,7 @@ class WebRtcSessionManager(
 
     private var peerConnection: PeerConnection? = null
     private var screenCapturer: ScreenCapturerAndroid? = null
+    private var surfaceTextureHelper: org.webrtc.SurfaceTextureHelper? = null
     private var localVideoSource: VideoSource? = null
     private var localVideoTrack: VideoTrack? = null
     private var remoteVideoTrack: VideoTrack? = null
@@ -272,6 +273,7 @@ class WebRtcSessionManager(
             "MahiScreenCapture",
             eglBase.eglBaseContext
         ) ?: throw IllegalStateException("Could not create screen capture texture helper.")
+        surfaceTextureHelper = helper
         capturer.initialize(helper, appContext, source.capturerObserver)
 
         val track = peerFactory.createVideoTrack(
@@ -406,6 +408,8 @@ class WebRtcSessionManager(
         localVideoTrack = null
         localVideoSource?.dispose()
         localVideoSource = null
+        surfaceTextureHelper?.dispose()
+        surfaceTextureHelper = null
         peerConnection?.close()
         peerConnection?.dispose()
         peerConnection = null
