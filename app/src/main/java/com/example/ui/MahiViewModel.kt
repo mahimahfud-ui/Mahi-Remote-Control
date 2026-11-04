@@ -101,18 +101,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     private val _activeControllerSession = MutableStateFlow<ControllerSession?>(null)
     val activeControllerSession: StateFlow<ControllerSession?> = _activeControllerSession.asStateFlow()
 
-    private val _recentTargetDevices = MutableStateFlow<List<KnownTargetDevice>>(
-        listOf(
-            KnownTargetDevice(
-                deviceId = "MAHI-NOAKHALI-01",
-                name = "Phone B — Receiver (Noakhali)",
-                model = "Pixel 8 Pro (Android 14)",
-                fingerprint = "7A:B3:99:C2:54:E1:88:20:D1:66:33:F0:91:AA:BB:CC",
-                lastConnectedAtMillis = System.currentTimeMillis() - 7200000L,
-                isOnline = true
-            )
-        )
-    )
+    private val _recentTargetDevices = MutableStateFlow<List<KnownTargetDevice>>(emptyList())
     val recentTargetDevices: StateFlow<List<KnownTargetDevice>> = _recentTargetDevices.asStateFlow()
 
     private val _remoteViewerTab = MutableStateFlow(RemoteViewerTab.SCREEN)
@@ -124,10 +113,10 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     private val _remoteAppList = MutableStateFlow<List<AppItem>>(emptyList())
     val remoteAppList: StateFlow<List<AppItem>> = _remoteAppList.asStateFlow()
 
-    private val _remoteTelemetry = MutableStateFlow<RemoteTelemetry?>(RemoteTelemetry())
+    private val _remoteTelemetry = MutableStateFlow<RemoteTelemetry?>(null)
     val remoteTelemetry: StateFlow<RemoteTelemetry?> = _remoteTelemetry.asStateFlow()
 
-    private val _remoteMetrics = MutableStateFlow(StreamMetrics(roundTripTimeMs = 32, currentFps = 60, bitrateKbps = 2400))
+    private val _remoteMetrics = MutableStateFlow(StreamMetrics(currentFps = 0, bitrateKbps = 0, resolution = "", framesEncoded = 0, bytesTransferred = 0, roundTripTimeMs = 0, packetLossPercent = 0f))
     val remoteMetrics: StateFlow<StreamMetrics> = _remoteMetrics.asStateFlow()
 
     val signalingClient: SignalingClient
@@ -137,14 +126,6 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
             handleIncomingSignalingMessage(msg)
         }
         signalingClient.connect()
-
-        // Register initial pairing code with backend signaling server
-        pairingManager.currentPairingCode.value?.let { pCode ->
-            signalingClient.send(
-                "REGISTER_PAIRING_CODE",
-                """{"code":"${pCode.code}","expiresAt":${pCode.expiresAtMillis}}"""
-            )
-        }
 
         refreshFiles()
         refreshApps()
@@ -158,12 +139,18 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 when (msg.type) {
+                    "REGISTER_ACK" -> registerCurrentPairingCode()
+                    "PAIR_PENDING" -> {
+                        _isControllerConnecting.value = true
+                        _controllerErrorMessage.value = "Waiting for the receiver owner to approve."
+                    }
                     "PAIR_REQUEST" -> {
                         val root = JSONObject(msg.payload)
                         val opName = root.optString("operatorName", root.optString("controllerName", "Mahi Remote Controller"))
                         val opLoc = root.optString("operatorLocation", "Remote Android Controller")
                         val opFp = root.optString("fingerprint", root.optString("controllerFingerprint", "UNKNOWN-FP"))
                         val cId = root.optString("controllerId", msg.sender)
+                        val backendRequestId = root.optString("requestId")
                         val scopesJson = root.optJSONArray("requestedScopes")
                         val scopes = mutableListOf<String>()
                         if (scopesJson != null) {
@@ -178,13 +165,21 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                             operatorName = opName,
                             location = opLoc,
                             fingerprint = opFp,
-                            scopes = scopes
+                            scopes = scopes,
+                            requestId = backendRequestId
                         )
                     }
                     "PAIR_ACCEPT" -> {
                         // Handled on Controller side: target device approved!
                         val root = JSONObject(msg.payload)
-                        val sessionId = root.optString("sessionId", UUID.randomUUID().toString())
+                        val sessionId = root.optString("sessionId")
+                        val issuedToken = root.optString("sessionToken")
+                        if (sessionId.isBlank() || issuedToken.isBlank()) {
+                            _isControllerConnecting.value = false
+                            _controllerErrorMessage.value = "The server did not issue a valid approved session."
+                            return@launch
+                        }
+                        signalingClient.setSessionToken(issuedToken)
                         val receiverName = root.optString("receiverName", "Android Receiver Phone")
                         val targetFp = root.optString("fingerprint", "TARGET-FP")
                         val session = ControllerSession(
@@ -192,30 +187,37 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                             targetDeviceId = msg.sender,
                             targetDeviceName = receiverName,
                             targetFingerprint = targetFp,
-                            sessionToken = UUID.randomUUID().toString(),
+                            sessionToken = issuedToken,
                             connectedAtMillis = System.currentTimeMillis()
                         )
                         _activeControllerSession.value = session
                         _isControllerConnecting.value = false
                         _controllerErrorMessage.value = null
 
-                        // Add to recent target devices
-                        val updated = _recentTargetDevices.value.filter { it.deviceId != msg.sender } +
-                            KnownTargetDevice(
-                                deviceId = msg.sender,
-                                name = receiverName,
-                                model = "Android Device",
-                                fingerprint = targetFp,
-                                lastConnectedAtMillis = System.currentTimeMillis(),
-                                isOnline = true
-                            )
-                        _recentTargetDevices.value = updated
-
                         AuditLogger.log("CONTROLLER", "SESSION_ESTABLISHED", "Connected to remote phone: $receiverName", AuditSeverity.SECURITY)
 
                         // Request initial remote app and file catalog
                         fetchRemoteApps()
                         fetchRemoteFiles()
+                    }
+                    "PAIR_SESSION_AUTHORIZED" -> {
+                        val root = JSONObject(msg.payload)
+                        val issuedToken = root.optString("sessionToken")
+                        val sessionId = root.optString("sessionId")
+                        if (issuedToken.isNotBlank() && sessionId.isNotBlank()) {
+                            signalingClient.setSessionToken(issuedToken)
+                            AuditLogger.log("SESSION", "SESSION_AUTHORIZED", "Backend authorized the receiver session.", AuditSeverity.SECURITY)
+                        }
+                    }
+                    "SESSION_ENDED" -> {
+                        signalingClient.setSessionToken(null)
+                        _activeControllerSession.value = null
+                        pairingManager.emergencyDisconnect("Remote session ended")
+                        ScreenCaptureService.stop(getApplication())
+                    }
+                    "SESSION_ERROR" -> {
+                        val root = JSONObject(msg.payload)
+                        _controllerErrorMessage.value = root.optString("error", "Session authorization failed.")
                     }
                     "PAIR_REJECT" -> {
                         _isControllerConnecting.value = false
@@ -749,23 +751,19 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun emergencyDisconnect() {
+        signalingClient.send("EMERGENCY_DISCONNECT", """{"reason":"Receiver owner activated Emergency Stop"}""")
+        signalingClient.setSessionToken(null)
         pairingManager.emergencyDisconnect("Emergency killswitch activated by user")
         ScreenCaptureService.stop(getApplication())
         _showDisconnectDialog.value = false
     }
 
-    fun simulateOperatorConnection() {
-        pairingManager.simulateIncomingOperatorRequest()
-    }
-
     fun approveIncomingRequest(req: OperatorRequest) {
         pairingManager.approveRequest(req)
-        // If request originated from an Android or Windows controller, send PAIR_ACCEPT back
         if (req.controllerId.isNotBlank()) {
-            val sessionId = UUID.randomUUID().toString()
             signalingClient.send(
                 "PAIR_ACCEPT",
-                """{"sessionId":"$sessionId","receiverName":"${identity.deviceName}","status":"APPROVED","fingerprint":"${identity.fingerprint}"}""",
+                """{"requestId":"${req.requestId}","receiverName":"${identity.deviceName}","status":"APPROVED","fingerprint":"${identity.fingerprint}"}""",
                 req.controllerId
             )
         }
@@ -776,18 +774,24 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         if (req.controllerId.isNotBlank()) {
             signalingClient.send(
                 "PAIR_REJECT",
-                """{"status":"DENIED","reason":"User declined connection request"}""",
+                """{"requestId":"${req.requestId}","status":"DENIED","reason":"User declined connection request"}""",
                 req.controllerId
             )
         }
     }
 
+    private fun registerCurrentPairingCode() {
+        pairingManager.currentPairingCode.value?.let { code ->
+            signalingClient.send(
+                "REGISTER_PAIRING_CODE",
+                """{"code":"${code.code}","expiresAt":${code.expiresAtMillis}}"""
+            )
+        }
+    }
+
     fun generateNewPairingCode() {
-        val code = pairingManager.generateNewPairingCode()
-        signalingClient.send(
-            "REGISTER_PAIRING_CODE",
-            """{"code":"${code.code}","expiresAt":${code.expiresAtMillis}}"""
-        )
+        pairingManager.generateNewPairingCode()
+        registerCurrentPairingCode()
     }
 
     override fun onCleared() {
