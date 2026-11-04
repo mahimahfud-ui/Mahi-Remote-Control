@@ -23,6 +23,8 @@ class AndroidWebRtcSession(
     companion object {
         @Volatile private var activeInstance: AndroidWebRtcSession? = null
         fun stopActive() { activeInstance?.stop() }
+        fun setForegroundServiceReady() { activeInstance?.foregroundServiceReady() }
+        fun endActiveFromServer() { activeInstance?.endFromServer() }
     }
 
     private val appContext = context.applicationContext
@@ -38,6 +40,7 @@ class AndroidWebRtcSession(
     private var peerId: String? = null
     private var sessionId: String? = null
     private var receiver = false
+    private var foregroundReady = false
     private var permissionData: Intent? = null
     private var pendingOffer: SessionDescription? = null
     private var remoteDescriptionSet = false
@@ -92,7 +95,16 @@ class AndroidWebRtcSession(
             preset = quality
             ScreenCaptureService.setStreamState(ScreenStreamState.WaitingForController)
             _status.value = "Screen sharing approved; waiting for the controller"
-            pendingOffer?.let { offer -> answerOffer(offer, peerId ?: return@execute) }
+            if (foregroundReady) pendingOffer?.let { offer -> answerOffer(offer, peerId ?: return@execute) }
+        }
+    }
+
+    fun foregroundServiceReady() {
+        executor.execute {
+            foregroundReady = true
+            if (permissionData != null && pendingOffer != null && receiver) {
+                answerOffer(pendingOffer!!, peerId ?: return@execute)
+            }
         }
     }
 
@@ -172,6 +184,11 @@ class AndroidWebRtcSession(
 
     private fun answerOffer(offer: SessionDescription, controllerId: String) {
         val data = permissionData ?: return
+        if (!foregroundReady) {
+            pendingOffer = offer
+            _status.value = "Waiting for the owner-visible Android screen service to start"
+            return
+        }
         val rtcFactory = factory ?: return fail("WebRTC is not available")
         if (peer == null) {
             try {
@@ -183,6 +200,7 @@ class AndroidWebRtcSession(
                             fail("Android screen sharing was stopped by the device owner")
                             stopPeer()
                             releaseCapture()
+                            ScreenCaptureService.stopAfterSessionRevoked(appContext)
                         }
                     }
                 })
@@ -319,7 +337,7 @@ class AndroidWebRtcSession(
             peerId?.let { sendSignal("EMERGENCY_DISCONNECT", JSONObject().put("reason", "Screen sharing stopped by owner").toString(), it) }
             stopPeer()
             releaseCapture()
-            pendingOffer = null; peerId = null; sessionId = null; receiver = false
+            pendingOffer = null; peerId = null; sessionId = null; receiver = false; foregroundReady = false
             _status.value = "Session ended"
             ScreenCaptureService.setStreamState(ScreenStreamState.Stopped)
         }
@@ -333,6 +351,7 @@ class AndroidWebRtcSession(
             peerId = null
             sessionId = null
             receiver = false
+            foregroundReady = false
             _status.value = "Remote session ended"
             ScreenCaptureService.setStreamState(ScreenStreamState.Stopped)
         }
