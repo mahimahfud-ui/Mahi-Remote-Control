@@ -479,6 +479,10 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun handleInputEvent(msg: SignalingMessage) {
+        if (ScreenCaptureService.streamState.value !is ScreenStreamState.Active) {
+            AuditLogger.log("INPUT", "BLOCKED_NO_ACTIVE_SCREEN", "Remote input ignored until the receiver has an active, owner-approved screen stream", AuditSeverity.WARNING)
+            return
+        }
         val root = messagePayload(msg)
         val cmd = if (root.has("command")) root.getJSONObject("command") else root
         val type = cmd.optString("type", "")
