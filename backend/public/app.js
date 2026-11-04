@@ -13,6 +13,7 @@
     pairingRequestId: null,
     sessionId: null,
     sessionToken: null,
+    runtimeConfig: null,
     commandSequence: 1,
     dragStart: null,
     lastClickTime: 0,
@@ -68,9 +69,31 @@
     setupModal();
     setupFileUpload();
     renderDevices();
-    connectSignaling();
     startCanvasRenderLoop();
-    logAudit('INIT', `Browser Operator Console active. Fingerprint: ${state.operatorFingerprint}`, 'security');
+    logAudit('INIT', `Browser Controller ready. Fingerprint: ${state.operatorFingerprint}`, 'security');
+    loadRuntimeConfig().finally(connectSignaling);
+  }
+
+  async function loadRuntimeConfig() {
+    try {
+      const response = await fetch('/api/v1/config', { cache: 'no-store', credentials: 'same-origin' });
+      if (!response.ok) throw new Error('Configuration endpoint returned HTTP ' + response.status);
+      const config = await response.json();
+      state.runtimeConfig = config;
+      if (!config.browserAccessConfigured || !config.signalingUrl) {
+        logAudit('CONFIG', 'Public HTTPS access is not configured on the backend.', 'critical');
+      } else {
+        logAudit('CONFIG', 'Public browser URL and WSS endpoint loaded from backend.', 'security');
+      }
+      if (!config.turnConfigured) {
+        logAudit('NETWORK', 'TURN relay is not configured. Cross-network connectivity may fail behind restrictive NAT/CGNAT.', 'critical');
+      } else {
+        logAudit('NETWORK', 'Short-lived TURN credentials loaded from backend.', 'security');
+      }
+    } catch (error) {
+      state.runtimeConfig = null;
+      logAudit('CONFIG', 'Unable to load runtime configuration: ' + error.message, 'critical');
+    }
   }
 
   // WebSocket Signaling Connection (Dynamically works with ANY IP or Cloudflare tunnel!)
@@ -219,12 +242,12 @@
 
   // WebRTC Setup
   async function initWebRTC() {
-    // TURN credentials must be issued by the backend at runtime. Never embed
-    // shared TURN credentials in browser JavaScript. Until runtime ICE config
-    // is deployed, this browser can attempt STUN/direct paths only.
-    state.peerConnection = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-    });
+    // ICE configuration and short-lived TURN credentials are retrieved from
+    // the same-origin backend. Shared TURN secrets never enter this browser.
+    const configuredIceServers = state.runtimeConfig && Array.isArray(state.runtimeConfig.iceServers)
+      ? state.runtimeConfig.iceServers
+      : [{ urls: 'stun:stun.l.google.com:19302' }];
+    state.peerConnection = new RTCPeerConnection({ iceServers: configuredIceServers });
 
     state.peerConnection.addTransceiver('video', { direction: 'recvonly' });
     state.peerConnection.ontrack = (event) => {
