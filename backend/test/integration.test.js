@@ -1,5 +1,7 @@
 // Integration-only secret. Production must supply JWT_SECRET through its secret manager.
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'integration-test-only-secret-change-before-production-0001';
+process.env.TURN_SERVER_URL = 'turn:turn.integration.invalid:3478';
+process.env.TURN_SHARED_SECRET = 'integration-only-turn-secret-not-for-production';
 
 const http = require('http');
 const express = require('express');
@@ -37,6 +39,19 @@ async function runTests() {
     const healthData = await healthRes.json();
     assert.strictEqual(healthData.status, 'healthy');
     console.log('✓ /api/v1/health PASSED');
+
+    // Public configuration may expose STUN/public endpoints, but never TURN credentials.
+    const publicConfigRes = await fetch('http://localhost:8099/api/v1/config');
+    assert.strictEqual(publicConfigRes.status, 200);
+    const publicConfig = await publicConfigRes.json();
+    assert.strictEqual(publicConfig.turnConfigured, true);
+    assert(!JSON.stringify(publicConfig).includes('credential'));
+    assert(!JSON.stringify(publicConfig).includes('integration-only-turn-secret'));
+    console.log('✓ Public runtime config does not disclose TURN credentials');
+
+    const unauthTurnRes = await fetch('http://localhost:8099/api/v1/turn-credentials');
+    assert.strictEqual(unauthTurnRes.status, 401);
+    console.log('✓ TURN credentials require an approved session token');
 
     // 3. Test Device Registration & Listing
     console.log('[TEST] Registering mock device in Noakhali...');
@@ -145,6 +160,18 @@ async function runTests() {
     assert(controllerApproval.sessionToken, 'Controller token missing');
     assert(receiverAuthorization.sessionToken, 'Receiver token missing');
     assert.strictEqual(DeviceService.getPairingCode(testCode), null, 'Approved code must be consumed exactly once');
+    assert(DeviceService.hasActiveSessionForDevice('MAHI-WS-DEVICE'), 'Receiver must have one active session');
+
+    const authorizedTurnRes = await fetch('http://localhost:8099/api/v1/turn-credentials', {
+      headers: { Authorization: 'Bearer ' + controllerApproval.sessionToken }
+    });
+    assert.strictEqual(authorizedTurnRes.status, 200);
+    const turnPayload = await authorizedTurnRes.json();
+    assert(turnPayload.iceServers.some(server => server.urls === process.env.TURN_SERVER_URL));
+    assert(turnPayload.iceServers.some(server => typeof server.credential === 'string' && server.credential.length > 10));
+    assert(!JSON.stringify(turnPayload).includes('integration-only-turn-secret'));
+    console.log('✓ Approved session receives expiring TURN credentials');
+
     console.log('✓ Pairing request is pending until explicit receiver approval');
     console.log('✓ Both participants receive separate signed tokens for one session');
 
