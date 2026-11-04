@@ -86,8 +86,8 @@ class PairingManager(private val context: Context) {
             operatorLocation = request.operatorLocation,
             controllerFingerprint = request.controllerFingerprint,
             startedAtMillis = System.currentTimeMillis(),
-            isScreenStreaming = true,
-            isInputEnabled = true
+            isScreenStreaming = false,
+            isInputEnabled = false
         )
         _activeSession.value = session
         _pendingRequest.value = null
@@ -113,6 +113,14 @@ class PairingManager(private val context: Context) {
         _trustedControllers.value = updatedList
 
         AuditLogger.log("SESSION", "ESTABLISHED", "Session ${session.sessionId.take(8)} authorized for ${request.operatorName}", AuditSeverity.SECURITY)
+    }
+
+    fun markSessionAuthorized(sessionId: String) {
+        _activeSession.value = _activeSession.value?.copy(
+            sessionId = sessionId,
+            isScreenStreaming = false,
+            isInputEnabled = true
+        )
     }
 
     fun rejectRequest(request: OperatorRequest) {
