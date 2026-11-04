@@ -117,6 +117,7 @@ class PairingManager(private val context: Context) {
             operatorLocation = request.operatorLocation,
             controllerFingerprint = request.controllerFingerprint,
             startedAtMillis = System.currentTimeMillis(),
+            controllerId = request.controllerId,
             isScreenStreaming = false,
             isInputEnabled = false
         )
