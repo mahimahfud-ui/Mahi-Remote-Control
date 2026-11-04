@@ -139,6 +139,9 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     private val _hasRemoteVideoFrame = MutableStateFlow(false)
     val hasRemoteVideoFrame: StateFlow<Boolean> = _hasRemoteVideoFrame.asStateFlow()
 
+    private val _remoteVideoResolution = MutableStateFlow<Pair<Int, Int>?>(null)
+    val remoteVideoResolution: StateFlow<Pair<Int, Int>?> = _remoteVideoResolution.asStateFlow()
+
     val remoteWebRtcSession: AndroidWebRtcSession
     val remoteVideoTrack: StateFlow<VideoTrack?> get() = remoteWebRtcSession.remoteVideo
     val remoteWebRtcStatus: StateFlow<String> get() = remoteWebRtcSession.status
@@ -769,6 +772,16 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setRemoteVideoFrameRendered(rendered: Boolean) {
         _hasRemoteVideoFrame.value = rendered && remoteWebRtcSession.remoteVideo.value != null
+    }
+
+    fun setRemoteVideoResolution(width: Int, height: Int, rotation: Int) {
+        if (width <= 0 || height <= 0) return
+        val normalizedRotation = ((rotation % 360) + 360) % 360
+        _remoteVideoResolution.value = if (normalizedRotation == 90 || normalizedRotation == 270) {
+            height to width
+        } else {
+            width to height
+        }
     }
 
     private fun remoteInputReady(): Boolean {
