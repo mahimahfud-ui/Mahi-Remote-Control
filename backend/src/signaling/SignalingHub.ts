@@ -291,6 +291,7 @@ export class SignalingHub {
       controller.id,
       sender.fingerprint
     );
+    this.scheduleSessionExpiry(sessionId, sender.id, controller.id);
     this.clearPending(requestId);
 
     const receiverInfo = DeviceService.getDevice(sender.id);
@@ -316,6 +317,28 @@ export class SignalingHub {
       controllerFingerprint: pending.controllerFingerprint,
       status: 'APPROVED',
     });
+  }
+
+  private scheduleSessionExpiry(sessionId: string, receiverId: string, controllerId: string): void {
+    const expiryTimer = setTimeout(() => {
+      // Ending from the authoritative in-memory store makes this timer harmless
+      // after an emergency stop or any earlier revocation.
+      const ended = DeviceService.endSession(sessionId);
+      if (!ended) return;
+
+      const expiryMessage = {
+        type: 'SESSION_ENDED',
+        sessionId,
+        reason: 'The approved 30-minute session expired.',
+      };
+      const receiver = this.clients.get(receiverId);
+      const controller = this.clients.get(controllerId);
+      if (receiver) this.send(receiver, expiryMessage);
+      if (controller) this.send(controller, expiryMessage);
+    }, SESSION_TTL_MS);
+
+    // The expiry timer must not keep an otherwise idle Node process alive.
+    if (typeof expiryTimer.unref === 'function') expiryTimer.unref();
   }
 
   private authorizeSessionMessage(sender: ClientConnection, msg: any): { sessionId: string; peerId: string } | null {
