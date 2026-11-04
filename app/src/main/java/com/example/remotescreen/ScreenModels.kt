@@ -13,13 +13,13 @@ enum class VideoPreset(
 }
 
 data class StreamMetrics(
-    val currentFps: Int = 30,
-    val bitrateKbps: Int = 2000,
-    val resolution: String = "720x1280",
+    val currentFps: Int = 0,
+    val bitrateKbps: Int = 0,
+    val resolution: String = "unavailable",
     val framesEncoded: Long = 0,
     val bytesTransferred: Long = 0,
-    val roundTripTimeMs: Int = 34,
-    val packetLossPercent: Float = 0.02f
+    val roundTripTimeMs: Int = 0,
+    val packetLossPercent: Float = 0f
 )
 
 sealed class ScreenStreamState {
