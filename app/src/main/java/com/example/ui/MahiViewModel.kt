@@ -305,6 +305,13 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         _isControllerConnecting.value = false
                         _controllerErrorMessage.value = root.optString("error", "Pairing error occurred.")
                     }
+                    "SCOPE_REQUIRED" -> {
+                        val root = JSONObject(msg.payload)
+                        _controllerErrorMessage.value = root.optString(
+                            "error",
+                            "The receiver did not approve: " + root.optString("requiredScope", "requested permission")
+                        )
+                    }
                     "APP_LIST_RESPONSE" -> {
                         val envelope = JSONObject(msg.payload)
                         val payloadObject = envelope.optJSONObject("payload")
