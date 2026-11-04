@@ -609,7 +609,7 @@
         code,
         fingerprint: state.operatorFingerprint,
         controllerName: state.operatorName,
-        requestedScopes: ['SCREEN_VIEW', 'REMOTE_INPUT', 'APP_MANAGEMENT', 'FILE_TRANSFER']
+        requestedScopes: ['SCREEN_VIEW', 'REMOTE_INPUT', 'APP_MANAGEMENT', 'FILE_TRANSFER', 'DIAGNOSTICS']
       });
       el.badge.textContent = 'PAIRING';
       el.badge.className = 'badge badge-warning';
