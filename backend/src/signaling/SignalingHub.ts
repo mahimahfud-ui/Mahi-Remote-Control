@@ -402,6 +402,11 @@ export class SignalingHub {
       return;
     }
 
-    this.send(target, { ...msg, sender: sender.id, senderId: sender.id });
+    this.send(target, {
+      ...msg,
+      sender: sender.id,
+      senderId: sender.id,
+      sessionId: authorization.sessionId,
+    });
   }
 }
