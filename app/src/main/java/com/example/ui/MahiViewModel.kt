@@ -104,6 +104,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     val activeControllerSession: StateFlow<ControllerSession?> = _activeControllerSession.asStateFlow()
 
     private val _recentTargetDevices = MutableStateFlow<List<KnownTargetDevice>>(emptyList())
+    val recentTargetDevices: StateFlow<List<KnownTargetDevice>> = _recentTargetDevices.asStateFlow()
 
     private val _remoteViewerTab = MutableStateFlow(RemoteViewerTab.SCREEN)
     val remoteViewerTab: StateFlow<RemoteViewerTab> = _remoteViewerTab.asStateFlow()
