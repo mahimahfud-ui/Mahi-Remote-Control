@@ -20,16 +20,16 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * Foreground-service shell for owner-visible screen sharing.
- *
- * This GitHub snapshot does not yet contain the native WebRTC publisher. The service
- * deliberately refuses to report an active stream until a real video track is wired in.
+ * Foreground service required by Android while owner-consented MediaProjection capture
+ * is active. Screen frames are published by AndroidWebRtcSession only after an approved
+ * controller session has negotiated WebRTC.
  */
 class ScreenCaptureService : Service() {
 
     companion object {
         const val ACTION_START = "com.example.action.START_STREAM"
         const val ACTION_STOP = "com.example.action.STOP_STREAM"
+        const val ACTION_STOP_REVOKED = "com.example.action.STOP_REVOKED"
         const val EXTRA_RESULT_CODE = "extra_result_code"
         const val EXTRA_RESULT_DATA = "extra_result_data"
         const val EXTRA_PRESET = "extra_preset"
@@ -50,6 +50,13 @@ class ScreenCaptureService : Service() {
         fun stop(context: Context) {
             val intent = Intent(context, ScreenCaptureService::class.java).apply {
                 action = ACTION_STOP
+            }
+            context.startService(intent)
+        }
+
+        fun stopAfterSessionRevoked(context: Context) {
+            val intent = Intent(context, ScreenCaptureService::class.java).apply {
+                action = ACTION_STOP_REVOKED
             }
             context.startService(intent)
         }
@@ -75,6 +82,7 @@ class ScreenCaptureService : Service() {
 
                 if (resultCode != 0 && resultData != null) {
                     startForegroundForSharing()
+                    AndroidWebRtcSession.setForegroundServiceReady()
                     _streamState.value = ScreenStreamState.WaitingForController
                     AuditLogger.log("SCREEN", "CONSENT_GRANTED", "Owner granted Android screen-sharing consent; waiting for an approved controller", AuditSeverity.SECURITY)
                 } else {
@@ -86,6 +94,12 @@ class ScreenCaptureService : Service() {
                 AndroidWebRtcSession.stopActive()
                 _streamState.value = ScreenStreamState.Stopped
                 AuditLogger.log("SCREEN", "STREAM_STOPPED", "Screen sharing stop requested by the owner", AuditSeverity.INFO)
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf(startId)
+            }
+            ACTION_STOP_REVOKED -> {
+                AndroidWebRtcSession.endActiveFromServer()
+                _streamState.value = ScreenStreamState.Stopped
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf(startId)
             }
