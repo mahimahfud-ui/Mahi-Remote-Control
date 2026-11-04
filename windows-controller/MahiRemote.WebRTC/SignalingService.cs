@@ -27,6 +27,7 @@ public class SignalingService
     public event Action<string, long, string>? OnRemoteFileChunkReceived;
     public event Action<string>? OnDiagnosticsReportReceived;
     public event Action<int, int, string>? OnResolutionSyncReceived;
+    public event Action<DeviceInfo>? OnPairedDevice;
 
     public bool IsConnected => _ws?.State == WebSocketState.Open;
 
@@ -282,6 +283,38 @@ public class SignalingService
 
                 case "DIAGNOSTICS_RESULT":
                     OnDiagnosticsReportReceived?.Invoke(JsonText(payload, "{}"));
+                    break;
+
+                case "PAIR_PENDING":
+                    OnStatusChanged?.Invoke("Pairing request sent. Waiting for the phone owner to approve.");
+                    break;
+
+                case "PAIR_ACCEPT":
+                    string receiverId = JsonText(
+                        FindValue(root, payload, "receiverId"),
+                        JsonText(FindValue(root, payload, "sender"), "")
+                    );
+                    string receiverName = JsonText(FindValue(root, payload, "receiverName"), "Android receiver");
+                    string receiverFingerprint = JsonText(FindValue(root, payload, "fingerprint"), "");
+                    if (!string.IsNullOrWhiteSpace(receiverId) && !string.IsNullOrWhiteSpace(receiverFingerprint))
+                    {
+                        OnPairedDevice?.Invoke(new DeviceInfo
+                        {
+                            DeviceId = receiverId,
+                            DeviceName = receiverName,
+                            Fingerprint = receiverFingerprint,
+                        });
+                    }
+                    OnStatusChanged?.Invoke("Phone owner approved pairing. Establishing the secure session.");
+                    break;
+
+                case "PAIR_REJECT":
+                case "PAIR_ERROR":
+                    string pairingError = JsonText(
+                        FindValue(root, payload, "reason"),
+                        JsonText(FindValue(root, payload, "error"), "Pairing request was rejected.")
+                    );
+                    OnStatusChanged?.Invoke("Pairing failed: " + pairingError);
                     break;
 
                 case "SESSION_AUTHORIZED":
