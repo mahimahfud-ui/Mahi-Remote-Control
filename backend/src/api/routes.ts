@@ -60,16 +60,17 @@ apiRouter.get('/turn-credentials', (req: Request, res: Response) => {
   }
 
   const turnServer = getTurnIceServer();
-  if (!turnServer) {
-    return res.status(503).json({ error: 'TURN relay is not configured on this backend.' });
-  }
+  const iceServers: Array<Record<string, unknown>> = [
+    { urls: process.env.STUN_SERVER_URL || 'stun:stun.l.google.com:19302' },
+  ];
+  if (turnServer) iceServers.push(turnServer);
 
+  // Direct STUN connectivity must still be attempted when TURN is not deployed.
+  // Restrictive NATs may fail without TURN, but do not block all WebRTC sessions.
   return res.json({
-    iceServers: [
-      { urls: process.env.STUN_SERVER_URL || 'stun:stun.l.google.com:19302' },
-      turnServer,
-    ],
-    expiresInSeconds: 3600,
+    iceServers,
+    turnConfigured: Boolean(turnServer),
+    expiresInSeconds: turnServer ? 3600 : 0,
   });
 });
 
