@@ -313,6 +313,10 @@
   }
 
   function sendCommand(type, params) {
+    if (!state.sessionActive || !state.activeDeviceId) {
+      logAudit('INPUT', 'No approved receiver session is active.', 'critical');
+      return false;
+    }
     const seq = state.commandSequence++;
     const payload = {
       type: 'INPUT_EVENT',
@@ -325,52 +329,19 @@
         ...params
       }
     };
-    sendWs(payload);
+    return sendWs(payload);
   }
 
   // Canvas Render Loop
   function startCanvasRenderLoop() {
     function render() {
-      if (el.video.srcObject && el.video.readyState >= 2) {
-        ctx.drawImage(el.video, 0, 0, el.canvas.width, el.canvas.height);
+      // Render only real decoded receiver video; never synthesize placeholder phone content.
+      if (state.isVideoLive && el.video.readyState >= 2 && el.video.videoWidth > 0) {
+        try { ctx.drawImage(el.video, 0, 0, el.canvas.width, el.canvas.height); }
+        catch (_) { state.isVideoLive = false; el.placeholder.style.display = 'flex'; }
       } else {
-        // Draw crisp modern UI frame on canvas
         ctx.fillStyle = '#0E1116';
         ctx.fillRect(0, 0, el.canvas.width, el.canvas.height);
-
-        // Status Header
-        ctx.fillStyle = '#161B22';
-        ctx.fillRect(0, 0, el.canvas.width, 100);
-
-        ctx.fillStyle = '#F0F6FC';
-        ctx.font = 'bold 36px Inter, sans-serif';
-        ctx.fillText('10:42', 60, 68);
-
-        ctx.fillStyle = '#00E676';
-        ctx.fillRect(el.canvas.width - 140, 42, 60, 26);
-        ctx.fillStyle = '#000';
-        ctx.font = 'bold 20px monospace';
-        ctx.fillText('86%', el.canvas.width - 130, 62);
-
-        // Grid lines
-        ctx.strokeStyle = '#21262D';
-        ctx.lineWidth = 2;
-        for (let i = 200; i < el.canvas.height - 200; i += 200) {
-          ctx.beginPath();
-          ctx.moveTo(40, i);
-          ctx.lineTo(el.canvas.width - 40, i);
-          ctx.stroke();
-        }
-
-        // Navigation bar
-        ctx.fillStyle = '#161B22';
-        ctx.fillRect(0, el.canvas.height - 120, el.canvas.width, 120);
-
-        ctx.fillStyle = '#8B949E';
-        ctx.font = '32px sans-serif';
-        ctx.fillText('◄', el.canvas.width * 0.25, el.canvas.height - 50);
-        ctx.fillText('●', el.canvas.width * 0.50, el.canvas.height - 50);
-        ctx.fillText('■', el.canvas.width * 0.75, el.canvas.height - 50);
       }
       requestAnimationFrame(render);
     }
@@ -488,24 +459,33 @@
       el.pairModal.style.display = 'flex';
       el.inputPairCode.focus();
     };
-
     el.btnCloseModal.onclick = () => { el.pairModal.style.display = 'none'; };
-
     el.btnSubmitPair.onclick = () => {
-      const code = el.inputPairCode.value.trim();
-      if (code.length >= 6) {
-        el.pairModal.style.display = 'none';
-        logAudit('PAIRING', `Submitting 6-digit pairing code: ${code}...`, 'security');
-        sendWs({
-          type: 'PAIR_REQUEST',
-          pairingCode: code,
-          targetDeviceId: state.activeDeviceId,
-          operatorFingerprint: state.operatorFingerprint,
-          operatorName: state.operatorName,
-          operatorLocation: state.operatorLocation
-        });
-        alert('Pairing challenge sent to phone in Noakhali. Device owner must tap "Authorize Session".');
+      const code = el.inputPairCode.value.replace(/\\D/g, '');
+      if (!/^\\d{6}$/.test(code)) {
+        el.inputPairCode.setCustomValidity('Enter exactly six digits.');
+        el.inputPairCode.reportValidity();
+        return;
       }
+      el.inputPairCode.setCustomValidity('');
+      if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+        logAudit('PAIRING', 'Signaling server is offline. Pairing request was not sent.', 'critical');
+        return;
+      }
+      el.pairModal.style.display = 'none';
+      state.sessionActive = false;
+      state.activeDeviceId = null;
+      state.isVideoLive = false;
+      logAudit('PAIRING', 'Sending six-digit pairing request.', 'security');
+      sendWs({
+        type: 'PAIR_BY_CODE',
+        code,
+        fingerprint: state.operatorFingerprint,
+        controllerName: state.operatorName,
+        requestedScopes: ['SCREEN_VIEW', 'REMOTE_INPUT', 'APP_MANAGEMENT', 'FILE_TRANSFER']
+      });
+      el.badge.textContent = 'PAIRING';
+      el.badge.className = 'badge badge-warning';
     };
   }
 
