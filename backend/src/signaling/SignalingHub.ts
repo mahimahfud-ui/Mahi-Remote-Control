@@ -47,6 +47,21 @@ export class SignalingHub {
 
   private init(): void {
     this.wss.on('connection', (ws: WebSocket, req) => {
+      const origin = req.headers.origin;
+      if (origin) {
+        let allowedOrigin: string | null = null;
+        try {
+          const configured = process.env.PUBLIC_BASE_URL || '';
+          allowedOrigin = configured ? new URL(configured).origin : null;
+        } catch {
+          allowedOrigin = null;
+        }
+        if (!allowedOrigin || origin !== allowedOrigin) {
+          ws.close(1008, 'Origin is not allowed');
+          return;
+        }
+      }
+
       const deviceId = req.headers['x-device-id'] as string | undefined;
       const operatorFp = req.headers['x-operator-fingerprint'] as string | undefined;
       const clientRole = (req.headers['x-client-role'] as string | undefined)?.toUpperCase();
@@ -154,6 +169,11 @@ export class SignalingHub {
     const receiver = this.clients.get(record.deviceId);
     if (!receiver || (receiver.type !== 'RECEIVER' && receiver.type !== 'ANDROID')) {
       this.send(sender, { type: 'PAIR_ERROR', error: 'Receiver is offline or unavailable.' });
+      return;
+    }
+
+    if (DeviceService.hasActiveSessionForDevice(receiver.id)) {
+      this.send(sender, { type: 'PAIR_ERROR', error: 'This receiver already has an active remote session.' });
       return;
     }
 
