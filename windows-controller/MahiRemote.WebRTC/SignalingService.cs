@@ -264,11 +264,13 @@ public class SignalingService
                     break;
 
                 case "APP_LIST_RESPONSE":
-                    OnRemoteAppListReceived?.Invoke(JsonText(payload, "[]"));
+                    var apps = FindValue(root, payload, "apps");
+                    OnRemoteAppListReceived?.Invoke(JsonText(apps, JsonText(payload, "[]")));
                     break;
 
                 case "FILE_LIST_RESPONSE":
-                    OnRemoteFileListReceived?.Invoke(JsonText(payload, "[]"));
+                    var files = FindValue(root, payload, "files");
+                    OnRemoteFileListReceived?.Invoke(JsonText(files, JsonText(payload, "[]")));
                     break;
 
                 case "FILE_CHUNK_RESPONSE":
