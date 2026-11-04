@@ -61,6 +61,11 @@ const wss = new WebSocketServer({
   path: '/ws',
   maxPayload: 1024 * 1024,
   perMessageDeflate: false,
+  verifyClient: (info, callback) => {
+    const origin = info.origin;
+    if (!origin || origins.has(origin)) callback(true);
+    else callback(false, 403, 'Origin is not allowed.');
+  },
 });
 new SignalingHub(wss);
 
