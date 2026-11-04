@@ -1,70 +1,50 @@
 # Mahi Remote Control
 
-> Production-grade, secure remote Android device support and control platform connecting Windows desktop operators to Android phones over the internet.
+> **Development status — incomplete.** This repository is not currently a production-ready remote-control release. The checked-in Android source does not yet contain a working WebRTC screen sender/answerer, so real remote screen video is not available in this snapshot.
 
----
+Mahi Remote Control is intended to be one Android application that can act as either a **Controller** or **Receiver**, plus a browser controller that can connect to a receiver over the public internet. The two devices do not need to share the same Wi-Fi network, but they do need working internet access, a public HTTPS/WSS backend, and a reachable STUN/TURN configuration.
 
-## 🌟 Overview
+## Current branch work
 
-**Mahi Remote Control** allows an authorized Windows desktop operator (e.g. located in **Sylhet, Bangladesh**) to securely view, diagnose, and troubleshoot an Android phone (e.g. located in **Noakhali, Bangladesh**) across different cellular or Wi-Fi networks without physical USB connections, shared local networks, or rooting requirements.
+The security/UI hardening work is being developed on `work/remote-access-hardening`. It does not modify `main`.
 
-### Key Capabilities
-- **Non-Root by Design:** Works immediately on stock, unrooted Android 8.0+ devices using official **MediaProjection** and **AccessibilityService** APIs.
-- **WebRTC Screen Mirroring:** Hardware-accelerated H.264 video pipeline with adaptive bitrate (1080p 60fps, 720p 30fps, 480p 15fps) and automatic orientation handling.
-- **Touch & Gesture Interaction:** Mouse clicks translate to taps, drags translate to swipes, scroll wheels translate to vertical scrolls, and physical keyboards input text into focused fields.
-- **Automated Diagnostics:** One-click automated diagnostics for Internet connectivity, DNS latency, Google Play Services status, storage capacity, battery subsystem health, system clock sync, and remote permissions.
-- **Scoped File Manager:** Secure browsing of internal and external Documents/Downloads directories with download, upload, rename, and confirmation-gated file deletion.
-- **Application Management:** Query installed packages, inspect version/target SDK details, launch applications, open application settings, or request system uninstallation prompts.
-- **Cryptographic Security:** Ed25519 / ECDSA device identity, 6-digit expiring pairing codes, QR-code pairing, zero-trust command allowlists, persistent user notifications, and an instant emergency killswitch.
-- **Optional Magisk Integration:** Automatic detection of Magisk on rooted phones. If present, privileged mode is strictly opt-in and restricted to signed allowlists.
+- Two-action Android home screen: **Control another device** and **Share this phone**.
+- QR generation and Google Play Services QR scanning.
+- Approval-gated temporary pairing with server-issued session tokens.
+- Browser pairing flow using the same temporary code and receiver approval.
+- HTTPS/WSS and TURN runtime configuration from server environment variables.
+- Fake Android demo device/telemetry/screen placeholders removed.
+- Advanced receiver tools moved into a More menu.
 
----
+These are source changes only; they have not yet been built or run through the test suite. See [Implementation Status](docs/IMPLEMENTATION-STATUS.md) for the exact verification state and blockers.
 
-## 📐 Architecture & Monorepo Structure
+## Important limitations
+
+- **Real WebRTC media is not implemented in the Android app yet.** The screen capture service currently reports this honestly instead of displaying fake FPS or claiming LIVE.
+- Backend device, pairing and session state is still held in process-local memory, not PostgreSQL.
+- Device identity registration still needs a cryptographic challenge/response proof.
+- The current GitHub branch has not been compared with the user's newer Google AI Studio Remix workspace.
+- No physical two-phone, browser, Windows, cross-network or TURN-relay test is claimed.
+
+Do not distribute this snapshot as a working remote-control release until those blockers are resolved.
+
+## Architecture & repository structure
 
 ```
 mahi-remote-control/
-│
-├── app/                        # Android Agent (Live Kotlin + Jetpack Compose App)
-│   ├── src/main/java/com/example/
-│   │   ├── security/           # DeviceIdentity, AuditLogger, AllowlistValidator
-│   │   ├── pairing/            # 6-digit codes, QR generation, trusted controllers
-│   │   ├── remotescreen/       # MediaProjection service, H.264 pipeline
-│   │   ├── remoteinput/        # AccessibilityService gesture dispatch
-│   │   ├── filetransfer/       # Scoped storage SAF file manager
-│   │   ├── appmanager/         # Installed packages & launch/uninstall
-│   │   ├── diagnostics/        # Hardware telemetry & automated repairs
-│   │   ├── rootintegration/    # Magisk detection & signed allowlists
-│   │   ├── signaling/          # WebSocket signaling client
-│   │   └── ui/                 # Dark Charcoal/Cyan M3 Compose Screens
-│
-├── windows-controller/         # C# & .NET 10 WPF Desktop Application
-│   ├── MahiRemote.sln
-│   ├── MahiRemote.App/         # WPF Window, mouse-to-touch canvas, diagnostics
-│   ├── MahiRemote.Core/        # Models, Command packets, session state
-│   ├── MahiRemote.WebRTC/      # WebSocket signaling & video decoder
-│   ├── MahiRemote.Devices/     # Paired device registry
-│   └── MahiRemote.Security/    # Cryptographic signing & verification
-│
-├── backend/                    # Cloud Signaling & Device Management
-│   ├── src/index.ts            # Express + WebSocket HTTP server
-│   ├── src/signaling/          # Room router, SDP/ICE relay
-│   ├── src/device-management/  # Device registry & pairing code consumption
-│   └── src/authentication/     # JWT sessions, rate limiting, crypto verification
-│
-├── infrastructure/             # Database & Deployment
-│   ├── database/schema.sql     # PostgreSQL / Supabase schema with RLS policies
-│   ├── deployment/docker-compose.yml # Multi-container production stack
-│   ├── deployment/coturn.conf  # STUN/TURN server for NAT traversal
-│   └── monitoring/prometheus.yml # Telemetry scraping
-│
-├── docs/                       # Architecture, Protocol & Security Specifications
-├── scripts/                    # Automated PowerShell build & test scripts
-├── SECURITY.md                 # Security policies & threat model
-└── BUILD.md                    # Build and compilation instructions
+├── app/                        # One Android APK (Kotlin / Jetpack Compose)
+├── backend/                    # Node.js / TypeScript REST + WebSocket signaling
+│   └── public/                 # Browser controller
+├── windows-controller/         # Legacy Windows WPF controller (compatibility not verified)
+├── infrastructure/             # PostgreSQL schema, Docker Compose and Coturn config
+├── docs/                       # Architecture, setup and verification reports
+├── scripts/                    # Build and deployment scripts
+└── dist/                       # Historical reports (superseded where noted)
 ```
 
----
+## Build and configuration
+
+See [Build Guide](BUILD.md) and [Remote Access Deployment](docs/REMOTE-ACCESS-DEPLOYMENT.md). The root `.env.example` contains only the public Android build URL. Private backend secrets belong in the backend/deployment environment and must never be placed in the APK or browser JavaScript.
 
 ## 🚀 Quick Start Guide
 
