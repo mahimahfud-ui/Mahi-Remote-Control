@@ -9,7 +9,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import com.example.MainActivity
 import com.example.R
@@ -24,6 +26,8 @@ import kotlinx.coroutines.flow.asStateFlow
 class ScreenCaptureService : Service() {
 
     private var webRtcSession: WebRtcSessionManager? = null
+    @Volatile private var activeSessionId: String? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     companion object {
         const val ACTION_START = "com.example.action.START_STREAM"
@@ -33,6 +37,7 @@ class ScreenCaptureService : Service() {
         const val EXTRA_PRESET = "extra_preset"
         const val EXTRA_ICE_CONFIG = "extra_ice_config"
         const val EXTRA_TARGET_DEVICE_ID = "extra_target_device_id"
+        const val EXTRA_SESSION_ID = "extra_session_id"
 
         private const val NOTIFICATION_ID = 9021
         private const val CHANNEL_ID = "mahi_remote_screen_channel"
@@ -97,15 +102,16 @@ class ScreenCaptureService : Service() {
                     .getOrDefault(VideoPreset.BALANCED)
                 val iceConfig = intent.getStringExtra(EXTRA_ICE_CONFIG).orEmpty()
                 val targetDeviceId = intent.getStringExtra(EXTRA_TARGET_DEVICE_ID).orEmpty()
+                val sessionId = intent.getStringExtra(EXTRA_SESSION_ID).orEmpty()
 
-                if (resultData == null || iceConfig.isBlank() || targetDeviceId.isBlank()) {
+                if (resultData == null || iceConfig.isBlank() || targetDeviceId.isBlank() || sessionId.isBlank()) {
                     _streamState.value = ScreenStreamState.Error(
                         "Screen sharing needs Android consent, ICE configuration and an approved controller session."
                     )
                     stopSelf(startId)
                     return START_NOT_STICKY
                 }
-                startCapture(resultCode, resultData, preset, iceConfig, targetDeviceId)
+                startCapture(resultCode, resultData, preset, iceConfig, targetDeviceId, sessionId)
             }
             ACTION_STOP -> {
                 stopCapture()
@@ -121,7 +127,8 @@ class ScreenCaptureService : Service() {
         resultData: Intent,
         preset: VideoPreset,
         iceConfig: String,
-        controllerDeviceId: String
+        controllerDeviceId: String,
+        sessionId: String
     ) {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -135,6 +142,7 @@ class ScreenCaptureService : Service() {
             }
 
             stopCurrentWebRtcSession()
+            activeSessionId = sessionId
             _streamState.value = ScreenStreamState.RequestingConsent
 
             val manager = WebRtcSessionManager(
@@ -161,9 +169,14 @@ class ScreenCaptureService : Service() {
                             )
                         }
                         PeerConnection.PeerConnectionState.FAILED -> {
-                            _streamState.value = ScreenStreamState.Error(
-                                "WebRTC connection failed. Check internet and TURN connectivity."
-                            )
+                            mainHandler.post {
+                                _streamState.value = ScreenStreamState.Error(
+                                    "WebRTC connection failed. Check internet and TURN connectivity."
+                                )
+                                stopCapture()
+                                stopForeground(STOP_FOREGROUND_REMOVE)
+                                stopSelf()
+                            }
                         }
                         PeerConnection.PeerConnectionState.DISCONNECTED,
                         PeerConnection.PeerConnectionState.CLOSED -> {
@@ -175,8 +188,13 @@ class ScreenCaptureService : Service() {
                     }
                 },
                 onError = { message ->
-                    _streamState.value = ScreenStreamState.Error(message)
-                    AuditLogger.log("SCREEN", "MEDIA_ERROR", message, AuditSeverity.WARNING)
+                    mainHandler.post {
+                        _streamState.value = ScreenStreamState.Error(message)
+                        AuditLogger.log("SCREEN", "MEDIA_ERROR", message, AuditSeverity.WARNING)
+                        stopCapture()
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                    }
                 }
             )
             webRtcSession = manager
@@ -186,7 +204,7 @@ class ScreenCaptureService : Service() {
                 iceConfigJson = iceConfig,
                 controllerDeviceId = controllerDeviceId
             )
-            flushPendingSignals()
+            flushPendingSignals(sessionId)
             AuditLogger.log(
                 "SCREEN",
                 "CAPTURE_STARTED",
@@ -212,6 +230,16 @@ class ScreenCaptureService : Service() {
         }
         try {
             val root = JSONObject(rawMessage)
+            val packetSessionId = root.optString("sessionId")
+            if (packetSessionId.isBlank() || packetSessionId != activeSessionId) {
+                AuditLogger.log(
+                    "SIGNALING",
+                    "STALE_MEDIA_SIGNAL_IGNORED",
+                    "Ignored a media packet that does not belong to the active receiver session.",
+                    AuditSeverity.WARNING
+                )
+                return
+            }
             val payload = root.optJSONObject("payload") ?: root
             when (type) {
                 "SDP_OFFER" -> {
@@ -219,7 +247,11 @@ class ScreenCaptureService : Service() {
                     if (sdp.isNotBlank()) manager.handleOffer(sdp)
                 }
                 "ICE_CANDIDATE" -> manager.handleIceCandidate(payload)
-                "SESSION_ENDED", "EMERGENCY_DISCONNECT" -> stopCapture()
+                "SESSION_ENDED", "EMERGENCY_DISCONNECT" -> {
+                    stopCapture()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
             }
         } catch (error: Exception) {
             AuditLogger.log(
@@ -232,10 +264,15 @@ class ScreenCaptureService : Service() {
     }
 
     @Synchronized
-    private fun flushPendingSignals() {
+    private fun flushPendingSignals(expectedSessionId: String) {
         while (true) {
             val next = pendingSignals.poll() ?: break
-            dispatchSignal(next.first, next.second)
+            val matchesSession = runCatching {
+                JSONObject(next.second).optString("sessionId") == expectedSessionId
+            }.getOrDefault(false)
+            if (matchesSession) {
+                dispatchSignal(next.first, next.second)
+            }
         }
     }
 
@@ -246,6 +283,8 @@ class ScreenCaptureService : Service() {
 
     private fun stopCapture() {
         stopCurrentWebRtcSession()
+        activeSessionId = null
+        pendingSignals.clear()
         if (_streamState.value !is ScreenStreamState.Error) {
             _streamState.value = ScreenStreamState.Stopped
         }
