@@ -53,15 +53,11 @@ async function runTests() {
     assert.strictEqual(unauthTurnRes.status, 401);
     console.log('✓ TURN credentials require an approved session token');
 
-    // 3. Test Device Registration & Listing
-    console.log('[TEST] Registering mock device in Noakhali...');
-    DeviceService.registerDevice('MAHI-TEST-NOAKHALI', 'Samsung Test Device', 'AA:BB:CC:DD:EE:FF:11:22');
+    // 3. Global device enumeration must not disclose device IDs/fingerprints.
+    console.log('[TEST] Verifying unauthenticated device enumeration is disabled...');
     const devRes = await fetch('http://localhost:8099/api/v1/devices');
-    assert.strictEqual(devRes.status, 200);
-    const devData = await devRes.json();
-    const found = devData.devices.find(d => d.deviceId === 'MAHI-TEST-NOAKHALI');
-    assert(found, 'Device not found in listing');
-    console.log('✓ Device registration and listing PASSED');
+    assert.strictEqual(devRes.status, 410);
+    console.log('✓ Public device enumeration is disabled');
 
     // 4. Ensure the legacy REST endpoint cannot mint a session before owner approval.
     console.log('[TEST] Verifying REST code-only pairing is disabled...');
