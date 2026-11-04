@@ -61,6 +61,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -105,17 +106,7 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-            val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
-                action = ScreenCaptureService.ACTION_START
-                putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, result.resultCode)
-                putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, result.data)
-                putExtra(ScreenCaptureService.EXTRA_PRESET, viewModel.videoPreset.value.name)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
-            }
+            viewModel.startReceiverScreenShare(result.resultCode, result.data!!)
         } else {
             Toast.makeText(this, "Screen share permission was declined", Toast.LENGTH_SHORT).show()
         }
@@ -177,6 +168,19 @@ fun MainAppScaffold(
     var showHome by remember { mutableStateOf(true) }
     var showMore by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var promptedSessionId by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(activeSession?.sessionId, signalingStatus) {
+        val currentSessionId = activeSession?.sessionId
+        if (
+            currentSessionId != null &&
+            signalingStatus == com.example.signaling.ConnectionStatus.AUTHENTICATED &&
+            promptedSessionId != currentSessionId
+        ) {
+            promptedSessionId = currentSessionId
+            onRequestScreenShare()
+        }
+    }
 
     if (!showHome && appRole == com.example.controller.AppRole.CONTROLLER && activeControllerSession != null) {
         com.example.ui.screens.ControllerViewerScreen(viewModel = viewModel)
