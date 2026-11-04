@@ -321,8 +321,8 @@ public partial class MainWindow : Window
             if (code.Length >= 6)
             {
                 inputDlg.Close();
-                LogAudit($"PAIRING: Submitting authorization request with 6-digit code {code} to device in Noakhali...");
-                await _signaling.SendPairRequestAsync("TARGET_DEVICE", code, new[] { "Screen", "Input", "Files", "Diagnostics" });
+                LogAudit("PAIRING: Submitting a short-lived authorization request to the receiver.");
+                await _signaling.SendPairRequestAsync("TARGET_DEVICE", code, new[] { "Screen", "Input", "Files", "Apps", "Diagnostics" });
                 MessageBox.Show($"Pairing challenge sent to phone in Noakhali. Device owner must tap 'Authorize Session'.", "Mahi Remote", MessageBoxButton.OK, MessageBoxImage.Information);
             }
         };
