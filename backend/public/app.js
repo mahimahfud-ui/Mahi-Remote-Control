@@ -98,10 +98,16 @@
 
   // WebSocket Signaling Connection (Dynamically works with ANY IP or Cloudflare tunnel!)
   function connectSignaling() {
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+    const configuredUrl = state.runtimeConfig && state.runtimeConfig.signalingUrl;
+    if (!configuredUrl || !configuredUrl.startsWith('wss://')) {
+      el.badge.textContent = 'PUBLIC ACCESS NOT CONFIGURED';
+      el.badge.className = 'badge badge-danger';
+      logAudit('CONFIG', 'A real HTTPS PUBLIC_BASE_URL and WSS endpoint must be configured on the backend before browser access can work.', 'critical');
+      return;
+    }
+    const wsUrl = configuredUrl;
 
-    logAudit('SIGNALING', `Connecting to signaling socket at ${wsUrl}...`);
+    logAudit('SIGNALING', `Connecting to configured WSS endpoint ${wsUrl}...`);
     el.badge.textContent = 'CONNECTING';
     el.badge.className = 'badge badge-warning';
 
