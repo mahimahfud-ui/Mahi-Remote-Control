@@ -12,7 +12,7 @@ data class ControllerSession(
     val targetFingerprint: String,
     val sessionToken: String,
     val connectedAtMillis: Long,
-    val screenResolution: String = "1080x1920"
+    val screenResolution: String = "unavailable"
 )
 
 data class KnownTargetDevice(
@@ -25,10 +25,10 @@ data class KnownTargetDevice(
 )
 
 data class RemoteTelemetry(
-    val batteryPercent: Int = 85,
-    val batteryTempC: Float = 33.5f,
-    val storageFree: String = "42.5 GB",
-    val roundTripTimeMs: Int = 34
+    val batteryPercent: Int = 0,
+    val batteryTempC: Float = 0f,
+    val storageFree: String = "unavailable",
+    val roundTripTimeMs: Int = 0
 )
 
 enum class RemoteViewerTab(val title: String) {
