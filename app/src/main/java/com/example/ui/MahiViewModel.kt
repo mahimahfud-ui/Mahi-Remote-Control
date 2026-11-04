@@ -136,6 +136,9 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     private val _remoteMetrics = MutableStateFlow(StreamMetrics())
     val remoteMetrics: StateFlow<StreamMetrics> = _remoteMetrics.asStateFlow()
 
+    private val _hasRemoteVideoFrame = MutableStateFlow(false)
+    val hasRemoteVideoFrame: StateFlow<Boolean> = _hasRemoteVideoFrame.asStateFlow()
+
     val remoteWebRtcSession: AndroidWebRtcSession
     val remoteVideoTrack: StateFlow<VideoTrack?> get() = remoteWebRtcSession.remoteVideo
     val remoteWebRtcStatus: StateFlow<String> get() = remoteWebRtcSession.status
@@ -497,38 +500,44 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         val display = getApplication<Application>().resources.displayMetrics
         val screenW = display.widthPixels.coerceAtLeast(1)
         val screenH = display.heightPixels.coerceAtLeast(1)
-        fun mapX(value: Float) = (value / 1080f * screenW).coerceIn(0f, (screenW - 1).toFloat())
-        fun mapY(value: Float) = (value / 1920f * screenH).coerceIn(0f, (screenH - 1).toFloat())
+        fun mapX(value: Float): Float? {
+            if (!value.isFinite() || value < 0f || value > 1080f) return null
+            return (value / 1080f * screenW).coerceIn(0f, (screenW - 1).toFloat())
+        }
+        fun mapY(value: Float): Float? {
+            if (!value.isFinite() || value < 0f || value > 1920f) return null
+            return (value / 1920f * screenH).coerceIn(0f, (screenH - 1).toFloat())
+        }
 
         when (type.uppercase()) {
             "TAP" -> {
-                val x = mapX(cmd.optDouble("x", -1.0).toFloat())
-                val y = mapY(cmd.optDouble("y", -1.0).toFloat())
+                val x = mapX(cmd.optDouble("x", -1.0).toFloat()) ?: return
+                val y = mapY(cmd.optDouble("y", -1.0).toFloat()) ?: return
                 MahiAccessibilityService.performTap(x, y, screenW, screenH)
             }
             "DOUBLETAP", "DOUBLE_TAP" -> {
-                val x = mapX(cmd.optDouble("x", -1.0).toFloat())
-                val y = mapY(cmd.optDouble("y", -1.0).toFloat())
+                val x = mapX(cmd.optDouble("x", -1.0).toFloat()) ?: return
+                val y = mapY(cmd.optDouble("y", -1.0).toFloat()) ?: return
                 MahiAccessibilityService.performDoubleTap(x, y, screenW, screenH)
             }
             "LONGPRESS", "LONG_PRESS" -> {
-                val x = mapX(cmd.optDouble("x", -1.0).toFloat())
-                val y = mapY(cmd.optDouble("y", -1.0).toFloat())
+                val x = mapX(cmd.optDouble("x", -1.0).toFloat()) ?: return
+                val y = mapY(cmd.optDouble("y", -1.0).toFloat()) ?: return
                 MahiAccessibilityService.performLongPress(x, y, screenW, screenH)
             }
             "SWIPE" -> {
-                val x1 = mapX(cmd.optDouble("x", -1.0).toFloat())
-                val y1 = mapY(cmd.optDouble("y", -1.0).toFloat())
-                val x2 = mapX(cmd.optDouble("x2", -1.0).toFloat())
-                val y2 = mapY(cmd.optDouble("y2", -1.0).toFloat())
+                val x1 = mapX(cmd.optDouble("x", -1.0).toFloat()) ?: return
+                val y1 = mapY(cmd.optDouble("y", -1.0).toFloat()) ?: return
+                val x2 = mapX(cmd.optDouble("x2", -1.0).toFloat()) ?: return
+                val y2 = mapY(cmd.optDouble("y2", -1.0).toFloat()) ?: return
                 val duration = cmd.optLong("durationMs", 300L)
                 MahiAccessibilityService.performSwipe(x1, y1, x2, y2, duration, screenW, screenH)
             }
             "DRAG" -> {
-                val x1 = mapX(cmd.optDouble("x", -1.0).toFloat())
-                val y1 = mapY(cmd.optDouble("y", -1.0).toFloat())
-                val x2 = mapX(cmd.optDouble("x2", -1.0).toFloat())
-                val y2 = mapY(cmd.optDouble("y2", -1.0).toFloat())
+                val x1 = mapX(cmd.optDouble("x", -1.0).toFloat()) ?: return
+                val y1 = mapY(cmd.optDouble("y", -1.0).toFloat()) ?: return
+                val x2 = mapX(cmd.optDouble("x2", -1.0).toFloat()) ?: return
+                val y2 = mapY(cmd.optDouble("y2", -1.0).toFloat()) ?: return
                 val duration = cmd.optLong("durationMs", 600L)
                 MahiAccessibilityService.performDrag(x1, y1, x2, y2, duration, screenW, screenH)
             }
@@ -676,6 +685,13 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
 
     // Role switcher
     fun setAppRole(role: AppRole) {
+        if (role == _appRole.value) return
+        if (role == AppRole.CONTROLLER && ScreenCaptureService.isStreaming()) {
+            ScreenCaptureService.stop(getApplication())
+        }
+        if (role == AppRole.RECEIVER && _activeControllerSession.value != null) {
+            disconnectControllerSession()
+        }
         _appRole.value = role
         signalingClient.setRole(role.name)
         AuditLogger.log("ROLE", "ROLE_SWITCHED", "Switched application mode to ${role.title}", AuditSeverity.INFO)
@@ -751,9 +767,13 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setRemoteVideoFrameRendered(rendered: Boolean) {
+        _hasRemoteVideoFrame.value = rendered && remoteWebRtcSession.remoteVideo.value != null
+    }
+
     private fun remoteInputReady(): Boolean {
-        if (remoteWebRtcSession.remoteVideo.value != null) return true
-        _controllerErrorMessage.value = "Waiting for a real remote screen frame. Remote input is disabled until video is connected."
+        if (_hasRemoteVideoFrame.value && remoteWebRtcSession.remoteVideo.value != null) return true
+        _controllerErrorMessage.value = "Waiting for a real decoded remote screen frame. Remote input is disabled until video is rendering."
         return false
     }
 
