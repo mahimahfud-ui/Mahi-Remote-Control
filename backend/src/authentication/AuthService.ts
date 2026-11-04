@@ -1,56 +1,91 @@
 import crypto from 'crypto';
-import jwt from 'jsonwebtoken';
+import jwt, { JwtPayload } from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'mahi-remote-secure-ecdsa-jwt-secret-key-32b';
+export type SessionRole = 'DEVICE' | 'OPERATOR';
 
 export interface AuthContext {
   entityId: string;
-  entityType: 'DEVICE' | 'OPERATOR';
+  entityType: SessionRole;
   fingerprint: string;
+  sessionId?: string;
+  peerId?: string;
+}
+
+function jwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret || secret.length < 32) {
+    throw new Error('JWT_SECRET is required and must contain at least 32 characters.');
+  }
+  return secret;
 }
 
 export class AuthService {
   private static rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
-  public static generateSessionToken(ctx: AuthContext, expiresIn = '4h'): string {
+  public static generateSessionToken(ctx: AuthContext, expiresIn: string | number = '30m'): string {
+    if (!ctx.sessionId || !ctx.peerId || !ctx.entityId || !ctx.fingerprint) {
+      throw new Error('Session-bound token claims are required.');
+    }
     return jwt.sign(
       {
         sub: ctx.entityId,
         type: ctx.entityType,
         fp: ctx.fingerprint,
+        sid: ctx.sessionId,
+        peer: ctx.peerId,
       },
-      JWT_SECRET,
-      { expiresIn: expiresIn as any }
+      jwtSecret(),
+      { algorithm: 'HS256', expiresIn: expiresIn as any }
     );
   }
 
   public static verifySessionToken(token: string): AuthContext | null {
     try {
-      const decoded = jwt.verify(token, JWT_SECRET) as any;
+      const decoded = jwt.verify(token, jwtSecret(), { algorithms: ['HS256'] }) as JwtPayload;
+      if (
+        typeof decoded.sub !== 'string' ||
+        typeof decoded.fp !== 'string' ||
+        typeof decoded.sid !== 'string' ||
+        typeof decoded.peer !== 'string' ||
+        (decoded.type !== 'DEVICE' && decoded.type !== 'OPERATOR')
+      ) return null;
+
       return {
         entityId: decoded.sub,
         entityType: decoded.type,
         fingerprint: decoded.fp,
+        sessionId: decoded.sid,
+        peerId: decoded.peer,
       };
     } catch {
       return null;
     }
   }
 
-  public static checkRateLimit(ipOrId: string, maxRequests = 60, windowMs = 60000): boolean {
-    const now = Date.now();
-    const entry = this.rateLimitMap.get(ipOrId);
+  public static createTurnCredentials(identity: string, ttlSeconds = 3600): {
+    username: string;
+    credential: string;
+    expiresAt: number;
+  } {
+    const secret = process.env.TURN_SECRET;
+    if (!secret || secret.length < 32) {
+      throw new Error('TURN_SECRET is not configured with a sufficiently strong secret.');
+    }
+    const expiresAt = Math.floor(Date.now() / 1000) + Math.min(Math.max(ttlSeconds, 60), 3600);
+    const username = \${expiresAt}:\${identity};
+    const credential = crypto.createHmac('sha1', secret).update(username).digest('base64');
+    return { username, credential, expiresAt };
+  }
 
-    if (!entry || now > entry.resetAt) {
-      this.rateLimitMap.set(ipOrId, { count: 1, resetAt: now + windowMs });
+  public static checkRateLimit(key: string, maxRequests = 5, windowMs = 60000): boolean {
+    const now = Date.now();
+    const entry = this.rateLimitMap.get(key);
+    if (!entry || now >= entry.resetAt) {
+      this.rateLimitMap.set(key, { count: 1, resetAt: now + windowMs });
       return true;
     }
-
-    if (entry.count >= maxRequests) {
-      return false;
-    }
-
-    entry.count++;
+    if (entry.count >= maxRequests) return false;
+    entry.count += 1;
     return true;
   }
 
