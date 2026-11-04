@@ -6,6 +6,7 @@
   const state = {
     ws: null,
     peerConnection: null,
+    pingTimer: null,
     operatorFingerprint: 'OP-WEB-' + Array.from(crypto.getRandomValues(new Uint8Array(16))).map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase(),
     operatorName: 'Browser Controller',
     activeDeviceId: null,
@@ -107,23 +108,27 @@
       logAudit('CONFIG', 'A real HTTPS PUBLIC_BASE_URL and WSS endpoint must be configured on the backend before browser access can work.', 'critical');
       return;
     }
-    const wsUrl = configuredUrl;
+    const wsUrl = new URL(configuredUrl);
+    // Stable browser identity lets an approved session reconnect on the same tab
+    // without changing the server-side participant ID bound into its token.
+    wsUrl.searchParams.set('controllerFingerprint', state.operatorFingerprint);
 
-    logAudit('SIGNALING', `Connecting to configured WSS endpoint ${wsUrl}...`);
+    logAudit('SIGNALING', `Connecting to configured WSS endpoint ${wsUrl.origin}/ws...`);
     el.badge.textContent = 'CONNECTING';
     el.badge.className = 'badge badge-warning';
 
     try {
-      state.ws = new WebSocket(wsUrl);
+      state.ws = new WebSocket(wsUrl.toString());
 
       state.ws.onopen = () => {
         el.badge.textContent = 'ONLINE / READY';
         el.badge.className = 'badge badge-success';
         logAudit('SIGNALING', `Connected to signaling hub. Authenticated as ${state.operatorFingerprint}`, 'security');
         
-        // Initial ping for latency
+        // Keep exactly one heartbeat timer across reconnect attempts.
+        if (state.pingTimer) clearInterval(state.pingTimer);
         sendPing();
-        setInterval(sendPing, 15000);
+        state.pingTimer = setInterval(sendPing, 15000);
       };
 
       state.ws.onmessage = (event) => {
@@ -136,6 +141,10 @@
       };
 
       state.ws.onclose = () => {
+        if (state.pingTimer) {
+          clearInterval(state.pingTimer);
+          state.pingTimer = null;
+        }
         el.badge.textContent = 'OFFLINE';
         el.badge.className = 'badge badge-danger';
         logAudit('SIGNALING', 'Socket disconnected. Retrying in 5 seconds...', 'critical');
