@@ -228,7 +228,21 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         val sessionId = root.optString("sessionId")
                         if (issuedToken.isNotBlank() && sessionId.isNotBlank()) {
                             signalingClient.setSessionToken(issuedToken)
-                            pairingManager.markSessionAuthorized(sessionId)
+                            val activated = pairingManager.markSessionAuthorized(sessionId)
+                            if (!activated) {
+                                signalingClient.send(
+                                    "EMERGENCY_DISCONNECT",
+                                    """{"reason":"Receiver app could not match the approved request"}"""
+                                )
+                                signalingClient.setSessionToken(null)
+                                AuditLogger.log(
+                                    "SESSION",
+                                    "APPROVAL_STATE_MISMATCH",
+                                    "Backend approved a request that was no longer pending locally; the session was immediately revoked.",
+                                    AuditSeverity.CRITICAL
+                                )
+                                return@launch
+                            }
                             AuditLogger.log("SESSION", "SESSION_AUTHORIZED", "Backend authorized the receiver session.", AuditSeverity.SECURITY)
                         }
                     }
@@ -268,6 +282,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         _activeControllerSession.value = null
                         pairingManager.emergencyDisconnect("Remote session ended")
                         ScreenCaptureService.stop(getApplication())
+                        if (_appRole.value == AppRole.RECEIVER) generateNewPairingCode()
                     }
                     "SESSION_ERROR" -> {
                         val root = JSONObject(msg.payload)
@@ -281,7 +296,11 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                     "PAIR_ERROR" -> {
                         val root = JSONObject(msg.payload)
                         _isControllerConnecting.value = false
-                        _controllerErrorMessage.value = root.optString("error", "Pairing error occurred.")
+                        val reason = root.optString("error", "Pairing error occurred.")
+                        if (_appRole.value == AppRole.RECEIVER) {
+                            pairingManager.failApproval(reason)
+                        }
+                        _controllerErrorMessage.value = reason
                     }
                     "APP_LIST_RESPONSE" -> {
                         val root = JSONObject(msg.payload)
@@ -804,21 +823,27 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun emergencyDisconnect() {
-        signalingClient.send("EMERGENCY_DISCONNECT", """{"reason":"Receiver owner activated Emergency Stop"}""")
+        if (signalingClient.connectionStatus.value == ConnectionStatus.AUTHENTICATED) {
+            signalingClient.send("EMERGENCY_DISCONNECT", """{"reason":"Receiver owner activated Emergency Stop"}""")
+        }
         signalingClient.setSessionToken(null)
         pairingManager.emergencyDisconnect("Emergency killswitch activated by user")
         ScreenCaptureService.stop(getApplication())
+        if (_appRole.value == AppRole.RECEIVER) generateNewPairingCode()
         _showDisconnectDialog.value = false
     }
 
     fun approveIncomingRequest(req: OperatorRequest) {
+        if (req.controllerId.isBlank()) return
         pairingManager.approveRequest(req)
-        if (req.controllerId.isNotBlank()) {
-            signalingClient.send(
-                "PAIR_ACCEPT",
-                """{"requestId":"${req.requestId}","receiverName":"${identity.deviceName}","status":"APPROVED","fingerprint":"${identity.fingerprint}"}""",
-                req.controllerId
-            )
+        val sent = signalingClient.send(
+            "PAIR_ACCEPT",
+            """{"requestId":"${req.requestId}","receiverName":"${identity.deviceName}","status":"APPROVED","fingerprint":"${identity.fingerprint}"}""",
+            req.controllerId
+        )
+        if (!sent) {
+            pairingManager.failApproval("The approval could not be sent to the signaling server.")
+            _controllerErrorMessage.value = "Approval could not be sent. Check the connection and try pairing again."
         }
     }
 
