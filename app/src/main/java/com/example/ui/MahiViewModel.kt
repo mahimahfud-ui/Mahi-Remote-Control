@@ -306,9 +306,13 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         _controllerErrorMessage.value = root.optString("error", "Pairing error occurred.")
                     }
                     "APP_LIST_RESPONSE" -> {
-                        val root = JSONObject(msg.payload)
-                        val raw = root.optString("payload", msg.payload)
-                        val jsonArr = if (raw.startsWith("[")) JSONArray(raw) else root.optJSONArray("apps") ?: JSONArray()
+                        val envelope = JSONObject(msg.payload)
+                        val payloadObject = envelope.optJSONObject("payload")
+                        val raw = envelope.optString("payload", "")
+                        val jsonArr = payloadObject?.optJSONArray("apps")
+                            ?: envelope.optJSONArray("apps")
+                            ?: envelope.optJSONArray("payload")
+                            ?: if (raw.startsWith("[")) JSONArray(raw) else JSONArray()
                         val list = mutableListOf<AppItem>()
                         for (i in 0 until jsonArr.length()) {
                             val obj = jsonArr.getJSONObject(i)
@@ -326,9 +330,13 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         _remoteAppList.value = list
                     }
                     "FILE_LIST_RESPONSE" -> {
-                        val root = JSONObject(msg.payload)
-                        val raw = root.optString("payload", msg.payload)
-                        val jsonArr = if (raw.startsWith("[")) JSONArray(raw) else root.optJSONArray("files") ?: JSONArray()
+                        val envelope = JSONObject(msg.payload)
+                        val payloadObject = envelope.optJSONObject("payload")
+                        val raw = envelope.optString("payload", "")
+                        val jsonArr = payloadObject?.optJSONArray("files")
+                            ?: envelope.optJSONArray("files")
+                            ?: envelope.optJSONArray("payload")
+                            ?: if (raw.startsWith("[")) JSONArray(raw) else JSONArray()
                         val list = mutableListOf<FileEntry>()
                         for (i in 0 until jsonArr.length()) {
                             val obj = jsonArr.getJSONObject(i)
@@ -473,7 +481,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                             .put("ver", app.versionName)
                     )
                 }
-                signalingClient.send("APP_LIST_RESPONSE", response.toString(), msg.sender)
+                signalingClient.send("APP_LIST_RESPONSE", JSONObject().put("apps", response).toString(), msg.sender)
             }
             "LAUNCH" -> {
                 if (pkg.isNotEmpty()) appManager.launchApp(pkg)
@@ -505,7 +513,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                             .put("mimeType", file.mimeType)
                     )
                 }
-                signalingClient.send("FILE_LIST_RESPONSE", response.toString(), msg.sender)
+                signalingClient.send("FILE_LIST_RESPONSE", JSONObject().put("files", response).toString(), msg.sender)
             }
             "DELETE" -> {
                 val success = fileManager.deleteFile(path, true)
