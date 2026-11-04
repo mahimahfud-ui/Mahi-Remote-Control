@@ -1,10 +1,16 @@
 import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET;
-if (!JWT_SECRET || Buffer.byteLength(JWT_SECRET, 'utf8') < 32 || /replace|change[-_ ]?me|example|your[-_ ]?secret/i.test(JWT_SECRET)) {
+const configuredJwtSecret = process.env.JWT_SECRET;
+if (
+  !configuredJwtSecret ||
+  Buffer.byteLength(configuredJwtSecret, 'utf8') < 32 ||
+  /replace|change[-_ ]?me|example|your[-_ ]?secret/i.test(configuredJwtSecret)
+) {
   throw new Error('JWT_SECRET must be configured with at least 32 bytes. Refusing to start with an insecure fallback secret.');
 }
+// The explicit type is safe only after the fail-closed check above.
+const JWT_SECRET: string = configuredJwtSecret as string;
 
 export interface AuthContext {
   entityId: string;
