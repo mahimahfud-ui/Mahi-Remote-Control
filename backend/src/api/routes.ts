@@ -45,7 +45,10 @@ apiRouter.get('/config', (_req: Request, res: Response) => {
     publicAccessConfigured: true,
     browserUrl: base + '/connect',
     signalingUrl: base.replace(/^https:/i, 'wss:') + '/ws',
-    turnConfigured: !!(process.env.TURN_URL && process.env.TURN_SECRET),
+    turnConfigured: !!(
+      (process.env.TURN_URL && process.env.TURN_SECRET) ||
+      (process.env.CLOUDFLARE_TURN_KEY_ID && process.env.CLOUDFLARE_TURN_API_TOKEN)
+    ),
   });
 });
 
