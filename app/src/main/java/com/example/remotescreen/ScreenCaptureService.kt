@@ -164,6 +164,8 @@ class ScreenCaptureService : Service() {
     }
 
     override fun onDestroy() {
+        AndroidWebRtcSession.endActiveFromServer()
+        _streamState.value = ScreenStreamState.Stopped
         super.onDestroy()
     }
 }
