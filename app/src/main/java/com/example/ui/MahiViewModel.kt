@@ -488,21 +488,15 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun connectToTargetDeviceId(deviceId: String, name: String) {
-        _isControllerConnecting.value = true
-        _controllerErrorMessage.value = null
-
-        val payload = """
-            {
-              "type": "PAIR_REQUEST",
-              "controllerId": "${identity.deviceId}",
-              "operatorName": "${identity.deviceName}",
-              "operatorLocation": "Remote Android Controller",
-              "fingerprint": "${identity.fingerprint}",
-              "requestedScopes": ["Screen Mirroring", "Remote Interaction", "File Transfer", "Diagnostics"]
-            }
-        """.trimIndent()
-
-        signalingClient.send("PAIR_REQUEST", payload, deviceId)
+        _isControllerConnecting.value = false
+        _controllerErrorMessage.value =
+            "Direct device-ID pairing is disabled. Ask the receiver to share a temporary six-digit code or QR, then connect with that code."
+        AuditLogger.log(
+            "PAIRING",
+            "DIRECT_ID_PAIRING_DISABLED",
+            "Rejected direct device-ID pairing for $deviceId. A fresh pairing code and owner approval are required.",
+            AuditSeverity.WARNING
+        )
     }
 
     fun removeRecentDevice(deviceId: String) {
