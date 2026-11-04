@@ -588,7 +588,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
               "controllerName": "${identity.deviceName}",
               "controllerModel": "${android.os.Build.MODEL}",
               "fingerprint": "${identity.fingerprint}",
-              "requestedScopes": ["Screen Mirroring", "Remote Interaction", "File Transfer", "Diagnostics"]
+              "requestedScopes": ["Screen Mirroring", "Remote Interaction", "File Transfer", "App Management", "Diagnostics"]
             }
         """.trimIndent()
 
@@ -624,7 +624,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
               "operatorName": "${identity.deviceName}",
               "operatorLocation": "Remote Android Controller",
               "fingerprint": "${identity.fingerprint}",
-              "requestedScopes": ["Screen Mirroring", "Remote Interaction", "File Transfer", "Diagnostics"]
+              "requestedScopes": ["Screen Mirroring", "Remote Interaction", "File Transfer", "App Management", "Diagnostics"]
             }
         """.trimIndent()
 
