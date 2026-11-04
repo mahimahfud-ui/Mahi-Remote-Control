@@ -33,6 +33,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
@@ -102,19 +103,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     private val _activeControllerSession = MutableStateFlow<ControllerSession?>(null)
     val activeControllerSession: StateFlow<ControllerSession?> = _activeControllerSession.asStateFlow()
 
-    private val _recentTargetDevices = MutableStateFlow<List<KnownTargetDevice>>(
-        listOf(
-            KnownTargetDevice(
-                deviceId = "MAHI-NOAKHALI-01",
-                name = "Phone B — Receiver (Noakhali)",
-                model = "Pixel 8 Pro (Android 14)",
-                fingerprint = "7A:B3:99:C2:54:E1:88:20:D1:66:33:F0:91:AA:BB:CC",
-                lastConnectedAtMillis = System.currentTimeMillis() - 7200000L,
-                isOnline = true
-            )
-        )
-    )
-    val recentTargetDevices: StateFlow<List<KnownTargetDevice>> = _recentTargetDevices.asStateFlow()
+    private val _recentTargetDevices = MutableStateFlow<List<KnownTargetDevice>>(emptyList())
 
     private val _remoteViewerTab = MutableStateFlow(RemoteViewerTab.SCREEN)
     val remoteViewerTab: StateFlow<RemoteViewerTab> = _remoteViewerTab.asStateFlow()
@@ -125,10 +114,10 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     private val _remoteAppList = MutableStateFlow<List<AppItem>>(emptyList())
     val remoteAppList: StateFlow<List<AppItem>> = _remoteAppList.asStateFlow()
 
-    private val _remoteTelemetry = MutableStateFlow<RemoteTelemetry?>(RemoteTelemetry())
+    private val _remoteTelemetry = MutableStateFlow<RemoteTelemetry?>(null)
     val remoteTelemetry: StateFlow<RemoteTelemetry?> = _remoteTelemetry.asStateFlow()
 
-    private val _remoteMetrics = MutableStateFlow(StreamMetrics(roundTripTimeMs = 32, currentFps = 60, bitrateKbps = 2400))
+    private val _remoteMetrics = MutableStateFlow(StreamMetrics())
     val remoteMetrics: StateFlow<StreamMetrics> = _remoteMetrics.asStateFlow()
 
     val signalingClient: SignalingClient
@@ -143,7 +132,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         // This also covers reconnects and code rotation; sending before WebSocket onOpen loses the packet.
         viewModelScope.launch {
             combine(signalingClient.connectionStatus, pairingManager.currentPairingCode) { status, code ->
-                if (status == ConnectionStatus.AUTHENTICATED) code else null
+                if (status == ConnectionStatus.AUTHENTICATED && pairingManager.activeSession.value == null) code else null
             }.collect { code ->
                 code?.let { activeCode ->
                     signalingClient.send(
@@ -760,10 +749,6 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         pairingManager.emergencyDisconnect("Emergency killswitch activated by user")
         ScreenCaptureService.stop(getApplication())
         _showDisconnectDialog.value = false
-    }
-
-    fun simulateOperatorConnection() {
-        pairingManager.simulateIncomingOperatorRequest()
     }
 
     fun approveIncomingRequest(req: OperatorRequest) {
