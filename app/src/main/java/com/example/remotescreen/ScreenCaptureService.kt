@@ -36,6 +36,7 @@ class ScreenCaptureService : Service() {
 
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
+    private var webRtcManager: com.example.webrtc.WebRtcSessionManager? = null
 
     companion object {
         const val ACTION_START = "com.example.action.START_STREAM"
@@ -109,18 +110,43 @@ class ScreenCaptureService : Service() {
         }
 
         try {
-            val projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = projectionManager.getMediaProjection(resultCode, resultData)
+            val windowManager = getSystemService(WINDOW_SERVICE) as? android.view.WindowManager
+            val metrics = resources.displayMetrics
+            val displayRotation = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                display?.rotation ?: 0
+            } else {
+                @Suppress("DEPRECATION")
+                windowManager?.defaultDisplay?.rotation ?: 0
+            }
 
-            mediaProjection?.registerCallback(object : MediaProjection.Callback() {
-                override fun onStop() {
-                    AuditLogger.log("SCREEN", "MEDIA_PROJECTION_STOPPED", "System or user revoked screen projection", AuditSeverity.WARNING)
-                    stopCapture()
-                    stopSelf()
+            // Report real display parameters to active controller
+            val displayInfoPayload = """{"width":${metrics.widthPixels},"height":${metrics.heightPixels},"rotation":$displayRotation,"densityDpi":${metrics.densityDpi}}"""
+            val displayBroadcast = Intent("com.example.action.BROADCAST_DISPLAY_INFO").apply {
+                putExtra("payload", displayInfoPayload)
+            }
+            sendBroadcast(displayBroadcast)
+
+            // Initialize WebRTC screen capturer and session pipeline
+            webRtcManager = com.example.webrtc.WebRtcSessionManager(
+                context = this,
+                onSignalingMessage = { type, payload ->
+                    val intent = Intent("com.example.action.WEBRTC_SIGNAL").apply {
+                        putExtra("type", type)
+                        putExtra("payload", payload)
+                    }
+                    sendBroadcast(intent)
                 }
-            }, null)
+            )
 
-            AuditLogger.log("SCREEN", "STREAM_STARTED", "WebRTC MediaProjection active at ${preset.width}x${preset.height} @ ${preset.fps}fps", AuditSeverity.SECURITY)
+            webRtcManager?.startScreenCapture(
+                projectionResultCode = resultCode,
+                projectionData = resultData,
+                width = preset.width,
+                height = preset.height,
+                fps = preset.fps
+            )
+
+            AuditLogger.log("SCREEN", "STREAM_STARTED", "WebRTC MediaProjection active at ${metrics.widthPixels}x${metrics.heightPixels} (rot: $displayRotation)", AuditSeverity.SECURITY)
 
             startMetricsSimulation(preset)
         } catch (e: Exception) {
@@ -160,6 +186,8 @@ class ScreenCaptureService : Service() {
         metricsJob?.cancel()
         metricsJob = null
         try {
+            webRtcManager?.close()
+            webRtcManager = null
             virtualDisplay?.release()
             virtualDisplay = null
             mediaProjection?.stop()

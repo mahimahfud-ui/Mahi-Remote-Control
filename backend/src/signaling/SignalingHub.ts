@@ -134,7 +134,22 @@ export class SignalingHub {
       return;
     }
 
-    // Broadcast from Windows/Controller to paired Android receivers
+    // Sensitive commands must never be broadcast without a target device
+    const sensitiveCommands = ['INPUT_EVENT', 'APP_COMMAND', 'FILE_COMMAND', 'DIAGNOSTICS_RUN', 'EMERGENCY_DISCONNECT'];
+    if (sensitiveCommands.includes(type)) {
+      console.warn(`[SignalingHub] Blocked unrouted sensitive command ${type} from ${sender.id} (missing valid target recipient)`);
+      if (sequence) {
+        sender.ws.send(JSON.stringify({
+          type: 'COMMAND_ACK',
+          sequence,
+          success: false,
+          error: 'Missing or inactive target recipient device',
+        }));
+      }
+      return;
+    }
+
+    // Broadcast non-sensitive state notifications from Windows/Controller to paired Android receivers
     if (sender.type === 'WINDOWS' || sender.type === 'CONTROLLER') {
       let routed = false;
       for (const [id, client] of this.clients.entries()) {

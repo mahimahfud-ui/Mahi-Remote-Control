@@ -127,6 +127,9 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     private val _remoteTelemetry = MutableStateFlow<RemoteTelemetry?>(RemoteTelemetry())
     val remoteTelemetry: StateFlow<RemoteTelemetry?> = _remoteTelemetry.asStateFlow()
 
+    private val _remoteDisplayMetrics = MutableStateFlow(com.example.controller.RemoteDisplayMetrics())
+    val remoteDisplayMetrics: StateFlow<com.example.controller.RemoteDisplayMetrics> = _remoteDisplayMetrics.asStateFlow()
+
     private val _remoteMetrics = MutableStateFlow(StreamMetrics(roundTripTimeMs = 32, currentFps = 60, bitrateKbps = 2400))
     val remoteMetrics: StateFlow<StreamMetrics> = _remoteMetrics.asStateFlow()
 
@@ -282,6 +285,20 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                             roundTripTimeMs = 30
                         )
                     }
+                    "DISPLAY_INFO" -> {
+                        val root = JSONObject(msg.payload)
+                        val w = root.optInt("width", 1080)
+                        val h = root.optInt("height", 2400)
+                        val rot = root.optInt("rotation", 0)
+                        val dpi = root.optInt("densityDpi", 420)
+                        _remoteDisplayMetrics.value = com.example.controller.RemoteDisplayMetrics(
+                            width = w,
+                            height = h,
+                            rotation = rot,
+                            densityDpi = dpi
+                        )
+                        AuditLogger.log("DISPLAY", "METRICS_UPDATED", "Remote display configured to ${w}x${h} (rot: $rot)", AuditSeverity.INFO)
+                    }
                     "INPUT_EVENT" -> {
                         handleInputEvent(msg)
                     }
@@ -319,8 +336,9 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         val cmd = if (root.has("command")) root.getJSONObject("command") else root
         val type = cmd.optString("type", "")
 
-        val screenW = 1080
-        val screenH = 1920
+        val dm = getApplication<Application>().resources.displayMetrics
+        val screenW = dm.widthPixels
+        val screenH = dm.heightPixels
 
         when (type.uppercase()) {
             "TAP" -> {
@@ -517,8 +535,10 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendRemoteTap(x: Float, y: Float, canvasW: Float, canvasH: Float) {
         val session = _activeControllerSession.value ?: return
-        val targetX = (x / canvasW) * 1080f
-        val targetY = (y / canvasH) * 1920f
+        val targetWidth = _remoteDisplayMetrics.value.width.toFloat()
+        val targetHeight = _remoteDisplayMetrics.value.height.toFloat()
+        val targetX = (x / canvasW) * targetWidth
+        val targetY = (y / canvasH) * targetHeight
 
         val payload = """
             {
@@ -535,8 +555,10 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendRemoteDoubleTap(x: Float, y: Float, canvasW: Float, canvasH: Float) {
         val session = _activeControllerSession.value ?: return
-        val targetX = (x / canvasW) * 1080f
-        val targetY = (y / canvasH) * 1920f
+        val targetWidth = _remoteDisplayMetrics.value.width.toFloat()
+        val targetHeight = _remoteDisplayMetrics.value.height.toFloat()
+        val targetX = (x / canvasW) * targetWidth
+        val targetY = (y / canvasH) * targetHeight
 
         val payload = """
             {
@@ -553,8 +575,10 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendRemoteLongPress(x: Float, y: Float, canvasW: Float, canvasH: Float) {
         val session = _activeControllerSession.value ?: return
-        val targetX = (x / canvasW) * 1080f
-        val targetY = (y / canvasH) * 1920f
+        val targetWidth = _remoteDisplayMetrics.value.width.toFloat()
+        val targetHeight = _remoteDisplayMetrics.value.height.toFloat()
+        val targetX = (x / canvasW) * targetWidth
+        val targetY = (y / canvasH) * targetHeight
 
         val payload = """
             {
@@ -571,10 +595,12 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendRemoteSwipe(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long, canvasW: Float, canvasH: Float) {
         val session = _activeControllerSession.value ?: return
-        val targetX1 = (x1 / canvasW) * 1080f
-        val targetY1 = (y1 / canvasH) * 1920f
-        val targetX2 = (x2 / canvasW) * 1080f
-        val targetY2 = (y2 / canvasH) * 1920f
+        val targetWidth = _remoteDisplayMetrics.value.width.toFloat()
+        val targetHeight = _remoteDisplayMetrics.value.height.toFloat()
+        val targetX1 = (x1 / canvasW) * targetWidth
+        val targetY1 = (y1 / canvasH) * targetHeight
+        val targetX2 = (x2 / canvasW) * targetWidth
+        val targetY2 = (y2 / canvasH) * targetHeight
 
         val payload = """
             {

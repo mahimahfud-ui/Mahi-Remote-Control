@@ -1,183 +1,340 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Mahi Remote Control — Web Browser Controller</title>
-  <link rel="stylesheet" href="styles.css">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Mahi Remote Control</title>
+  <link rel="stylesheet" href="css/tokens.css">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/components.css">
 </head>
 <body>
-  <!-- Header Bar -->
-  <header class="top-nav">
-    <div class="nav-left">
-      <span class="live-pulse"></span>
-      <span class="brand-title">MAHI REMOTE CONTROL</span>
-      <span class="brand-subtitle">| Web Operator Console</span>
-    </div>
-    <div class="nav-center">
-      <span id="connectionBadge" class="badge badge-warning">DISCONNECTED</span>
-      <span id="latencyDisplay" class="latency-pill">-- ms RTT</span>
-    </div>
-    <div class="nav-right">
-      <button id="btnPairDevice" class="btn btn-primary">+ Pair Device</button>
-      <button id="btnEmergencyKill" class="btn btn-danger">Emergency Disconnect</button>
-    </div>
-  </header>
-
-  <!-- Main Grid Workspace -->
-  <main class="workspace-grid">
-    <!-- Left Sidebar: Devices -->
-    <aside class="sidebar-devices">
-      <div class="sidebar-header">
-        <h3>PAIRED ANDROID DEVICES</h3>
+  <!-- Pairing View -->
+  <main class="pair" id="pair">
+    <section class="card pair-card" aria-labelledby="t">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6z"/>
+          <path d="M9 12l2 2 4-4"/>
+        </svg>
       </div>
-      <div id="deviceList" class="device-list">
-        <!-- Rendered by JS -->
+      <h1 id="t">Connect to your phone</h1>
+      <p>Enter the 6-digit code shown in the Mahi app on your Android device.</p>
+      <div class="code" role="group" aria-label="Pairing code">
+        <input inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 1" autofocus>
+        <input inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 2">
+        <input inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 3">
+        <input inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 4">
+        <input inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 5">
+        <input inputmode="numeric" maxlength="1" autocomplete="one-time-code" aria-label="Digit 6">
       </div>
-      <div class="connection-info-card">
-        <h4>Access Host</h4>
-        <div id="hostPill" class="mono-pill">Detecting...</div>
-        <p class="micro-text">Supports Public IP &amp; Cloudflare Tunnel</p>
-      </div>
-    </aside>
-
-    <!-- Center: Interactive Remote Phone Canvas -->
-    <section class="viewport-center">
-      <!-- Remote Toolbar -->
-      <div class="remote-toolbar">
-        <div class="btn-group">
-          <button id="btnNavBack" class="btn btn-icon" title="Back (Alt+Left)">◄ Back</button>
-          <button id="btnNavHome" class="btn btn-icon" title="Home (Alt+H)">● Home</button>
-          <button id="btnNavRecents" class="btn btn-icon" title="Recents (Alt+R)">■ Recents</button>
-          <button id="btnNavNotifs" class="btn btn-icon" title="Notifications">▼ Notifs</button>
-          <button id="btnNavSettings" class="btn btn-icon" title="Quick Settings">⚙ Quick Settings</button>
-        </div>
-
-        <div class="toolbar-divider"></div>
-
-        <div class="btn-group">
-          <button id="btnVolDown" class="btn btn-icon" title="Volume Down">🔉 Vol -</button>
-          <button id="btnVolUp" class="btn btn-icon" title="Volume Up">🔊 Vol +</button>
-        </div>
-
-        <div class="toolbar-divider"></div>
-
-        <div class="quality-selector">
-          <label for="qualitySelect">Quality:</label>
-          <select id="qualitySelect">
-            <option value="1080p">1080p (60 FPS)</option>
-            <option value="720p" selected>720p (30 FPS)</option>
-            <option value="480p">480p (15 FPS)</option>
-          </select>
-        </div>
-
-        <div id="streamStats" class="stream-stats-text">30 FPS | 2048 Kbps</div>
-      </div>
-
-      <!-- Phone Bezel & Screen Canvas -->
-      <div class="phone-frame-container">
-        <div class="phone-bezel">
-          <div class="phone-speaker"></div>
-          <div class="canvas-wrapper" id="canvasWrapper">
-            <canvas id="phoneCanvas" width="1080" height="1920"></canvas>
-            <video id="remoteVideo" autoplay playsinline muted style="display: none;"></video>
-            <div id="streamPlaceholder" class="stream-placeholder">
-              <div class="placeholder-icon">📱</div>
-              <h3>Mahi Remote Display Active</h3>
-              <p>Click anywhere on the screen to tap, drag to swipe, or use keyboard to type into active inputs.</p>
-            </div>
-          </div>
-        </div>
+      <div class="status" id="pair-status" role="status" aria-live="polite"></div>
+      <button class="btn primary" id="connect">Connect</button>
+      <div class="trust">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6z"/>
+          <path d="M9 12l2 2 4-4"/>
+        </svg>
+        End-to-end encrypted. Your phone asks for approval first.
       </div>
     </section>
-
-    <!-- Right Pane: Tabs (Diagnostics, Apps, Files, Logs) -->
-    <aside class="sidebar-tools">
-      <div class="tab-headers">
-        <button class="tab-btn active" data-tab="tabDiag">Diagnostics</button>
-        <button class="tab-btn" data-tab="tabApps">Apps</button>
-        <button class="tab-btn" data-tab="tabFiles">Files</button>
-        <button class="tab-btn" data-tab="tabLogs">Audit</button>
-      </div>
-
-      <!-- Tab: Diagnostics -->
-      <div id="tabDiag" class="tab-pane active">
-        <button id="btnRunDiag" class="btn btn-primary btn-block">Run Remote Diagnostics</button>
-        <div class="telemetry-card">
-          <h4>DEVICE TELEMETRY</h4>
-          <div class="telemetry-row"><span>Device Model:</span><strong id="diagModel">Samsung Galaxy S24 Ultra</strong></div>
-          <div class="telemetry-row"><span>OS Version:</span><strong id="diagOs">Android 14 (API 34)</strong></div>
-          <div class="telemetry-row"><span>Battery:</span><strong id="diagBattery" class="text-mint">86% (Charging)</strong></div>
-          <div class="telemetry-row"><span>Temperature:</span><strong id="diagTemp">31.2°C</strong></div>
-          <div class="telemetry-row"><span>Storage:</span><strong id="diagStorage">182.4 GB free</strong></div>
-          <div class="telemetry-row"><span>DNS &amp; Route:</span><strong class="text-mint">Verified (18ms)</strong></div>
-        </div>
-      </div>
-
-      <!-- Tab: Apps -->
-      <div id="tabApps" class="tab-pane">
-        <input type="text" id="appSearchInput" class="form-input" placeholder="Search installed apps...">
-        <div class="quick-launch-box">
-          <input type="text" id="launchPkgInput" class="form-input" placeholder="Package name (e.g. com.android.settings)" value="com.android.settings">
-          <button id="btnLaunchPkg" class="btn btn-secondary btn-block">Launch Package</button>
-        </div>
-        <div id="appList" class="app-list-container">
-          <!-- Apps populated via JS -->
-        </div>
-      </div>
-
-      <!-- Tab: Files -->
-      <div id="tabFiles" class="tab-pane">
-        <div class="file-path-bar">
-          <span id="currentFilePath">/storage/emulated/0/Documents</span>
-          <button id="btnRefreshFiles" class="btn btn-small">↻</button>
-        </div>
-        <div class="file-actions-row">
-          <input type="file" id="fileUploadInput" style="display: none;">
-          <button id="btnTriggerUpload" class="btn btn-primary btn-small">+ Upload File</button>
-          <button id="btnNewFolder" class="btn btn-secondary btn-small">+ Folder</button>
-        </div>
-        <div id="fileUploadProgress" class="progress-bar-container" style="display: none;">
-          <div class="progress-bar-fill" id="progressBarFill" style="width: 0%;"></div>
-          <span id="progressText" class="progress-text">Uploading...</span>
-        </div>
-        <div id="fileList" class="file-list-container">
-          <!-- Files populated via JS -->
-        </div>
-      </div>
-
-      <!-- Tab: Security Logs -->
-      <div id="tabLogs" class="tab-pane">
-        <div class="log-controls">
-          <span>Security Audit Trail</span>
-          <button id="btnClearLogs" class="btn btn-small">Clear</button>
-        </div>
-        <div id="auditLogBox" class="audit-log-box"></div>
-      </div>
-    </aside>
   </main>
 
-  <!-- Modal: Pair Device -->
-  <div id="pairModal" class="modal-backdrop" style="display: none;">
-    <div class="modal-card">
-      <div class="modal-header">
-        <h3>Pair Android Device</h3>
-        <button id="btnCloseModal" class="btn-close">&times;</button>
+  <!-- Remote Controller App -->
+  <div class="app" id="app" hidden>
+    <header class="topbar">
+      <div class="device">
+        <span class="logo" style="width:32px;height:32px;margin:0;border-radius:9px">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="7" y="2" width="10" height="20" rx="2.5"/>
+            <path d="M11 18h2"/>
+          </svg>
+        </span>
+        <div id="device-info-header">
+          <span id="device-model-text">Android Phone</span>
+          <small id="device-status-text">Android · Connected</small>
+        </div>
       </div>
-      <div class="modal-body">
-        <p>Enter the 6-digit one-time pairing code displayed on the Android device:</p>
-        <input type="text" id="inputPairCode" class="pair-code-input" placeholder="123-456" maxlength="7">
-        <p class="micro-text">Code expires in 5 minutes. The phone owner will receive an authorization prompt.</p>
-      </div>
-      <div class="modal-footer">
-        <button id="btnSubmitPair" class="btn btn-primary btn-block">Request Authorization</button>
+      <span class="chip" id="quality-chip"><i class="dot"></i><span id="latency-text">Excellent · 28 ms</span></span>
+      <span class="chip hide-sm mono" title="Session duration" id="dur">00:00:00</span>
+      <span class="chip hide-sm">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6z"/>
+          <path d="M9 12l2 2 4-4"/>
+        </svg>
+        Encrypted
+      </span>
+      <div class="spacer"></div>
+      <button class="btn danger" data-stop title="Ctrl+Shift+X">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 3v9"/>
+          <path d="M6.3 7a8 8 0 1011.4 0"/>
+        </svg>
+        Emergency stop
+      </button>
+    </header>
+
+    <div class="workspace">
+      <section class="stage" data-state="loading" aria-label="Live phone screen">
+        <div class="screen">
+          <canvas id="screen" aria-label="Phone screen. Click to tap."></canvas>
+          <video id="remote-video" playsinline autoplay muted style="display:none"></video>
+          
+          <div class="overlay" id="ov-loading">
+            <div class="spinner"></div>
+            <h2>Starting video</h2>
+            <p>Negotiating a secure connection with your phone.</p>
+          </div>
+          <div class="overlay" id="ov-error">
+            <div class="glyph">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 4l9 16H3z"/>
+                <path d="M12 10v4M12 17v.01"/>
+              </svg>
+            </div>
+            <h2>Stream interrupted</h2>
+            <p>The connection dropped. Keep the phone awake and on the same network, then retry.</p>
+            <button class="btn primary" id="retry">Reconnect</button>
+          </div>
+          <div class="overlay" id="ov-empty">
+            <div class="glyph">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="7" y="2" width="10" height="20" rx="2.5"/>
+                <path d="M11 18h2"/>
+              </svg>
+            </div>
+            <h2>Phone screen is off</h2>
+            <p>Wake the device, or approve screen capture in the Mahi app.</p>
+            <button class="btn" id="btn-wake" data-toast="Wake request sent">Wake phone</button>
+          </div>
+        </div>
+
+        <div class="coords mono" id="coords" aria-hidden="true">x 0.000  y 0.000</div>
+
+        <nav class="dock" aria-label="Controls">
+          <button class="icon-btn" id="btn-fullscreen" aria-label="Fullscreen" title="Toggle Fullscreen" data-toast="Fullscreen toggled">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/>
+            </svg>
+          </button>
+          <span class="sep"></span>
+          <button class="btn" data-open="files" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
+            </svg>
+            <span class="lbl">Files</span>
+          </button>
+          <button class="btn" data-open="diag" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 12h4l3-7 4 14 3-7h4"/>
+            </svg>
+            <span class="lbl">Diagnostics</span>
+          </button>
+          <button class="btn" data-open="apps" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="4" y="4" width="6" height="6" rx="1"/>
+              <rect x="14" y="4" width="6" height="6" rx="1"/>
+              <rect x="4" y="14" width="6" height="6" rx="1"/>
+              <rect x="14" y="14" width="6" height="6" rx="1"/>
+            </svg>
+            <span class="lbl">Apps</span>
+          </button>
+          <button class="icon-btn" data-open="settings" aria-label="Session settings" aria-pressed="false">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/>
+            </svg>
+          </button>
+        </nav>
+      </section>
+
+      <!-- Sliding Drawer Panels -->
+      <aside class="drawer" id="drawer" aria-label="Tools">
+        <div class="drawer-in">
+          <div class="drawer-head">
+            <h2>Tools</h2>
+            <button class="icon-btn" id="close-drawer" aria-label="Close panel">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+          </div>
+          
+          <div class="tabs" role="tablist">
+            <button class="tab" role="tab" data-panel="files">Files</button>
+            <button class="tab" role="tab" data-panel="diag">Diagnostics</button>
+            <button class="tab" role="tab" data-panel="apps">Apps</button>
+            <button class="tab" role="tab" data-panel="settings">Settings</button>
+          </div>
+
+          <!-- Files Panel -->
+          <div class="panel" id="p-files">
+            <div class="crumbs" id="crumbs">
+              <b>Internal storage</b>/<b>Documents</b>
+            </div>
+            <ul class="list" id="file-list">
+              <li class="row">
+                <div class="ico">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+                </div>
+                <div class="meta"><b>Camera</b><span>14 items · Today</span></div>
+                <button class="icon-btn" aria-label="Download Camera" data-toast="Download queued: Camera">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V5M7 10l5-5 5 5M5 20h14"/></svg>
+                </button>
+              </li>
+              <li class="row">
+                <div class="ico">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+                </div>
+                <div class="meta"><b>Downloads</b><span>32 items · Yesterday</span></div>
+                <button class="icon-btn" aria-label="Download Downloads" data-toast="Download queued: Downloads">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V5M7 10l5-5 5 5M5 20h14"/></svg>
+                </button>
+              </li>
+              <li class="row">
+                <div class="ico">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z"/></svg>
+                </div>
+                <div class="meta"><b>report.pdf</b><span>1.4 MB · Today</span></div>
+                <button class="icon-btn" aria-label="Download report.pdf" data-toast="Download queued: report.pdf">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V5M7 10l5-5 5 5M5 20h14"/></svg>
+                </button>
+              </li>
+            </ul>
+          </div>
+
+          <!-- Diagnostics Panel -->
+          <div class="panel" id="p-diag" hidden>
+            <div class="grid2">
+              <div class="card stat">
+                <span>Battery</span>
+                <b id="diag-battery">85%</b>
+                <div class="bar"><i id="diag-battery-bar" style="width:85%"></i></div>
+              </div>
+              <div class="card stat">
+                <span>Storage</span>
+                <b id="diag-storage">64 GB free</b>
+                <div class="bar"><i style="width:50%"></i></div>
+              </div>
+              <div class="card stat">
+                <span>Memory</span>
+                <b id="diag-memory">3.4 / 8 GB</b>
+                <div class="bar"><i style="width:42%"></i></div>
+              </div>
+              <div class="card stat">
+                <span>Temperature</span>
+                <b id="diag-temp">33.5 °C</b>
+                <div class="bar"><i style="width:30%"></i></div>
+              </div>
+            </div>
+            <ul class="list">
+              <li class="row">
+                <div class="meta"><b>Latency</b><span>Round trip to phone</span></div>
+                <span class="mono" id="diag-latency">28 ms</span>
+              </li>
+              <li class="row">
+                <div class="meta"><b>Frame rate</b><span>Incoming video</span></div>
+                <span class="mono" id="diag-fps">60 fps</span>
+              </li>
+              <li class="row">
+                <div class="meta"><b>Bitrate</b><span>Adaptive</span></div>
+                <span class="mono" id="diag-bitrate">4.2 Mbps</span>
+              </li>
+              <li class="row">
+                <div class="meta"><b>Connection</b><span>Direct peer-to-peer</span></div>
+                <span class="chip"><i class="dot"></i>Secure</span>
+              </li>
+            </ul>
+          </div>
+
+          <!-- Apps Panel -->
+          <div class="panel" id="p-apps" hidden>
+            <input class="search" id="search" type="search" placeholder="Search installed apps" aria-label="Search installed apps">
+            <ul class="list" id="app-list">
+              <li class="row">
+                <div class="ico">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/></svg>
+                </div>
+                <div class="meta"><b>Chrome</b><span>v128.0 · Google LLC</span></div>
+                <button class="btn" data-toast="Opening Chrome on phone" onclick="window.sendAppLaunch('com.android.chrome')">Open</button>
+              </li>
+              <li class="row">
+                <div class="ico">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/></svg>
+                </div>
+                <div class="meta"><b>Messages</b><span>v9.4 · Google LLC</span></div>
+                <button class="btn" data-toast="Opening Messages on phone" onclick="window.sendAppLaunch('com.google.android.apps.messaging')">Open</button>
+              </li>
+              <li class="row">
+                <div class="ico">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/></svg>
+                </div>
+                <div class="meta"><b>Maps</b><span>v11.2 · Navigation</span></div>
+                <button class="btn" data-toast="Opening Maps on phone" onclick="window.sendAppLaunch('com.google.android.apps.maps')">Open</button>
+              </li>
+              <li class="row">
+                <div class="ico">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/></svg>
+                </div>
+                <div class="meta"><b>Mahi Companion</b><span>v1.0 · Active Agent</span></div>
+                <button class="btn" data-toast="Opening Mahi Companion on phone" onclick="window.sendAppLaunch('com.aistudio.mahiremote.rcvkm')">Open</button>
+              </li>
+            </ul>
+          </div>
+
+          <!-- Settings Panel -->
+          <div class="panel" id="p-settings" hidden>
+            <div class="setting">
+              <div><b>Video quality</b><span>Lower it on slow networks</span></div>
+              <select id="quality-select" aria-label="Video quality">
+                <option value="auto">Auto</option>
+                <option value="high">High (1080p 60fps)</option>
+                <option value="balanced">Balanced (720p 30fps)</option>
+                <option value="low">Low (480p 15fps)</option>
+              </select>
+            </div>
+            <div class="setting">
+              <div><b>Show touch ripples</b><span>Visual feedback on tap</span></div>
+              <input class="switch" id="switch-ripples" type="checkbox" role="switch" checked aria-label="Show touch ripples">
+            </div>
+            <div class="setting">
+              <div><b>Keep phone awake</b><span>Prevent screen timeout</span></div>
+              <input class="switch" id="switch-awake" type="checkbox" role="switch" checked aria-label="Keep phone awake">
+            </div>
+            <div class="setting">
+              <div><b>Block clipboard sync</b><span>Stop copy and paste between devices</span></div>
+              <input class="switch" id="switch-clip" type="checkbox" role="switch" aria-label="Block clipboard sync">
+            </div>
+            <div class="setting">
+              <div><b>Preview screen state</b><span>For design review only</span></div>
+              <select id="state-select" aria-label="Preview screen state">
+                <option value="live">Live</option>
+                <option value="loading">Loading</option>
+                <option value="error">Error</option>
+                <option value="empty">Screen off</option>
+              </select>
+            </div>
+            <button class="btn danger" style="width:100%;margin-top:20px" data-stop>End session</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- Emergency Stop Confirmation Modal -->
+  <div class="modal" id="modal" hidden role="alertdialog" aria-modal="true" aria-labelledby="mt">
+    <div class="card">
+      <h2 id="mt">Stop remote control?</h2>
+      <p>This ends the session right away and your phone will no longer accept input. You can pair again with a new code.</p>
+      <div class="acts">
+        <button class="btn" id="cancel">Keep connected</button>
+        <button class="btn danger" id="confirm">Stop session</button>
       </div>
     </div>
   </div>
 
-  <script src="app.js"></script>
+  <!-- Toast Element -->
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <!-- Main JavaScript Bundle -->
+  <script src="js/app.js"></script>
 </body>
 </html>

@@ -31,9 +31,17 @@ data class RemoteTelemetry(
     val roundTripTimeMs: Int = 34
 )
 
+data class RemoteDisplayMetrics(
+    val width: Int = 1080,
+    val height: Int = 2400,
+    val rotation: Int = 0,
+    val densityDpi: Int = 420
+)
+
 enum class RemoteViewerTab(val title: String) {
     SCREEN("Screen"),
     FILES("Files"),
     APPS("Apps"),
     DIAGNOSTICS("Diagnostics")
 }
+

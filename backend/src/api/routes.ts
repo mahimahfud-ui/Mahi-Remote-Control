@@ -53,8 +53,42 @@ apiRouter.post('/pair/verify', (req: Request, res: Response) => {
   });
 });
 
+import crypto from 'crypto';
+
+// Dynamic time-limited Coturn credentials generator
+apiRouter.get('/ice-servers', (req: Request, res: Response) => {
+  const turnSecret = process.env.TURN_SHARED_SECRET || 'mahi-turn-secret-key-prod-2026';
+  const turnDomain = process.env.TURN_DOMAIN || 'turn.mahi-remote.cloud';
+  const turnPort = process.env.TURN_PORT || '3478';
+
+  // 12-hour expiry
+  const expiry = Math.floor(Date.now() / 1000) + 12 * 3600;
+  const username = `${expiry}:mahi_session`;
+  const hmac = crypto.createHmac('sha1', turnSecret);
+  hmac.setEncoding('base64');
+  hmac.write(username);
+  hmac.end();
+  const credential = hmac.read();
+
+  res.json({
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: `stun:${turnDomain}:${turnPort}` },
+      {
+        urls: [
+          `turn:${turnDomain}:${turnPort}?transport=udp`,
+          `turn:${turnDomain}:${turnPort}?transport=tcp`,
+        ],
+        username,
+        credential,
+      },
+    ],
+  });
+});
+
 apiRouter.post('/sessions/:id/terminate', (req: Request, res: Response) => {
   const { id } = req.params;
   DeviceService.endSession(id);
   res.json({ success: true, message: `Session ${id} terminated` });
 });
+

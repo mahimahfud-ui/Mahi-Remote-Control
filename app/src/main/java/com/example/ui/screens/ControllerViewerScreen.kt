@@ -243,32 +243,37 @@ private fun RemoteScreenViewport(
     onKeyboardInputChanged: (String) -> Unit,
     onSendText: () -> Unit
 ) {
+    val displayMetrics by viewModel.remoteDisplayMetrics.collectAsState()
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(8.dp),
+            .padding(4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.SpaceBetween
     ) {
-        // Live Screen Canvas Container with 9:16 aspect ratio
+        // True Fullscreen Live Screen Container with Receiver Aspect Ratio Preservation
         BoxWithConstraints(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
             contentAlignment = Alignment.Center
         ) {
-            val canvasWidth = this.maxWidth
-            val canvasHeight = this.maxHeight
+            val receiverAspect = if (displayMetrics.width > 0 && displayMetrics.height > 0) {
+                displayMetrics.width.toFloat() / displayMetrics.height.toFloat()
+            } else {
+                9f / 19.5f
+            }
 
             Box(
                 modifier = Modifier
-                    .aspectRatio(9f / 16f)
+                    .aspectRatio(receiverAspect)
                     .fillMaxHeight()
-                    .clip(RoundedCornerShape(16.dp))
+                    .clip(RoundedCornerShape(8.dp))
                     .background(Color.Black)
-                    .border(2.dp, CyanAccent.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
+                    .border(1.dp, CyanAccent.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
                     .testTag("remote_screen_canvas")
-                    .pointerInput(Unit) {
+                    .pointerInput(displayMetrics) {
                         detectTapGestures(
                             onTap = { offset ->
                                 touchRipples.add(offset)
@@ -285,7 +290,7 @@ private fun RemoteScreenViewport(
                             }
                         )
                     }
-                    .pointerInput(Unit) {
+                    .pointerInput(displayMetrics) {
                         var startX = 0f
                         var startY = 0f
                         var startMillis = 0L
@@ -297,9 +302,9 @@ private fun RemoteScreenViewport(
                                 startMillis = System.currentTimeMillis()
                             },
                             onDragEnd = {
-                                // Handled
+                                // Gesture completed
                             },
-                            onDrag = { change, dragAmount ->
+                            onDrag = { change, _ ->
                                 change.consume()
                                 val currentX = change.position.x
                                 val currentY = change.position.y
@@ -311,30 +316,34 @@ private fun RemoteScreenViewport(
                         )
                     }
             ) {
-                // Background visual representation of receiver's active UI
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    // Simulated status bar
-                    drawRect(
-                        color = Color(0xFF1E293B),
-                        size = androidx.compose.ui.geometry.Size(size.width, 24.dp.toPx())
-                    )
+                // Actual WebRTC SurfaceViewRenderer frame display
+                androidx.compose.ui.viewinterop.AndroidView(
+                    factory = { ctx ->
+                        org.webrtc.SurfaceViewRenderer(ctx).apply {
+                            setEnableHardwareScaler(true)
+                            setMirror(false)
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
 
-                    // Visual touch ripples
+                // Overlay Canvas for local operator touch ripples
+                Canvas(modifier = Modifier.fillMaxSize()) {
                     touchRipples.forEach { ripple ->
                         drawCircle(
-                            color = CyanAccent.copy(alpha = 0.6f),
-                            radius = 28.dp.toPx(),
+                            color = CyanAccent.copy(alpha = 0.5f),
+                            radius = 24.dp.toPx(),
                             center = ripple
                         )
                         drawCircle(
-                            color = Color.White.copy(alpha = 0.8f),
-                            radius = 12.dp.toPx(),
+                            color = Color.White.copy(alpha = 0.7f),
+                            radius = 10.dp.toPx(),
                             center = ripple
                         )
                     }
                 }
 
-                // Center Live Screen Status overlay
+                // Center Live Status (fades once frames stream)
                 Column(
                     modifier = Modifier
                         .align(Alignment.Center)
@@ -346,24 +355,24 @@ private fun RemoteScreenViewport(
                         Icons.Default.ScreenShare,
                         contentDescription = null,
                         tint = CyanAccent.copy(alpha = 0.7f),
-                        modifier = Modifier.size(48.dp)
+                        modifier = Modifier.size(40.dp)
                     )
                     Text(
-                        text = "LIVE REMOTE SCREEN STREAMING",
+                        text = "LIVE REMOTE MIRRORING",
                         color = CyanAccent,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp
                     )
                     Text(
-                        text = "Touch, swipe, or drag inside this window to control the receiver phone directly.",
+                        text = "Display: ${displayMetrics.width}×${displayMetrics.height} • Original phone screen is mirrored directly.",
                         color = TextSecondary,
                         fontSize = 10.sp,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
                 }
 
-                // Volume & Quick System Controls overlay in top-right of canvas
+                // Minimal floating emergency quick controls overlay (non-intrusive)
                 Row(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
@@ -373,30 +382,30 @@ private fun RemoteScreenViewport(
                     IconButton(
                         onClick = { viewModel.sendRemoteVolume("DOWN") },
                         modifier = Modifier
-                            .size(32.dp)
-                            .background(DarkSurface.copy(alpha = 0.8f), CircleShape)
+                            .size(28.dp)
+                            .background(DarkSurface.copy(alpha = 0.75f), CircleShape)
                     ) {
-                        Icon(Icons.Default.VolumeDown, contentDescription = "Vol Down", tint = TextPrimary, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.VolumeDown, contentDescription = "Vol Down", tint = TextPrimary, modifier = Modifier.size(14.dp))
                     }
                     IconButton(
                         onClick = { viewModel.sendRemoteVolume("UP") },
                         modifier = Modifier
-                            .size(32.dp)
-                            .background(DarkSurface.copy(alpha = 0.8f), CircleShape)
+                            .size(28.dp)
+                            .background(DarkSurface.copy(alpha = 0.75f), CircleShape)
                     ) {
-                        Icon(Icons.Default.VolumeUp, contentDescription = "Vol Up", tint = TextPrimary, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.VolumeUp, contentDescription = "Vol Up", tint = TextPrimary, modifier = Modifier.size(14.dp))
                     }
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(6.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
-        // Quick Keyboard Input Bar
+        // Quick Keyboard Input Bar for typing into remote fields
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 4.dp),
+                .padding(horizontal = 4.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -407,7 +416,7 @@ private fun RemoteScreenViewport(
                 singleLine = true,
                 modifier = Modifier
                     .weight(1f)
-                    .height(48.dp)
+                    .height(46.dp)
                     .testTag("remote_text_field"),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = CyanAccent,
@@ -417,73 +426,18 @@ private fun RemoteScreenViewport(
                     focusedContainerColor = DarkSurfaceElevated,
                     unfocusedContainerColor = DarkSurfaceElevated
                 ),
-                shape = RoundedCornerShape(10.dp)
+                shape = RoundedCornerShape(8.dp)
             )
 
             IconButton(
                 onClick = onSendText,
                 modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(10.dp))
+                    .size(46.dp)
+                    .clip(RoundedCornerShape(8.dp))
                     .background(CyanAccent)
                     .testTag("send_remote_text_btn")
             ) {
                 Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = DarkCharcoalBg)
-            }
-        }
-
-        Spacer(modifier = Modifier.height(6.dp))
-
-        // Android System Navigation Floating Bar
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            colors = CardDefaults.cardColors(containerColor = DarkSurface),
-            border = BorderStroke(1.dp, DarkSurfaceBorder),
-            shape = RoundedCornerShape(14.dp)
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp, horizontal = 8.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                NavActionItem(
-                    icon = Icons.AutoMirrored.Filled.ArrowBack,
-                    label = "Back",
-                    onClick = { viewModel.sendRemoteGlobalAction("BACK") },
-                    testTag = "nav_back_btn"
-                )
-                NavActionItem(
-                    icon = Icons.Default.Home,
-                    label = "Home",
-                    onClick = { viewModel.sendRemoteGlobalAction("HOME") },
-                    testTag = "nav_home_btn"
-                )
-                NavActionItem(
-                    icon = Icons.Default.Tab,
-                    label = "Recents",
-                    onClick = { viewModel.sendRemoteGlobalAction("RECENTS") },
-                    testTag = "nav_recents_btn"
-                )
-                NavActionItem(
-                    icon = Icons.Default.Notifications,
-                    label = "Shade",
-                    onClick = { viewModel.sendRemoteGlobalAction("NOTIFICATIONS") },
-                    testTag = "nav_notifications_btn"
-                )
-                NavActionItem(
-                    icon = Icons.Default.Settings,
-                    label = "Quick Set",
-                    onClick = { viewModel.sendRemoteGlobalAction("QUICK_SETTINGS") },
-                    testTag = "nav_quick_settings_btn"
-                )
-                NavActionItem(
-                    icon = Icons.Default.Lock,
-                    label = "Lock",
-                    onClick = { viewModel.sendRemoteGlobalAction("LOCK_SCREEN") },
-                    testTag = "nav_lock_btn"
-                )
             }
         }
     }
