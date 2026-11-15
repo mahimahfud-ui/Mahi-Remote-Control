@@ -38,7 +38,7 @@ services:
       TURN_SERVER_URL: ${TURN_SERVER_URL:?Set TURN_SERVER_URL to the real public Coturn URL}
       TURN_REALM: ${TURN_REALM:?Set TURN_REALM to the public TURN hostname}
       TURN_SHARED_SECRET: ${TURN_SHARED_SECRET:?Set a different random TURN_SHARED_SECRET}
-      INSTANCE_ID: ${INSTANCE_ID:-mahi-remote-single}
+      INSTANCE_ID: ${INSTANCE_ID:-}
     expose:
       - "8080"
     depends_on:
