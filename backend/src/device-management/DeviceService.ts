@@ -43,6 +43,7 @@ export interface ActiveSessionRecord {
   deviceId: string;
   controllerId: string;
   operatorFingerprint: string;
+  controllerEntityType: 'DEVICE' | 'OPERATOR';
   receiverFingerprint: string;
   startedAt: number;
   expiresAt: number;
@@ -647,12 +648,15 @@ export class DeviceService {
 
   public static async getActiveSession(sessionId: string): Promise<ActiveSessionRecord | null> {
     const result = await Database.query(
-      `SELECT session_id::text, device_id, controller_id, controller_fingerprint,
-              receiver_fingerprint,
-              (EXTRACT(EPOCH FROM started_at) * 1000)::bigint AS started_at_ms,
-              (EXTRACT(EPOCH FROM expires_at) * 1000)::bigint AS expires_at_ms
-       FROM support_sessions
-       WHERE session_id = $1 AND status = 'ACTIVE' AND expires_at > NOW()`,
+      `SELECT s.session_id::text, s.device_id, s.controller_id, s.controller_fingerprint,
+              s.receiver_fingerprint,
+              cp.participant_type AS controller_entity_type,
+              (EXTRACT(EPOCH FROM s.started_at) * 1000)::bigint AS started_at_ms,
+              (EXTRACT(EPOCH FROM s.expires_at) * 1000)::bigint AS expires_at_ms
+       FROM support_sessions s
+       JOIN session_participants cp
+         ON cp.session_id = s.session_id AND cp.participant_id = s.controller_id
+       WHERE s.session_id = $1 AND s.status = 'ACTIVE' AND s.expires_at > NOW()`,
       [sessionId]
     );
     const row = result.rows[0];
@@ -662,6 +666,7 @@ export class DeviceService {
       deviceId: row.device_id,
       controllerId: row.controller_id,
       operatorFingerprint: row.controller_fingerprint,
+      controllerEntityType: row.controller_entity_type,
       receiverFingerprint: row.receiver_fingerprint,
       startedAt: Number(row.started_at_ms),
       expiresAt: Number(row.expires_at_ms),
