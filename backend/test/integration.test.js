@@ -12,6 +12,9 @@ process.env.INSTANCE_ID = 'integration-instance-1';
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const http = require('node:http');
+const net = require('node:net');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
 const express = require('express');
 const { WebSocket, WebSocketServer } = require('ws');
 
@@ -129,6 +132,48 @@ async function closeSocket(ws) {
   });
 }
 
+async function findFreePort() {
+  const probe = net.createServer();
+  await new Promise((resolve, reject) => {
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', resolve);
+  });
+  const address = probe.address();
+  const port = typeof address === 'object' && address ? address.port : 0;
+  await new Promise(resolve => probe.close(resolve));
+  return port;
+}
+
+async function waitForReady(url, child, getOutput, timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) {
+      throw new Error('Secondary backend exited before readiness: ' + getOutput());
+    }
+    try {
+      const response = await fetch(url + '/api/v1/ready');
+      if (response.ok) return;
+    } catch { /* backend is still starting */ }
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  throw new Error('Secondary backend did not become ready: ' + getOutput());
+}
+
+async function stopChild(child) {
+  if (!child || child.exitCode !== null) return;
+  child.kill('SIGTERM');
+  await new Promise(resolve => {
+    const timer = setTimeout(() => {
+      if (child.exitCode === null) child.kill('SIGKILL');
+      resolve();
+    }, 7000);
+    child.once('exit', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
 async function runTests() {
   let server;
   let wss;
@@ -136,6 +181,8 @@ async function runTests() {
   let receiver;
   let controller;
   let controller2;
+  let secondaryBackend;
+  let secondaryOutput = '';
 
   try {
     await Database.initialize();
@@ -349,14 +396,32 @@ async function runTests() {
     const codeAck = await receiver.next('CODE_REGISTERED_ACK');
     assert.equal(codeAck.status, 'OK');
 
-    console.log('[TEST] Concurrent browser pairing requests and single owner approval');
+    console.log('[TEST] Start second backend process with a separate socket registry');
+    const secondaryPort = await findFreePort();
+    secondaryBackend = spawn(process.execPath, [path.resolve(__dirname, '../dist/index.js')], {
+      cwd: path.resolve(__dirname, '..'),
+      env: {
+        ...process.env,
+        PORT: String(secondaryPort),
+        HOST: '127.0.0.1',
+        INSTANCE_ID: 'integration-instance-2'
+      },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    secondaryBackend.stdout.on('data', chunk => { secondaryOutput += chunk.toString(); });
+    secondaryBackend.stderr.on('data', chunk => { secondaryOutput += chunk.toString(); });
+    const secondaryHttpUrl = 'http://127.0.0.1:' + secondaryPort;
+    const secondaryWsUrl = 'ws://127.0.0.1:' + secondaryPort + '/ws';
+    await waitForReady(secondaryHttpUrl, secondaryBackend, () => secondaryOutput);
+
+    console.log('[TEST] Concurrent browser pairing requests and single owner approval across backend instances');
     const controllerFingerprintA = 'WEB-' + crypto.randomBytes(16).toString('hex').toUpperCase();
     const controllerFingerprintB = 'WEB-' + crypto.randomBytes(16).toString('hex').toUpperCase();
     controller = makeSocket(
-      WS_URL + '?protocolVersion=1&controllerFingerprint=' + encodeURIComponent(controllerFingerprintA)
+      secondaryWsUrl + '?protocolVersion=1&controllerFingerprint=' + encodeURIComponent(controllerFingerprintA)
     );
     controller2 = makeSocket(
-      WS_URL + '?protocolVersion=1&controllerFingerprint=' + encodeURIComponent(controllerFingerprintB)
+      secondaryWsUrl + '?protocolVersion=1&controllerFingerprint=' + encodeURIComponent(controllerFingerprintB)
     );
     await Promise.all([waitOpen(controller), waitOpen(controller2)]);
     await Promise.all([controller.next('REGISTER_ACK'), controller2.next('REGISTER_ACK')]);
@@ -582,7 +647,8 @@ async function runTests() {
     await closeSocket(oldTokenWs);
 
 
-    console.log('[TEST] Passed: protocol, PostgreSQL persistence, pairing, approval, session auth, TURN, scope checks, limits and key rotation.');
+    console.log('[TEST] Cross-instance pairing approvals and SDP/control events were delivered through the PostgreSQL outbox.');
+    console.log('[TEST] Passed: protocol, PostgreSQL persistence, multi-instance signaling, pairing, approval, session auth, TURN, scope checks, limits and key rotation.');
   } finally {
     await closeSocket(controller2);
     await closeSocket(controller);
@@ -592,6 +658,7 @@ async function runTests() {
     if (server && server.listening) {
       await new Promise(resolve => server.close(() => resolve()));
     }
+    await stopChild(secondaryBackend);
     await Database.close();
   }
 }
