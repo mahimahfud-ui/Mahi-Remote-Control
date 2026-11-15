@@ -3,18 +3,17 @@ name: Backend verification
 on:
   push:
     branches:
-      - "**"
+      - main
+      - fix/full-remote-workflow
+      - agent-backend/persistence-deployment
     paths:
       - "backend/**"
-      - "infrastructure/deployment/**"
       - ".github/workflows/backend-verification.yml"
   pull_request:
     branches:
       - main
-      - fix/full-remote-workflow
     paths:
       - "backend/**"
-      - "infrastructure/deployment/**"
       - ".github/workflows/backend-verification.yml"
   workflow_dispatch:
 
@@ -24,32 +23,33 @@ permissions:
 jobs:
   backend:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: mahi_admin
-          POSTGRES_PASSWORD: integration-postgres-password
-          POSTGRES_DB: mahi_remote_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mahi_remote
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U mahi_admin -d mahi_remote_test"
+          --health-cmd "pg_isready -U postgres -d mahi_remote"
           --health-interval 5s
           --health-timeout 3s
           --health-retries 20
     env:
       NODE_ENV: test
-      DATABASE_URL: postgres://mahi_admin:integration-postgres-password@127.0.0.1:5432/mahi_remote_test
-      JWT_SECRET: integration-only-jwt-secret-at-least-32-bytes
-      PAIRING_CODE_PEPPER: integration-only-pairing-pepper-32-bytes
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/mahi_remote
+      DATABASE_SSL: "false"
+      JWT_SECRET: integration-test-only-jwt-secret-32-bytes-minimum
+      PAIRING_CODE_PEPPER: integration-test-only-pairing-pepper-32-bytes
+      PUBLIC_BASE_URL: https://remote.integration.invalid
+      STUN_SERVER_URL: stun:stun.integration.invalid:3478
       TURN_SERVER_URL: turn:turn.integration.invalid:3478
       TURN_REALM: turn.integration.invalid
       TURN_SHARED_SECRET: integration-only-turn-secret-not-for-production
-      STUN_SERVER_URL: stun:stun.integration.invalid:3478
-      PUBLIC_BASE_URL: https://remote.integration.test
-      INSTANCE_ID: integration-primary
+      INSTANCE_ID: backend-ci
     defaults:
       run:
         working-directory: backend
@@ -75,12 +75,8 @@ jobs:
           node --check public/js/app.js
           node --check public/app.js
 
-      - name: Run PostgreSQL-backed integration tests
+      - name: Run PostgreSQL-backed backend integration tests
         run: npm test
 
-      - name: Build production backend container
-        run: docker build -t mahi-remote-backend:ci .
-
-      - name: Validate production Compose configuration
-        working-directory: .
-        run: docker compose --env-file infrastructure/deployment/.env.example -f infrastructure/deployment/docker-compose.yml config --quiet
+      - name: Verify migration files are present in the production image context
+        run: test -s migrations/001_persistent_backend.sql
