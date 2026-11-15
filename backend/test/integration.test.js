@@ -625,7 +625,7 @@ async function runTests() {
     await closeSocket(activeTokenWs);
 
     console.log('[TEST] Authenticated device self-revocation invalidates the current rotated token and sessions');
-    const selfRevoke = await post('/devices/' + deviceId + '/revoke', {}, rotationResult.payload.deviceAccessToken);
+    const selfRevoke = await post('/api/v1/devices/' + deviceId + '/revoke', {}, rotationResult.payload.deviceAccessToken);
     assert.equal(selfRevoke.response.status, 200);
     assert.equal(selfRevoke.payload.success, true);
     assert.equal(selfRevoke.payload.revokedDeviceId, deviceId);
