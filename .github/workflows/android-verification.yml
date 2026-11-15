@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - fix/full-remote-workflow
+      - agent-android/client-qa
     paths:
       - "app/**"
       - "gradle/**"
@@ -14,6 +15,7 @@ on:
   pull_request:
     branches:
       - main
+      - fix/full-remote-workflow
     paths:
       - "app/**"
       - "gradle/**"
@@ -37,7 +39,7 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: "21"
 
       - name: Configure Android SDK
         run: |
