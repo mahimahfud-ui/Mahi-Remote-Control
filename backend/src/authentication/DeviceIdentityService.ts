@@ -100,10 +100,10 @@ export class DeviceIdentityService {
     const expiresAtMs = Date.now() + CHALLENGE_TTL_MS;
     await Database.query(
       `INSERT INTO device_challenges
-       (challenge_id, purpose, device_id, fingerprint, public_key, old_fingerprint,
+       (challenge_id, purpose, device_id, device_name, fingerprint, public_key, old_fingerprint,
         old_key_version, nonce, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TO_TIMESTAMP($9 / 1000.0))`,
-      [challengeId, purpose, deviceId, fingerprint, publicKey, oldFingerprint, oldKeyVersion, nonce, expiresAtMs]
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TO_TIMESTAMP($10 / 1000.0))`,
+      [challengeId, purpose, deviceId, deviceName, fingerprint, publicKey, oldFingerprint, oldKeyVersion, nonce, expiresAtMs]
     );
     return {
       protocolVersion: 1,
@@ -141,9 +141,9 @@ export class DeviceIdentityService {
       const expiresAtMs = Date.now() + CHALLENGE_TTL_MS;
       await client.query(
         `INSERT INTO device_challenges
-         (challenge_id, purpose, device_id, fingerprint, public_key, nonce, expires_at)
-         VALUES ($1, 'ENROLL', $2, $3, $4, $5, TO_TIMESTAMP($6 / 1000.0))`,
-        [challengeId, input.deviceId, key.fingerprint, key.value, nonce, expiresAtMs]
+         (challenge_id, purpose, device_id, device_name, fingerprint, public_key, nonce, expires_at)
+         VALUES ($1, 'ENROLL', $2, $3, $4, $5, $6, TO_TIMESTAMP($7 / 1000.0))`,
+        [challengeId, input.deviceId, deviceName, key.fingerprint, key.value, nonce, expiresAtMs]
       );
       return {
         protocolVersion: 1,
@@ -168,6 +168,7 @@ export class DeviceIdentityService {
       device.deviceId,
       device.publicKey,
       device.fingerprint,
+      device.deviceName,
       null,
       device.keyVersion
     );
@@ -194,8 +195,8 @@ export class DeviceIdentityService {
       deviceId,
       key.value,
       key.fingerprint,
-      device.fingerprint,
       device.deviceName,
+      device.fingerprint,
       device.keyVersion
     );
   }
@@ -263,9 +264,7 @@ export class DeviceIdentityService {
       const row = await this.loadChallenge(client, challengeId, 'ENROLL');
       const message = this.signatureMessage(row);
 
-      // The device name is stored as an optional suffix in the challenge's public_key column
-      // only within this enrollment flow; split it back out without affecting key proof bytes.
-      const [publicKey, deviceNameRaw] = row.public_key.split('\n');
+      const publicKey = row.public_key;
       if (!this.signatureIsValid(publicKey, message, signature)) {
         throw new DeviceServiceError('INVALID_SIGNATURE', 'Device enrollment signature is invalid.');
       }
