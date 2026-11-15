@@ -226,9 +226,10 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         val root = JSONObject(msg.payload)
                         val issuedToken = root.optString("sessionToken")
                         val sessionId = root.optString("sessionId")
-                        if (issuedToken.isNotBlank() && sessionId.isNotBlank()) {
+                        val authorizedRequestId = root.optString("requestId")
+                        if (issuedToken.isNotBlank() && sessionId.isNotBlank() && authorizedRequestId.isNotBlank()) {
                             signalingClient.setSessionToken(issuedToken)
-                            val activated = pairingManager.markSessionAuthorized(sessionId)
+                            val activated = pairingManager.markSessionAuthorized(authorizedRequestId, sessionId)
                             if (!activated) {
                                 signalingClient.send(
                                     "EMERGENCY_DISCONNECT",
