@@ -700,7 +700,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                 val expectedTemporaryPath = "$destinationPath.mahi-upload-$transferId.part"
                 val success = RemoteFileTransferRules.isValidTransferId(transferId) &&
                     destinationPath.isNotBlank() && temporaryPath == expectedTemporaryPath &&
-                    !destination.exists() && fileManager.moveFile(temporaryPath, destinationPath)
+                    !destination.exists() && fileManager.moveFileToPath(temporaryPath, destinationPath)
                 signalingClient.send(
                     "FILE_OPERATION_RESULT",
                     JSONObject()
