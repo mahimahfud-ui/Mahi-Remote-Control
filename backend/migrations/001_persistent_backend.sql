@@ -73,12 +73,13 @@ CREATE INDEX IF NOT EXISTS idx_device_challenges_device
 CREATE TABLE IF NOT EXISTS pairing_codes (
   id UUID PRIMARY KEY,
   device_id TEXT NOT NULL REFERENCES devices(device_id) ON DELETE CASCADE,
-  code_hash CHAR(64) NOT NULL UNIQUE,
+  code_hash CHAR(64) NOT NULL,
   expires_at TIMESTAMPTZ NOT NULL,
   consumed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE INDEX IF NOT EXISTS idx_pairing_codes_hash ON pairing_codes(code_hash);
 CREATE INDEX IF NOT EXISTS idx_pairing_codes_device_expiry
   ON pairing_codes(device_id, expires_at DESC);
 CREATE INDEX IF NOT EXISTS idx_pairing_codes_expiry
