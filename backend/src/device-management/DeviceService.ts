@@ -205,7 +205,11 @@ export class DeviceService {
     const codeHash = this.pairingCodeHash(deviceId, code);
 
     await Database.transaction(async (client) => {
-      await client.query('SELECT device_id FROM devices WHERE device_id = $1 FOR UPDATE', [deviceId]);
+      const lockedDevice = await client.query(
+        'SELECT device_id FROM devices WHERE device_id = $1 AND is_revoked = FALSE FOR UPDATE',
+        [deviceId]
+      );
+      if (!lockedDevice.rowCount) throw new DeviceServiceError('DEVICE_REVOKED', 'The receiver device is not active.');
       await client.query(
         'DELETE FROM pairing_codes WHERE device_id = $1 AND consumed_at IS NULL',
         [deviceId]
@@ -222,25 +226,23 @@ export class DeviceService {
     const code = this.normalizePairingCode(rawCode);
     if (!/^\d{6}$/.test(code)) return null;
     const targetDeviceId = deviceId || '';
-    // The hash includes device_id, so the lookup uses the enrolled device set.
-    const candidates = targetDeviceId
-      ? [targetDeviceId]
-      : (await Database.query<{ device_id: string }>(
-          'SELECT device_id FROM pairing_codes WHERE consumed_at IS NULL AND expires_at > NOW()'
-        )).rows.map((row) => row.device_id);
-
-    for (const id of candidates) {
-      const codeHash = this.pairingCodeHash(id, code);
-      const result = await Database.query(
-        `SELECT id::text AS code_id, device_id, (EXTRACT(EPOCH FROM expires_at) * 1000)::bigint AS expires_at_ms
-         FROM pairing_codes
-         WHERE code_hash = $1 AND device_id = $2 AND consumed_at IS NULL AND expires_at > NOW()`,
-        [codeHash, id]
-      );
-      const row = result.rows[0];
-      if (row) return { codeId: row.code_id, deviceId: row.device_id, expiresAt: Number(row.expires_at_ms) };
-    }
-    return null;
+    const codeHash = this.pairingCodeHash('', code);
+    const result = await Database.query(
+      `SELECT id::text AS code_id, device_id,
+              (EXTRACT(EPOCH FROM expires_at) * 1000)::bigint AS expires_at_ms
+       FROM pairing_codes
+       WHERE code_hash = $1 AND ($2 = '' OR device_id = $2)
+         AND consumed_at IS NULL AND expires_at > NOW()
+       ORDER BY created_at DESC LIMIT 2`,
+      [codeHash, targetDeviceId]
+    );
+    if (result.rows.length !== 1) return null;
+    const row = result.rows[0];
+    return {
+      codeId: row.code_id,
+      deviceId: row.device_id,
+      expiresAt: Number(row.expires_at_ms),
+    };
   }
 
   public static async createPairingRequest(input: {
@@ -266,9 +268,13 @@ export class DeviceService {
          JOIN devices d ON d.device_id = p.device_id
          WHERE p.code_hash = $1 AND p.consumed_at IS NULL
            AND p.expires_at > NOW() AND d.is_revoked = FALSE
+         ORDER BY p.created_at DESC
          FOR UPDATE OF p, d`,
         [codeHash]
       );
+      if (activeCodes.rows.length > 1) {
+        throw new DeviceServiceError('PAIRING_CODE_AMBIGUOUS', 'This pairing code is currently active on more than one receiver. Regenerate the receiver code.');
+      }
       const matched = activeCodes.rows[0];
       if (!matched || !crypto.timingSafeEqual(Buffer.from(matched.code_hash), Buffer.from(codeHash))) {
         throw new DeviceServiceError('PAIRING_CODE_INVALID', 'Invalid or expired pairing code.');
