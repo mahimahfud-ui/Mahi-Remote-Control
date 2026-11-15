@@ -9,13 +9,15 @@ import {
 } from 'pg';
 
 export type SignalPayload = Record<string, unknown>;
-type SignalHandler = (targetId: string, payload: SignalPayload) => void;
+type SignalHandler = (targetId: string, payload: SignalPayload) => Promise<boolean>;
 
 export class Database {
   private static pool: Pool | null = null;
   private static listener: PoolClient | null = null;
   private static signalHandler: SignalHandler | null = null;
   private static listenerStarting = false;
+  private static pollTimer: NodeJS.Timeout | null = null;
+  private static pollingSignals = false;
   private static migrationsReady = false;
 
   public static async initialize(): Promise<void> {
@@ -141,6 +143,10 @@ export class Database {
       const client = await this.getPool().connect();
       this.listener = client;
       await client.query('LISTEN mahi_signaling');
+      if (!this.pollTimer) {
+        this.pollTimer = setInterval(() => { void this.pollPendingSignals(); }, 2000);
+        this.pollTimer.unref?.();
+      }
 
       client.on('notification', (notification: Notification) => {
         void this.handleNotification(notification);
@@ -169,14 +175,56 @@ export class Database {
     const eventId = notification.payload;
     if (!eventId || !/^[0-9a-f-]{36}$/i.test(eventId)) return;
     try {
-      const result = await this.query<{ target_id: string; payload: SignalPayload }>(
-        'SELECT target_id, payload FROM signaling_outbox WHERE event_id = $1',
+      const result = await this.query<{ target_id: string; payload: SignalPayload; delivered_at: Date | null }>(
+        'SELECT target_id, payload, delivered_at FROM signaling_outbox WHERE event_id = $1',
         [eventId]
       );
       const event = result.rows[0];
-      if (event && this.signalHandler) this.signalHandler(event.target_id, event.payload);
+      if (!event || event.delivered_at || !this.signalHandler) return;
+      const delivered = await this.signalHandler(event.target_id, event.payload);
+      if (delivered) {
+        await this.query(
+          'UPDATE signaling_outbox SET delivered_at = NOW() WHERE event_id = $1 AND delivered_at IS NULL',
+          [eventId]
+        );
+      }
     } catch (error) {
       console.error('[database] could not read signaling outbox event', error);
+    }
+  }
+
+  private static async pollPendingSignals(): Promise<void> {
+    if (this.pollingSignals || !this.signalHandler || !this.pool || !this.migrationsReady) return;
+    this.pollingSignals = true;
+    try {
+      const pending = await this.query<{
+        event_id: string;
+        target_id: string;
+        payload: SignalPayload;
+      }>(
+        `SELECT event_id::text, target_id, payload
+         FROM signaling_outbox
+         WHERE delivered_at IS NULL AND created_at > NOW() - INTERVAL '10 minutes'
+         ORDER BY created_at ASC
+         LIMIT 100`
+      );
+      for (const event of pending.rows) {
+        try {
+          const delivered = await this.signalHandler(event.target_id, event.payload);
+          if (delivered) {
+            await this.query(
+              'UPDATE signaling_outbox SET delivered_at = NOW() WHERE event_id = $1 AND delivered_at IS NULL',
+              [event.event_id]
+            );
+          }
+        } catch (error) {
+          console.warn('[database] outbox delivery attempt failed', error);
+        }
+      }
+    } catch (error) {
+      console.warn('[database] outbox polling failed', error);
+    } finally {
+      this.pollingSignals = false;
     }
   }
 
@@ -192,7 +240,7 @@ export class Database {
   }
 
   public static async cleanupEphemeralRecords(): Promise<void> {
-    await this.query('DELETE FROM signaling_outbox WHERE created_at < NOW() - INTERVAL \'10 minutes\'');
+    await this.query('DELETE FROM signaling_outbox WHERE (delivered_at IS NOT NULL AND delivered_at < NOW() - INTERVAL \'1 minute\') OR created_at < NOW() - INTERVAL \'10 minutes\'');
     await this.query('DELETE FROM device_challenges WHERE expires_at < NOW() - INTERVAL \'1 day\'');
     await this.query(
       "UPDATE pairing_requests SET status = 'EXPIRED', decided_at = NOW() WHERE status = 'PENDING' AND expires_at <= NOW()"
@@ -212,6 +260,10 @@ export class Database {
 
   public static async close(): Promise<void> {
     this.migrationsReady = false;
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
     if (this.listener) {
       try { await this.listener.query('UNLISTEN mahi_signaling'); } catch { /* closing */ }
       try { this.listener.release(); } catch { /* already released */ }
