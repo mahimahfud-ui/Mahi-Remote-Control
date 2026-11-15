@@ -999,7 +999,7 @@
     });
   }
 
-  const uploadButton = $('#file-upload-btn');  const uploadButton = $('#file-upload-btn');
+  const uploadButton = $('#file-upload-btn');
   const uploadInput = $('#file-upload-input');
   uploadButton?.addEventListener('click', () => uploadInput?.click());
   uploadInput?.addEventListener('change', async () => {
