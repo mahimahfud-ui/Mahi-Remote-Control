@@ -3,6 +3,7 @@ package com.example
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.example.filetransfer.FileManager
+import com.example.filetransfer.RemoteFileTransferRules
 import com.example.pairing.PairingManager
 import com.example.security.AllowlistValidator
 import com.example.security.DeviceIdentity
@@ -386,6 +387,31 @@ class ExampleRobolectricTest {
         assertFalse(manager.markSessionAuthorized("rejected-request", "late-backend-session"))
         assertNull(manager.activeSession.value)
     }
+
+
+    @Test
+    fun testRemoteFileTransferRulesRejectUnsafeNamesAndBoundChunks() {
+        assertEquals("report.txt", RemoteFileTransferRules.safeFileName("report.txt"))
+        assertEquals("quarterly_report.txt", RemoteFileTransferRules.safeFileName("quarterly:report.txt"))
+        assertNull(RemoteFileTransferRules.safeFileName("../private.txt"))
+        assertNull(RemoteFileTransferRules.safeFileName("folder/file.txt"))
+        assertNull(RemoteFileTransferRules.safeFileName("folder\\\\file.txt"))
+        assertNull(RemoteFileTransferRules.safeFileName(".."))
+
+        assertEquals(RemoteFileTransferRules.CHUNK_BYTES, RemoteFileTransferRules.chunkLength(100_000L, 0L))
+        assertEquals(1, RemoteFileTransferRules.chunkLength(100_000L, 99_999L))
+        assertEquals(0, RemoteFileTransferRules.chunkLength(0L, 0L))
+        assertFalse(RemoteFileTransferRules.isValidTransferId("not-a-uuid"))
+        assertTrue(RemoteFileTransferRules.isValidTransferId("123e4567-e89b-12d3-a456-426614174000"))
+        assertEquals(
+            "/permitted/downloads/report.txt.mahi-upload-123e4567-e89b-12d3-a456-426614174000.part",
+            RemoteFileTransferRules.temporaryUploadPath(
+                "/permitted/downloads/report.txt",
+                "123e4567-e89b-12d3-a456-426614174000"
+            )
+        )
+    }
+
 
     @Test
     fun testDeviceSignatureVerificationFailsClosed() {
