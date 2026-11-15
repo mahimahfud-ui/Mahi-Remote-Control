@@ -466,63 +466,117 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         when (action.uppercase()) {
             "LIST" -> {
                 val apps = appManager.getInstalledApps(false)
-                val jsonArr = apps.take(50).joinToString(",") {
-                    """{"name":"${it.appName}","pkg":"${it.packageName}","ver":"${it.versionName}"}"""
+                val result = JSONArray()
+                apps.take(50).forEach { app ->
+                    result.put(
+                        JSONObject()
+                            .put("name", app.appName)
+                            .put("pkg", app.packageName)
+                            .put("ver", app.versionName)
+                    )
                 }
-                signalingClient.send("APP_LIST_RESPONSE", "[$jsonArr]", msg.sender)
+                signalingClient.send("APP_LIST_RESPONSE", result.toString(), msg.sender)
             }
-            "LAUNCH" -> {
-                if (pkg.isNotEmpty()) appManager.launchApp(pkg)
-            }
-            "SETTINGS" -> {
-                if (pkg.isNotEmpty()) appManager.openAppSettings(pkg)
-            }
-            "UNINSTALL" -> {
-                if (pkg.isNotEmpty()) appManager.requestUninstall(pkg)
-            }
+            "LAUNCH" -> if (pkg.isNotBlank()) appManager.launchApp(pkg)
+            "SETTINGS" -> if (pkg.isNotBlank()) appManager.openAppSettings(pkg)
+            "UNINSTALL" -> if (pkg.isNotBlank()) appManager.requestUninstall(pkg)
         }
     }
 
-    private fun handleFileCommand(msg: SignalingMessage) {
+    private fun handleFileCommand(msg: SignalingMessage)    private fun handleFileCommand(msg: SignalingMessage) {
         val root = JSONObject(msg.payload)
-        val action = root.optString("action", "LIST")
+        val action = root.optString("action", "LIST").uppercase()
         val path = root.optString("path", getApplication<Application>().filesDir.absolutePath)
 
-        when (action.uppercase()) {
+        when (action) {
             "LIST" -> {
                 val files = fileManager.listFiles(path)
-                val jsonArr = files.joinToString(",") {
-                    """{"name":"${it.name}","path":"${it.path}","isDir":${it.isDirectory},"size":${it.sizeBytes}}"""
+                val result = JSONArray()
+                files.forEach { file ->
+                    result.put(
+                        JSONObject()
+                            .put("name", file.name)
+                            .put("path", file.path)
+                            .put("isDir", file.isDirectory)
+                            .put("size", file.sizeBytes)
+                    )
                 }
-                signalingClient.send("FILE_LIST_RESPONSE", "[$jsonArr]", msg.sender)
+                signalingClient.send("FILE_LIST_RESPONSE", result.toString(), msg.sender)
             }
             "DELETE" -> {
-                fileManager.deleteFile(path, true)
+                val success = fileManager.deleteFile(path, confirmed = true)
+                signalingClient.send(
+                    "FILE_OPERATION_RESULT",
+                    JSONObject().put("action", "DELETE").put("path", path).put("success", success).toString(),
+                    msg.sender
+                )
                 refreshFiles()
             }
             "CREATE_FOLDER" -> {
                 val name = root.optString("name", "NewFolder")
-                fileManager.createFolder(path, name)
+                val success = fileManager.createFolder(path, name)
+                signalingClient.send(
+                    "FILE_OPERATION_RESULT",
+                    JSONObject().put("action", "CREATE_FOLDER").put("path", path).put("success", success).toString(),
+                    msg.sender
+                )
                 refreshFiles()
             }
             "READ_CHUNK" -> {
                 val offset = root.optLong("offset", 0L)
-                val len = root.optInt("length", 32768)
-                val bytes = fileManager.readFileChunk(path, offset, len)
-                val base64 = if (bytes != null) android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP) else ""
-                signalingClient.send("FILE_CHUNK_RESPONSE", """{"path":"$path","offset":$offset,"data":"$base64"}""", msg.sender)
+                val length = root.optInt("length", 32768)
+                if (offset < 0L || length !in 1..32768) {
+                    signalingClient.send(
+                        "FILE_CHUNK_RESPONSE",
+                        JSONObject().put("path", path).put("offset", offset).put("ok", false)
+                            .put("error", "Invalid file chunk range").toString(),
+                        msg.sender
+                    )
+                    return
+                }
+                val bytes = fileManager.readFileChunk(path, offset, length)
+                val response = JSONObject()
+                    .put("path", path)
+                    .put("offset", offset)
+                    .put("ok", bytes != null)
+                    .put("data", if (bytes != null) android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP) else "")
+                signalingClient.send("FILE_CHUNK_RESPONSE", response.toString(), msg.sender)
             }
             "WRITE_CHUNK" -> {
                 val base64 = root.optString("data", "")
                 val append = root.optBoolean("append", true)
-                val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
-                fileManager.writeFileChunk(path, bytes, append)
-                refreshFiles()
+                try {
+                    val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
+                    if (bytes.size > 32768) {
+                        signalingClient.send(
+                            "FILE_WRITE_ACK",
+                            JSONObject().put("path", path).put("success", false)
+                                .put("bytesWritten", 0).put("error", "Chunk exceeds 32 KB").toString(),
+                            msg.sender
+                        )
+                        return
+                    }
+                    val success = fileManager.writeFileChunk(path, bytes, append)
+                    signalingClient.send(
+                        "FILE_WRITE_ACK",
+                        JSONObject().put("path", path).put("success", success)
+                            .put("bytesWritten", if (success) bytes.size else 0).toString(),
+                        msg.sender
+                    )
+                    if (success) refreshFiles()
+                } catch (error: Exception) {
+                    signalingClient.send(
+                        "FILE_WRITE_ACK",
+                        JSONObject().put("path", path).put("success", false)
+                            .put("bytesWritten", 0).put("error", error.message ?: "Invalid upload chunk").toString(),
+                        msg.sender
+                    )
+                }
             }
         }
     }
 
-    // Role switcher
+    // Role switcher    // Role switcher
     fun setAppRole(role: AppRole) {
         _appRole.value = role
         signalingClient.setRole(role.name)
