@@ -9,6 +9,7 @@ import com.example.security.DeviceIdentity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -127,6 +128,17 @@ class ExampleRobolectricTest {
         val createdFolder = File(testDir, "TestLogs")
         assertTrue(createdFolder.isDirectory)
 
+        // Chunk offsets and sizes must be bounded before allocating or writing buffers.
+        assertNull(fileManager.readFileChunk(testFile.absolutePath, -1L, 1))
+        assertNull(fileManager.readFileChunk(testFile.absolutePath, 0L, FileManager.MAX_CHUNK_BYTES + 1))
+        assertFalse(
+            fileManager.writeFileChunk(
+                testFile.absolutePath,
+                ByteArray(FileManager.MAX_CHUNK_BYTES + 1),
+                append = true
+            )
+        )
+
         // 5. Delete file
         val deleteOk = fileManager.deleteFile(testFile.absolutePath, confirmed = true)
         assertTrue("File deletion failed", deleteOk)
@@ -172,6 +184,91 @@ class ExampleRobolectricTest {
         assertFalse(manager.markSessionAuthorized("forged-session-id"))
         assertEquals(null, manager.activeSession.value)
         assertFalse(manager.approvalInProgress.value)
+    }
+
+
+    @Test
+    fun testRejectedPairingCannotEstablishSession() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val manager = PairingManager(context)
+        manager.recordIncomingOperatorRequest(
+            controllerId = "controller-rejected",
+            operatorName = "Rejected Controller",
+            location = "Remote",
+            fingerprint = "AA:BB:CC:DD",
+            scopes = listOf("Screen Mirroring"),
+            requestId = "rejected-request"
+        )
+
+        val pending = manager.pendingRequest.value
+        assertNotNull(pending)
+        manager.rejectRequest(pending!!)
+
+        assertNull(manager.pendingRequest.value)
+        assertNull(manager.activeSession.value)
+        assertFalse(manager.approvalInProgress.value)
+        assertFalse(manager.markSessionAuthorized("late-backend-session"))
+        assertNull(manager.activeSession.value)
+    }
+
+    @Test
+    fun testDeviceSignatureVerificationFailsClosed() {
+        val generator = java.security.KeyPairGenerator.getInstance("EC")
+        generator.initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
+        val keyPair = generator.generateKeyPair()
+        val challenge = "one-time-backend-challenge".toByteArray()
+        val signer = java.security.Signature.getInstance("SHA256withECDSA").apply {
+            initSign(keyPair.private)
+            update(challenge)
+        }
+        val validSignature = java.util.Base64.getEncoder().encodeToString(signer.sign())
+        val validPublicKey = java.util.Base64.getEncoder().encodeToString(keyPair.public.encoded)
+
+        assertTrue(DeviceIdentity.verifyMessageSignature(challenge, validSignature, validPublicKey))
+        assertFalse(
+            DeviceIdentity.verifyMessageSignature(
+                "different-challenge".toByteArray(),
+                validSignature,
+                validPublicKey
+            )
+        )
+
+        // A long malformed signature previously passed the exception fallback.
+        assertFalse(
+            DeviceIdentity.verifyMessageSignature(
+                challenge,
+                "A".repeat(128),
+                java.util.Base64.getEncoder().encodeToString(byteArrayOf(1, 2, 3))
+            )
+        )
+    }
+
+    @Test
+    fun testFilePathValidationRejectsTraversalAndSiblingPrefix() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val allowedRoot = File(context.cacheDir, "allowed-root").apply { mkdirs() }
+        val allowedFile = File(allowedRoot, "nested/document.txt")
+        val siblingPrefix = File(context.cacheDir, "allowed-root-escape/secret.txt")
+        val traversal = File(allowedRoot, "../allowed-root-escape/secret.txt")
+
+        assertTrue(
+            AllowlistValidator.validateFilePath(
+                allowedFile.absolutePath,
+                listOf(allowedRoot.absolutePath)
+            ) is AllowlistValidator.ValidationResult.Valid
+        )
+        assertTrue(
+            AllowlistValidator.validateFilePath(
+                siblingPrefix.absolutePath,
+                listOf(allowedRoot.absolutePath)
+            ) is AllowlistValidator.ValidationResult.Rejected
+        )
+        assertTrue(
+            AllowlistValidator.validateFilePath(
+                traversal.path,
+                listOf(allowedRoot.absolutePath)
+            ) is AllowlistValidator.ValidationResult.Rejected
+        )
     }
 
 }

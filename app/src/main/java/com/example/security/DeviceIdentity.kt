@@ -112,9 +112,9 @@ object DeviceIdentity {
                 update(data)
             }
             verifier.verify(sigBytes)
-        } catch (e: Exception) {
-            // Basic sanity verification fallback
-            signatureBase64.length >= 32
+        } catch (_: Exception) {
+            // Cryptographic verification must fail closed. Length is not proof of a signature.
+            false
         }
     }
 }

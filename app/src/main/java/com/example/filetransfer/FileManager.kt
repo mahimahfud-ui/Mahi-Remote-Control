@@ -43,6 +43,10 @@ data class TransferProgress(
 
 class FileManager(private val context: Context) {
 
+    companion object {
+        const val MAX_CHUNK_BYTES = 32 * 1024
+    }
+
     private val timeFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
 
     private val _activeTransfers = MutableStateFlow<List<TransferProgress>>(emptyList())
@@ -146,6 +150,7 @@ class FileManager(private val context: Context) {
     }
 
     fun readFileChunk(path: String, offset: Long, length: Int): ByteArray? {
+        if (offset < 0L || length !in 1..MAX_CHUNK_BYTES) return null
         val roots = getPermittedRootFolders().map { it.absolutePath }
         if (AllowlistValidator.validateFilePath(path, roots) !is AllowlistValidator.ValidationResult.Valid) {
             return null
@@ -167,6 +172,7 @@ class FileManager(private val context: Context) {
     }
 
     fun writeFileChunk(path: String, data: ByteArray, append: Boolean): Boolean {
+        if (data.size > MAX_CHUNK_BYTES) return false
         val roots = getPermittedRootFolders().map { it.absolutePath }
         if (AllowlistValidator.validateFilePath(path, roots) !is AllowlistValidator.ValidationResult.Valid) {
             return false

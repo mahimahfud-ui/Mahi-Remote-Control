@@ -1,5 +1,7 @@
 package com.example.security
 
+import java.io.File
+
 object AllowlistValidator {
 
     sealed class ValidationResult {
@@ -65,16 +67,30 @@ object AllowlistValidator {
     }
 
     fun validateFilePath(path: String, allowedRoots: List<String>): ValidationResult {
-        if (path.contains("..")) {
-            val reason = "Directory traversal pattern '..' detected in path: $path"
+        fun reject(reason: String): ValidationResult.Rejected {
             AuditLogger.log("FILE", "ACCESS_DENIED", reason, AuditSeverity.CRITICAL)
             return ValidationResult.Rejected(reason)
         }
-        val isAllowed = allowedRoots.any { root -> path.startsWith(root) }
+
+        if (path.isBlank()) return reject("Empty file path is not permitted.")
+        if (path.split('/', '\\').any { it == ".." }) {
+            return reject("Directory traversal segment '..' detected in path: $path")
+        }
+
+        val canonicalPath = try {
+            File(path).canonicalFile.toPath().normalize()
+        } catch (_: Exception) {
+            return reject("Could not canonicalize requested file path: $path")
+        }
+
+        val canonicalRoots = allowedRoots.mapNotNull { root ->
+            runCatching { File(root).canonicalFile.toPath().normalize() }.getOrNull()
+        }
+        val isAllowed = canonicalRoots.any { root ->
+            canonicalPath == root || canonicalPath.startsWith(root)
+        }
         if (!isAllowed) {
-            val reason = "Attempted access outside permitted scoped directory: $path"
-            AuditLogger.log("FILE", "ACCESS_DENIED", reason, AuditSeverity.CRITICAL)
-            return ValidationResult.Rejected(reason)
+            return reject("Attempted access outside permitted scoped directory: $path")
         }
         return ValidationResult.Valid
     }
