@@ -44,21 +44,21 @@ async function postJson(baseUrl, route, body, headers = {}) {
   return { response, json };
 }
 
-function canonicalProof(challenge) {
+function canonicalProof(challenge, deviceId) {
   return [
     'MAHI-REMOTE-DEVICE-PROOF',
     '1',
     challenge.purpose,
     challenge.challengeId,
-    challenge.deviceId,
+    deviceId,
     challenge.fingerprint,
     challenge.nonce,
     String(challenge.expiresAtMs),
   ].join('\n');
 }
 
-function signProof(challenge, privateKey) {
-  return crypto.sign('sha256', Buffer.from(canonicalProof(challenge), 'utf8'), privateKey).toString('base64');
+function signProof(challenge, deviceId, privateKey) {
+  return crypto.sign('sha256', Buffer.from(canonicalProof(challenge, deviceId), 'utf8'), privateKey).toString('base64');
 }
 
 function waitForMessage(ws, predicate, description, timeoutMs = 6000) {
@@ -252,7 +252,7 @@ async function runTests() {
 
     const enrollmentProof = await postJson(baseUrl, '/api/v1/devices/enrollment/verify', {
       challengeId: enrollment.json.challengeId,
-      signature: signProof(enrollment.json, keys.privateKey),
+      signature: signProof(enrollment.json, deviceId, keys.privateKey),
     });
     assert.equal(enrollmentProof.response.status, 201);
     assert.equal(enrollmentProof.json.deviceId, deviceId);
@@ -266,8 +266,9 @@ async function runTests() {
     assert.equal(replay.response.status, 409);
     assert.equal(replay.json.error.code, 'CHALLENGE_REPLAYED');
 
+    const expiredDeviceId = 'MAHI-EXPIRED-' + crypto.randomUUID().slice(0, 8);
     const expiredEnrollment = await postJson(baseUrl, '/api/v1/devices/enrollment/challenges', {
-      deviceId: 'MAHI-EXPIRED-' + crypto.randomUUID().slice(0, 8),
+      deviceId: expiredDeviceId,
       deviceName: 'Expired Challenge Device',
       publicKey: publicKeyBody,
     });
@@ -277,7 +278,7 @@ async function runTests() {
     );
     const expiredProof = await postJson(baseUrl, '/api/v1/devices/enrollment/verify', {
       challengeId: expiredEnrollment.json.challengeId,
-      signature: signProof(expiredEnrollment.json, keys.privateKey),
+      signature: signProof(expiredEnrollment.json, expiredDeviceId, keys.privateKey),
     });
     assert.equal(expiredProof.response.status, 409);
     assert.equal(expiredProof.json.error.code, 'CHALLENGE_EXPIRED');
@@ -288,7 +289,7 @@ async function runTests() {
     assert.equal(authChallenge.json.purpose, 'AUTHENTICATE');
     const deviceLogin = await postJson(baseUrl, '/api/v1/devices/auth/verify', {
       challengeId: authChallenge.json.challengeId,
-      signature: signProof(authChallenge.json, keys.privateKey),
+      signature: signProof(authChallenge.json, deviceId, keys.privateKey),
     });
     assert.equal(deviceLogin.response.status, 200);
     assert.ok(deviceLogin.json.deviceAccessToken);
