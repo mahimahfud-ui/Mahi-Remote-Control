@@ -215,14 +215,21 @@ class FileManager(private val context: Context) {
         isUpload: Boolean,
         status: String
     ): TransferProgress {
-        val percent = if (totalBytes > 0) ((transferredBytes.toDouble() / totalBytes) * 100).toInt() else 100
+        val safeTotal = totalBytes.coerceAtLeast(0L)
+        val safeTransferred = transferredBytes.coerceAtLeast(0L)
+        val percent = when {
+            status == "COMPLETED" -> 100
+            safeTotal <= 0L -> 0
+            else -> ((safeTransferred.toDouble() / safeTotal) * 100).toInt().coerceIn(0, 100)
+        }
         val progress = TransferProgress(
             transferId = id,
             fileName = fileName,
-            totalBytes = totalBytes,
-            transferredBytes = transferredBytes,
+            totalBytes = safeTotal,
+            transferredBytes = safeTransferred,
             percent = percent,
-            speedKbps = 1024,
+            // Speed is unknown until actual elapsed-time measurements are supplied.
+            speedKbps = 0,
             isUpload = isUpload,
             status = status
         )
