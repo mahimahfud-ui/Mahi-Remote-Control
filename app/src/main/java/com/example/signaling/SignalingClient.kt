@@ -296,15 +296,8 @@ class SignalingClient(
                 }
                 AuditLogger.log("SIGNALING", "CONNECTED", "Protocol-v1 WSS transport established.", AuditSeverity.INFO)
 
-                if (isReceiverRole()) {
-                    send(
-                        "REGISTER",
-                        org.json.JSONObject()
-                            .put("deviceId", deviceIdentity.deviceId)
-                            .put("model", deviceIdentity.deviceName)
-                            .toString()
-                    )
-                }
+                // The server sends REGISTER_ACK after validating the device bearer token.
+                // Do not send a second REGISTER and trigger duplicate pairing-code registration.
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
