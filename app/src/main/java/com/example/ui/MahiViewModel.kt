@@ -647,7 +647,8 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                     .put("offset", offset)
                     .put("ok", bytes != null && bytes.size == length)
                     .put("data", if (bytes != null) android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP) else "")
-                    .put("fileSize", File(path).takeIf { it.isFile }?.length() ?: -1L)
+                    // Do not disclose metadata for invalid or out-of-scope file requests.
+                    .put("fileSize", if (bytes != null) File(path).takeIf { it.isFile }?.length() ?: -1L else -1L)
                 if (!valid) response.put("error", "Invalid file chunk request.")
                 signalingClient.send("FILE_CHUNK_RESPONSE", response.toString(), msg.sender)
             }
