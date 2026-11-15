@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material.icons.filled.VolumeDown
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -63,6 +64,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -512,6 +514,7 @@ private fun NavActionItem(
 @Composable
 private fun RemoteFilesPane(viewModel: MahiViewModel) {
     val remoteFiles by viewModel.remoteFileList.collectAsState()
+    var pendingDelete by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     Column(
         modifier = Modifier
@@ -595,16 +598,54 @@ private fun RemoteFilesPane(viewModel: MahiViewModel) {
                                     fontSize = 11.sp
                                 )
                             }
-                            IconButton(
-                                onClick = { viewModel.deleteRemoteFile(file.path) }
-                            ) {
-                                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = ErrorCoral.copy(alpha = 0.8f))
+                            if (!file.isDirectory) {
+                                IconButton(
+                                    onClick = { pendingDelete = file.path to file.name }
+                                ) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = ErrorCoral.copy(alpha = 0.8f))
+                                }
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    pendingDelete?.let { (path, name) ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            containerColor = DarkSurface,
+            title = {
+                Text("Confirm remote deletion", color = TextPrimary, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Text(
+                    "Permanently delete '$name' from the receiver phone? This cannot be undone.",
+                    color = TextSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deleteRemoteFile(path)
+                        pendingDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ErrorCoral,
+                        contentColor = DarkCharcoalBg
+                    ),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) {
+                    Text("Cancel", color = TextSecondary)
+                }
+            }
+        )
     }
 }
 
