@@ -606,7 +606,7 @@ export class DeviceService {
        LEFT JOIN devices d ON d.device_id = p.participant_id AND p.participant_type = 'DEVICE'
        WHERE s.session_id = $1 AND s.status = 'ACTIVE' AND s.expires_at > NOW()
          AND p.participant_id = $2 AND p.fingerprint = $3
-         AND (p.participant_type <> 'DEVICE' OR (d.is_revoked = FALSE AND d.key_version IS NOT NULL))`,
+         AND (p.participant_type <> 'DEVICE' OR (d.is_revoked = FALSE AND d.fingerprint = p.fingerprint))`,
       [sessionId, entityId, fingerprint]
     );
     return Boolean(result.rowCount);
