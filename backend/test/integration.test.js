@@ -685,7 +685,7 @@ async function runTests() {
 
     const androidRevocationNotice = receiver.next('SESSION_ENDED');
     const androidSelfRevoke = await post(
-      '/devices/' + androidControllerId + '/revoke',
+      '/api/v1/devices/' + androidControllerId + '/revoke',
       {},
       androidControllerEnrollment.payload.deviceAccessToken
     );
