@@ -540,6 +540,25 @@ async function runTests() {
     await Promise.all([endedReceiver, endedController]);
     assert.equal(await DeviceService.isSessionParticipant(receiverSession.sessionId, deviceId, enrollment.json.fingerprint), false);
 
+    const revokeResponse = await postJson(
+      baseUrl,
+      '/api/v1/devices/' + encodeURIComponent(deviceId) + '/revoke',
+      {},
+      { Authorization: 'Bearer ' + deviceToken }
+    );
+    assert.equal(revokeResponse.response.status, 200);
+    assert.equal(revokeResponse.json.success, true);
+    const revokedRecord = await DeviceService.getDevice(deviceId);
+    assert.equal(revokedRecord.isRevoked, true);
+    const revokedAgain = await postJson(
+      baseUrl,
+      '/api/v1/devices/' + encodeURIComponent(deviceId) + '/revoke',
+      {},
+      { Authorization: 'Bearer ' + deviceToken }
+    );
+    assert.equal(revokedAgain.response.status, 403);
+    console.log('✓ Device self-revocation invalidates tokens, pairing codes, presence and active sessions');
+
     // Validate durable device identity survives closing and reopening the pool.
     await closeWebSocket(controller);
     await closeWebSocket(receiver);
@@ -569,6 +588,7 @@ async function runTests() {
     assert.ok(persisted);
     assert.equal(persisted.deviceId, persistedDeviceId);
     assert.equal(persisted.fingerprint, enrollment.json.fingerprint);
+    assert.equal(persisted.isRevoked, true);
     await Database.close();
     console.log('✓ Device identity persists across backend database-pool restart');
 
