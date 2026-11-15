@@ -269,7 +269,7 @@ apiRouter.get('/turn-credentials', asyncRoute(async (req, res) => {
   const auth = token ? AuthService.verifySessionToken(token) : null;
   if (
     !auth?.sessionId ||
-    !await DeviceService.isSessionParticipant(auth.sessionId, auth.entityId, auth.fingerprint)
+    !await DeviceService.isSessionParticipant(auth.sessionId, auth.entityId, auth.fingerprint, auth.entityType)
   ) {
     return errorResponse(res, 401, 'SESSION_REVOKED', 'An active approved session is required for TURN credentials.', id);
   }
@@ -332,7 +332,7 @@ apiRouter.post('/sessions/:id/terminate', asyncRoute(async (req, res) => {
   if (
     !auth?.sessionId ||
     auth.sessionId !== req.params.id ||
-    !await DeviceService.isSessionParticipant(req.params.id, auth.entityId, auth.fingerprint)
+    !await DeviceService.isSessionParticipant(req.params.id, auth.entityId, auth.fingerprint, auth.entityType)
   ) {
     return errorResponse(res, 401, 'NOT_SESSION_PARTICIPANT', 'A valid participant token for this session is required.', id);
   }
