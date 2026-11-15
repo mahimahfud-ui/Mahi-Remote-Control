@@ -327,7 +327,12 @@ export class DeviceIdentityService {
     authenticatedDeviceId: string,
     authenticatedFingerprint: string,
     authenticatedKeyVersion: number
-  ): Promise<{ deviceId: string; fingerprint: string; keyVersion: number }> {
+  ): Promise<{
+    deviceId: string;
+    fingerprint: string;
+    keyVersion: number;
+    revokedSessions: Array<{ sessionId: string; participantId: string }>;
+  }> {
     return Database.transaction(async (client) => {
       const row = await this.loadChallenge(client, challengeId, 'ROTATE');
       if (row.device_id !== authenticatedDeviceId ||
@@ -351,6 +356,15 @@ export class DeviceIdentityService {
         throw new DeviceServiceError('INVALID_SIGNATURE', 'Both old and replacement device keys must sign the rotation challenge.');
       }
 
+      const activeSessions = await client.query(
+        `SELECT s.session_id::text AS session_id, p.participant_id
+         FROM support_sessions s
+         JOIN session_participants p ON p.session_id = s.session_id
+         WHERE (s.device_id = $1 OR s.controller_id = $1)
+           AND s.status = 'ACTIVE' AND s.expires_at > NOW()`,
+        [row.device_id]
+      );
+
       await client.query('UPDATE device_challenges SET consumed_at = NOW() WHERE challenge_id = $1', [challengeId]);
       const updated = await client.query(
         `UPDATE devices SET public_key = $2, fingerprint = $3, key_version = key_version + 1,
@@ -362,7 +376,7 @@ export class DeviceIdentityService {
       if (!updated.rowCount) throw new DeviceServiceError('DEVICE_KEY_CONFLICT', 'Device key was concurrently changed.');
       await client.query(
         `UPDATE support_sessions SET status = 'REVOKED', ended_at = NOW(), end_reason = 'Device key rotated'
-         WHERE device_id = $1 AND status = 'ACTIVE'`,
+         WHERE (device_id = $1 OR controller_id = $1) AND status = 'ACTIVE'`,
         [row.device_id]
       );
       await client.query(
@@ -374,6 +388,10 @@ export class DeviceIdentityService {
         deviceId: row.device_id,
         fingerprint: row.fingerprint,
         keyVersion: Number(updated.rows[0].key_version),
+        revokedSessions: activeSessions.rows.map((item) => ({
+          sessionId: item.session_id,
+          participantId: item.participant_id,
+        })),
       };
     });
   }
