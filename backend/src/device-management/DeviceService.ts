@@ -69,7 +69,7 @@ export class DeviceService {
     if (!pepper || Buffer.byteLength(pepper, 'utf8') < 32 || /replace|example|change[-_ ]?me/i.test(pepper)) {
       throw new Error('PAIRING_CODE_PEPPER must be configured with at least 32 bytes.');
     }
-    return crypto.createHmac('sha256', pepper).update(`${deviceId}:v1:${code}`).digest('hex');
+    return crypto.createHmac('sha256', pepper).update(`mahi-remote:v1:${code}`).digest('hex');
   }
 
   public static async insertEnrolledDevice(
@@ -257,24 +257,22 @@ export class DeviceService {
     }
 
     return Database.transaction(async (client) => {
-      // HMAC search across active code rows avoids persisting or indexing plaintext codes.
+      // The peppered HMAC permits an indexed lookup without persisting or scanning plaintext codes.
+      const codeHash = this.pairingCodeHash('', normalizedCode);
       const activeCodes = await client.query(
-        `SELECT p.id::text AS code_id, p.device_id, d.device_name,
+        `SELECT p.id::text AS code_id, p.code_hash, p.device_id, d.device_name,
                 (EXTRACT(EPOCH FROM p.expires_at) * 1000)::bigint AS expires_at_ms
          FROM pairing_codes p
          JOIN devices d ON d.device_id = p.device_id
-         WHERE p.consumed_at IS NULL AND p.expires_at > NOW() AND d.is_revoked = FALSE
-         FOR UPDATE OF p, d`
+         WHERE p.code_hash = $1 AND p.consumed_at IS NULL
+           AND p.expires_at > NOW() AND d.is_revoked = FALSE
+         FOR UPDATE OF p, d`,
+        [codeHash]
       );
-      let matched: any = null;
-      for (const row of activeCodes.rows) {
-        if (this.pairingCodeHash(row.device_id, normalizedCode) === row.code_hash) {
-          matched = row;
-          break;
-        }
+      const matched = activeCodes.rows[0];
+      if (!matched || !crypto.timingSafeEqual(Buffer.from(matched.code_hash), Buffer.from(codeHash))) {
+        throw new DeviceServiceError('PAIRING_CODE_INVALID', 'Invalid or expired pairing code.');
       }
-      // code_hash is not selected into the public record, but is needed for an exact constant-time comparison.
-      if (!matched) throw new DeviceServiceError('PAIRING_CODE_INVALID', 'Invalid or expired pairing code.');
 
       const presence = await client.query(
         'SELECT 1 FROM device_presence WHERE device_id = $1 AND expires_at > NOW() LIMIT 1',
