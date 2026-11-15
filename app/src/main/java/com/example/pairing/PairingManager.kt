@@ -54,7 +54,8 @@ class PairingManager(
             qrPayloadJson = qrPayload
         )
         _currentPairingCode.value = data
-        AuditLogger.log("PAIRING", "CODE_GENERATED", "Generated 6-digit code: $formattedCode (expires in 5m)", AuditSeverity.INFO)
+        // Pairing codes are temporary bearer-like secrets; never write their value to logs.
+        AuditLogger.log("PAIRING", "CODE_GENERATED", "Generated a six-digit pairing code (expires in 5m).", AuditSeverity.INFO)
         return data
     }
 
@@ -88,7 +89,6 @@ class PairingManager(
         return JSONObject()
             .put("deviceId", identity.deviceId)
             .put("deviceName", identity.deviceName)
-            .put("fingerprint", identity.fingerprint)
             .put("pairingCode", code)
             .put("expiresAt", expiresAt)
             .put("v", 1)
