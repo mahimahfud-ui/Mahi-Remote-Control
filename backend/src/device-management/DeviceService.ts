@@ -1,5 +1,3 @@
-import { Pool } from 'pg';
-
 export interface RegisteredDevice {
   deviceId: string;
   deviceName: string;
@@ -17,27 +15,16 @@ export interface PairingCodeRecord {
 export class DeviceService {
   private static devices = new Map<string, RegisteredDevice>();
   private static pairingCodes = new Map<string, PairingCodeRecord>();
-  private static activeSessions = new Map<string, { deviceId: string; operatorFingerprint: string; startedAt: number }>();
-  
-  private static dbPool: Pool | null = null;
+  private static activeSessions = new Map<string, {
+    deviceId: string;
+    controllerId: string;
+    operatorFingerprint: string;
+    receiverFingerprint: string;
+    startedAt: number;
+    expiresAt: number;
+  }>();
 
-  static {
-    if (process.env.DATABASE_URL) {
-      try {
-        this.dbPool = new Pool({
-          connectionString: process.env.DATABASE_URL,
-          ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
-          max: 10,
-          idleTimeoutMillis: 30000,
-        });
-        console.log('[DeviceService] PostgreSQL pool initialized successfully');
-      } catch (e) {
-        console.warn('[DeviceService] PostgreSQL pool init failed, falling back to in-memory adapter:', e);
-      }
-    }
-  }
-
-  public static async registerDevice(deviceId: string, deviceName: string, fingerprint: string): Promise<RegisteredDevice> {
+  public static registerDevice(deviceId: string, deviceName: string, fingerprint: string): RegisteredDevice {
     const dev: RegisteredDevice = {
       deviceId,
       deviceName,
@@ -46,55 +33,46 @@ export class DeviceService {
       lastSeen: Date.now(),
     };
     this.devices.set(deviceId, dev);
-
-    if (this.dbPool) {
-      try {
-        await this.dbPool.query(
-          `INSERT INTO devices (device_id, device_name, fingerprint, public_key, android_version, manufacturer, model, is_online, last_seen_at)
-           VALUES ($1, $2, $3, $4, '14.0', 'Android', 'Physical Device', true, NOW())
-           ON CONFLICT (device_id) DO UPDATE SET is_online = true, last_seen_at = NOW()`,
-          [deviceId, deviceName, fingerprint, fingerprint]
-        );
-      } catch (e) {
-        console.warn('[DeviceService] DB error in registerDevice:', e);
-      }
-    }
-
     return dev;
   }
 
-  public static async storePairingCode(deviceId: string, code: string, expiresAt: number): Promise<void> {
-    this.pairingCodes.set(code, { code, deviceId, expiresAt });
-
-    if (this.dbPool) {
-      try {
-        await this.dbPool.query(
-          `INSERT INTO pairing_codes (code, expires_at, is_consumed)
-           VALUES ($1, TO_TIMESTAMP($2 / 1000.0), false)`,
-          [code, expiresAt]
-        );
-      } catch (e) {
-        console.warn('[DeviceService] DB error in storePairingCode:', e);
-      }
+  public static storePairingCode(deviceId: string, code: string, expiresAt: number): void {
+    const normalized = String(code || '').replace(/[^0-9]/g, '');
+    if (!deviceId || !/^\d{6}$/.test(normalized) || !Number.isFinite(expiresAt)) {
+      throw new Error('Invalid pairing-code registration.');
     }
+    // One currently valid code per receiver. A refresh invalidates the previous code.
+    for (const [existingCode, record] of this.pairingCodes.entries()) {
+      if (record.deviceId === deviceId) this.pairingCodes.delete(existingCode);
+    }
+    this.pairingCodes.set(normalized, {
+      code: normalized,
+      deviceId,
+      expiresAt: Math.min(expiresAt, Date.now() + 5 * 60 * 1000),
+    });
+  }
+
+  /**
+   * Read a still-valid code without consuming it. Pairing requests must remain
+   * pending until the receiver explicitly approves them.
+   */
+  public static getPairingCode(code: string): PairingCodeRecord | null {
+    const normalized = String(code || '').replace(/[^0-9]/g, '');
+    if (!/^\d{6}$/.test(normalized)) return null;
+    const record = this.pairingCodes.get(normalized);
+    if (!record) return null;
+    if (Date.now() >= record.expiresAt) {
+      this.pairingCodes.delete(normalized);
+      return null;
+    }
+    return { ...record };
   }
 
   public static validateAndConsumePairingCode(code: string): string | null {
-    const record = this.pairingCodes.get(code);
+    const normalized = String(code || '').replace(/[^0-9]/g, '');
+    const record = this.getPairingCode(normalized);
     if (!record) return null;
-    if (Date.now() > record.expiresAt) {
-      this.pairingCodes.delete(code);
-      return null;
-    }
-    this.pairingCodes.delete(code);
-
-    if (this.dbPool) {
-      this.dbPool.query(
-        `UPDATE pairing_codes SET is_consumed = true WHERE code = $1`,
-        [code]
-      ).catch(e => console.warn('[DeviceService] DB error in validateAndConsumePairingCode:', e));
-    }
-
+    this.pairingCodes.delete(normalized);
     return record.deviceId;
   }
 
@@ -106,24 +84,67 @@ export class DeviceService {
     return Array.from(this.devices.values());
   }
 
-  public static startSession(sessionId: string, deviceId: string, operatorFingerprint: string): void {
-    this.activeSessions.set(sessionId, { deviceId, operatorFingerprint, startedAt: Date.now() });
-    if (this.dbPool) {
-      this.dbPool.query(
-        `INSERT INTO support_sessions (session_id, controller_fingerprint, operator_name, status)
-         VALUES ($1, $2, 'Mahi Operator', 'ACTIVE')`,
-        [sessionId, operatorFingerprint]
-      ).catch(e => console.warn('[DeviceService] DB error in startSession:', e));
+  public static startSession(
+    sessionId: string,
+    deviceId: string,
+    operatorFingerprint: string,
+    controllerId: string,
+    receiverFingerprint: string
+  ): void {
+    this.activeSessions.set(sessionId, {
+      deviceId,
+      controllerId,
+      operatorFingerprint,
+      receiverFingerprint,
+      startedAt: Date.now(),
+      expiresAt: Date.now() + 30 * 60 * 1000,
+    });
+  }
+
+  public static getActiveSession(sessionId: string): {
+    deviceId: string;
+    controllerId: string;
+    operatorFingerprint: string;
+    receiverFingerprint: string;
+    startedAt: number;
+  } | undefined {
+    const session = this.activeSessions.get(sessionId);
+    if (session && Date.now() >= session.expiresAt) {
+      // Keep the expired record until SignalingHub's expiry timer can notify both
+      // peers and close their media sessions.
+      return undefined;
     }
+    return session;
+  }
+
+  public static isSessionParticipant(sessionId: string, entityId: string, fingerprint: string): boolean {
+    const session = this.getActiveSession(sessionId);
+    if (!session) return false;
+    return (
+      (entityId === session.deviceId && fingerprint === session.receiverFingerprint) ||
+      (entityId === session.controllerId && fingerprint === session.operatorFingerprint)
+    );
+  }
+
+  public static getSessionPeer(sessionId: string, entityId: string): string | null {
+    const session = this.getActiveSession(sessionId);
+    if (!session) return null;
+    if (entityId === session.deviceId) return session.controllerId;
+    if (entityId === session.controllerId) return session.deviceId;
+    return null;
+  }
+
+  public static hasActiveSessionForDevice(deviceId: string): boolean {
+    for (const session of this.activeSessions.values()) {
+      // Expired sessions are ignored here but retained for the signaling layer's
+      // expiry callback, which sends SESSION_ENDED to both peers.
+      if (Date.now() >= session.expiresAt) continue;
+      if (session.deviceId === deviceId) return true;
+    }
+    return false;
   }
 
   public static endSession(sessionId: string): boolean {
-    if (this.dbPool) {
-      this.dbPool.query(
-        `UPDATE support_sessions SET status = 'TERMINATED', ended_at = NOW() WHERE session_id = $1`,
-        [sessionId]
-      ).catch(e => console.warn('[DeviceService] DB error in endSession:', e));
-    }
     return this.activeSessions.delete(sessionId);
   }
 }

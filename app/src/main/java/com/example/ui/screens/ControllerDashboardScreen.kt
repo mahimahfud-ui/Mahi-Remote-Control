@@ -61,7 +61,9 @@ import androidx.compose.ui.unit.sp
 import com.example.controller.AppRole
 import com.example.controller.KnownTargetDevice
 import com.example.ui.MahiViewModel
-import com.example.ui.components.ControllerQrInputDialog
+import com.google.mlkit.vision.barcode.common.Barcode
+import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import com.example.ui.theme.CyanAccent
 import com.example.ui.theme.DarkCharcoalBg
 import com.example.ui.theme.DarkSurface
@@ -85,7 +87,6 @@ fun ControllerDashboardScreen(viewModel: MahiViewModel) {
     val serverUrl by viewModel.signalingClient.serverUrl.collectAsState()
 
     var codeInput by remember { mutableStateOf("") }
-    var showQrDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -232,7 +233,28 @@ fun ControllerDashboardScreen(viewModel: MahiViewModel) {
                     }
 
                     OutlinedButton(
-                        onClick = { showQrDialog = true },
+                        onClick = {
+                            val scannerOptions = GmsBarcodeScannerOptions.Builder()
+                                .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
+                                .enableAutoZoom()
+                                .build()
+                            GmsBarcodeScanning.getClient(context, scannerOptions)
+                                .startScan()
+                                .addOnSuccessListener { barcode ->
+                                    val payload = barcode.rawValue
+                                    if (!payload.isNullOrBlank()) {
+                                        viewModel.connectToTargetWithQr(payload)
+                                    } else {
+                                        Toast.makeText(context, "The QR code did not contain a pairing payload.", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                                .addOnCanceledListener {
+                                    // The user closed the system scanner; keep the pairing screen unchanged.
+                                }
+                                .addOnFailureListener { error ->
+                                    Toast.makeText(context, "QR scanner unavailable: ${error.message}", Toast.LENGTH_LONG).show()
+                                }
+                        },
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
                         border = ButtonDefaults.outlinedButtonBorder.copy(
                             brush = androidx.compose.ui.graphics.SolidColor(DarkSurfaceBorder)
@@ -314,15 +336,6 @@ fun ControllerDashboardScreen(viewModel: MahiViewModel) {
         }
     }
 
-    if (showQrDialog) {
-        ControllerQrInputDialog(
-            onDismiss = { showQrDialog = false },
-            onQrPayloadSubmitted = { payload ->
-                showQrDialog = false
-                viewModel.connectToTargetWithQr(payload)
-            }
-        )
-    }
 }
 
 @Composable
