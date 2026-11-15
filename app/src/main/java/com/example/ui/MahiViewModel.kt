@@ -113,6 +113,9 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _remoteFileList = MutableStateFlow<List<FileEntry>>(emptyList())
     val remoteFileList: StateFlow<List<FileEntry>> = _remoteFileList.asStateFlow()
+    private val remoteBrowsingHistory = mutableListOf<String>()
+    private val _remoteBrowsingPath = MutableStateFlow("")
+    val remoteBrowsingPath: StateFlow<String> = _remoteBrowsingPath.asStateFlow()
 
     private val _remoteAppList = MutableStateFlow<List<AppItem>>(emptyList())
     val remoteAppList: StateFlow<List<AppItem>> = _remoteAppList.asStateFlow()
@@ -489,11 +492,15 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     private fun handleFileCommand(msg: SignalingMessage) {
         val root = JSONObject(msg.payload)
         val action = root.optString("action", "LIST").uppercase()
-        val path = root.optString("path", getApplication<Application>().filesDir.absolutePath)
+        val path = root.optString("path", "")
 
         when (action) {
             "LIST" -> {
-                val files = fileManager.listFiles(path)
+                val files = if (path.isBlank()) {
+                    fileManager.listPermittedRootFolders()
+                } else {
+                    fileManager.listFiles(path)
+                }
                 val result = JSONArray()
                 files.forEach { file ->
                     result.put(
@@ -778,15 +785,33 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         signalingClient.send("INPUT_EVENT", payload, session.targetDeviceId)
     }
 
-    fun fetchRemoteFiles(path: String = "") {
+    fun fetchRemoteFiles(path: String = _remoteBrowsingPath.value) {
         val session = _activeControllerSession.value ?: return
-        val payload = """{"action":"LIST","path":"$path"}"""
+        val payload = JSONObject().put("action", "LIST").put("path", path).toString()
         signalingClient.send("FILE_COMMAND", payload, session.targetDeviceId)
+    }
+
+    fun navigateRemoteFolder(path: String) {
+        if (path.isBlank() || path == _remoteBrowsingPath.value) return
+        remoteBrowsingHistory.add(_remoteBrowsingPath.value)
+        _remoteBrowsingPath.value = path
+        fetchRemoteFiles(path)
+    }
+
+    fun navigateRemoteParent() {
+        if (remoteBrowsingHistory.isEmpty()) return
+        _remoteBrowsingPath.value = remoteBrowsingHistory.removeAt(remoteBrowsingHistory.lastIndex)
+        fetchRemoteFiles(_remoteBrowsingPath.value)
+    }
+
+    private fun resetRemoteNavigation() {
+        remoteBrowsingHistory.clear()
+        _remoteBrowsingPath.value = ""
     }
 
     fun deleteRemoteFile(path: String) {
         val session = _activeControllerSession.value ?: return
-        val payload = """{"action":"DELETE","path":"$path"}"""
+        val payload = JSONObject().put("action", "DELETE").put("path", path).toString()
         signalingClient.send("FILE_COMMAND", payload, session.targetDeviceId)
         fetchRemoteFiles()
     }

@@ -132,6 +132,17 @@ class ExampleRobolectricTest {
     }
 
 
+
+    @Test
+    fun testPermittedRootFoldersAreBrowsableDirectories() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val fileManager = FileManager(context)
+
+        val roots = fileManager.listPermittedRootFolders()
+        assertTrue(roots.isNotEmpty())
+        assertTrue(roots.all { it.isDirectory && it.path.isNotBlank() && it.mimeType == "inode/directory" })
+    }
+
     @Test
     fun testTransferProgressDoesNotFabricateSpeedOrCompletion() {
         val context = ApplicationProvider.getApplicationContext<Context>()

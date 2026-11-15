@@ -69,6 +69,21 @@ class FileManager(private val context: Context) {
         return roots.filter { it.canRead() }
     }
 
+
+    fun listPermittedRootFolders(): List<FileEntry> {
+        return getPermittedRootFolders().map { root ->
+            FileEntry(
+                name = root.name.ifBlank { root.absolutePath },
+                path = root.absolutePath,
+                sizeBytes = 0L,
+                formattedSize = "--",
+                isDirectory = true,
+                lastModified = timeFormat.format(Date(root.lastModified())),
+                mimeType = "inode/directory"
+            )
+        }
+    }
+
     fun listFiles(dirPath: String): List<FileEntry> {
         val dir = File(dirPath)
         val roots = getPermittedRootFolders().map { it.absolutePath }

@@ -514,6 +514,7 @@ private fun NavActionItem(
 @Composable
 private fun RemoteFilesPane(viewModel: MahiViewModel) {
     val remoteFiles by viewModel.remoteFileList.collectAsState()
+    val remotePath by viewModel.remoteBrowsingPath.collectAsState()
     var pendingDelete by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     Column(
@@ -540,6 +541,28 @@ private fun RemoteFilesPane(viewModel: MahiViewModel) {
             ) {
                 Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = CyanAccent)
             }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(
+                enabled = remotePath.isNotBlank(),
+                onClick = { viewModel.navigateRemoteParent() }
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Parent folder",
+                    tint = if (remotePath.isNotBlank()) CyanAccent else TextMuted
+                )
+            }
+            Text(
+                text = remotePath.ifBlank { "Permitted storage roots" },
+                color = TextSecondary,
+                fontSize = 11.sp,
+                maxLines = 1
+            )
         }
 
         if (remoteFiles.isEmpty()) {
@@ -575,7 +598,12 @@ private fun RemoteFilesPane(viewModel: MahiViewModel) {
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Row(
-                            modifier = Modifier.padding(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = file.isDirectory) {
+                                    viewModel.navigateRemoteFolder(file.path)
+                                }
+                                .padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
