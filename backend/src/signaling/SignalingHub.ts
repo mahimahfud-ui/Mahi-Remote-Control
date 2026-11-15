@@ -527,7 +527,7 @@ export class SignalingHub {
     }
     const controllerToken = AuthService.generateSessionToken({
       entityId: result.session.controllerId,
-      entityType: 'OPERATOR',
+      entityType: result.session.controllerEntityType,
       fingerprint: result.session.operatorFingerprint,
       sessionId,
     }, '30m');
