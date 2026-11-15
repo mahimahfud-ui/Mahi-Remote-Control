@@ -718,8 +718,9 @@ export class SignalingHub {
       return;
     }
 
+    const { sessionToken: _sessionToken, ...forwardedMessage } = message;
     await this.sendToEntity(authorization.peerId, {
-      ...message,
+      ...forwardedMessage,
       sender: sender.id,
       senderId: sender.id,
       sessionId: authorization.sessionId,
