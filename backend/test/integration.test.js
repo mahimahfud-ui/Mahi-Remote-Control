@@ -404,6 +404,21 @@ async function runTests() {
     });
     assert.equal((await forbiddenAppAction).errorCode, 'INVALID_REQUEST');
 
+    console.log('[TEST] Session termination revokes participant access');
+    const terminate = await fetch(BASE_URL + '/api/v1/sessions/' + browserApproval.sessionId + '/terminate', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + browserApproval.sessionToken }
+    });
+    assert.equal(terminate.status, 200);
+    const terminated = await terminate.json();
+    assert.equal(terminated.success, true);
+
+    const revokedSession = await fetch(BASE_URL + '/api/v1/turn-credentials', {
+      headers: { Authorization: 'Bearer ' + browserApproval.sessionToken }
+    });
+    assert.equal(revokedSession.status, 401);
+
+
     console.log('[TEST] Device key rotation requires both old and new key signatures');
     const newPair = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
     const newPublicKey = newPair.publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
@@ -439,19 +454,6 @@ async function runTests() {
     assert.equal(await oldTokenClose, 1008);
     await closeSocket(oldTokenWs);
 
-    console.log('[TEST] Session termination revokes participant access');
-    const terminate = await fetch(BASE_URL + '/api/v1/sessions/' + browserApproval.sessionId + '/terminate', {
-      method: 'POST',
-      headers: { Authorization: 'Bearer ' + browserApproval.sessionToken }
-    });
-    assert.equal(terminate.status, 200);
-    const terminated = await terminate.json();
-    assert.equal(terminated.success, true);
-
-    const revokedSession = await fetch(BASE_URL + '/api/v1/turn-credentials', {
-      headers: { Authorization: 'Bearer ' + browserApproval.sessionToken }
-    });
-    assert.equal(revokedSession.status, 401);
 
     console.log('[TEST] Passed: protocol, PostgreSQL persistence, pairing, approval, session auth, TURN, scope checks, limits and key rotation.');
   } finally {
