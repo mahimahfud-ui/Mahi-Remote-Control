@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS device_challenges (
   challenge_id UUID PRIMARY KEY,
   purpose VARCHAR(16) NOT NULL CHECK (purpose IN ('ENROLL', 'AUTHENTICATE', 'ROTATE')),
   device_id TEXT NOT NULL,
+  device_name VARCHAR(128) NOT NULL,
   fingerprint VARCHAR(72) NOT NULL,
   public_key TEXT NOT NULL,
   old_fingerprint VARCHAR(72),
