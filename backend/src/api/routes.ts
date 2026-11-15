@@ -213,6 +213,18 @@ apiRouter.post('/devices/key-rotation/verify', asyncRoute(async (req, res) => {
     device.fingerprint,
     device.keyVersion
   );
+  const otherParticipants = rotated.revokedSessions.filter(
+    (participant) => participant.participantId !== device.deviceId
+  );
+  await Promise.all(otherParticipants.map(async (participant) => {
+    if (!await DeviceService.isEntityOnline(participant.participantId)) return;
+    await Database.publishSignal(participant.participantId, {
+      type: 'SESSION_ENDED',
+      sessionId: participant.sessionId,
+      reason: 'A session participant rotated its device identity.',
+      protocolVersion: 1,
+    });
+  }));
   const token = AuthService.generateDeviceToken({
     deviceId: rotated.deviceId,
     fingerprint: rotated.fingerprint,
