@@ -52,8 +52,10 @@ The contract is published, but the Agent 2 backend source at the above revision 
 |---|---|
 | Baseline APK compile (run 43737218111) | PASS |
 | Baseline Robolectric/unit tests (run 43737218111) | FAIL — JDK 17 with API 36 |
-| QA branch APK compile | PASS on earlier QA commit; re-run required for protocol integration commit |
-| QA branch Robolectric/unit tests | Pending GitHub Actions |
+| QA branch APK compile | PASS on commit `62eca274eff806e403eea93a00e101faba190e06`; protocol integration commit re-run pending |
+| QA branch Robolectric/unit tests | PASS on commit `62eca274eff806e403eea93a00e101faba190e06`; protocol integration commit re-run pending |
+| Protocol integration instrumentation-test compilation | Pending GitHub Actions |
+| Physical execution of Android instrumentation tests | NOT RUN |
 | Physical Android device matrix | NOT RUN |
 | Android-to-Android owner approval / screen capture | NOT RUN |
 | Actual WebRTC video / decoded frame | NOT RUN |
