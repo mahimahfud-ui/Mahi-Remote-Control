@@ -424,14 +424,29 @@ export class SignalingHub {
     }
 
     const requestId = crypto.randomUUID();
-    const pending = await DeviceService.createPairingRequest({
-      requestId,
-      code,
-      controllerId: sender.id,
-      controllerFingerprint: fingerprint,
-      controllerName: name,
-      requestedScopes: this.requestedScopes(message, payload),
-    });
+    let pending: PairingRequestRecord;
+    try {
+      pending = await DeviceService.createPairingRequest({
+        requestId,
+        code,
+        controllerId: sender.id,
+        controllerFingerprint: fingerprint,
+        controllerName: name,
+        requestedScopes: this.requestedScopes(message, payload),
+      });
+    } catch (error) {
+      if (error instanceof DeviceServiceError) {
+        this.send(sender, {
+          type: 'PAIR_ERROR',
+          requestId,
+          errorCode: error.code,
+          error: error.message,
+          protocolVersion: 1,
+        });
+        return;
+      }
+      throw error;
+    }
 
     await this.sendToEntity(pending.receiverId, {
       type: 'PAIR_REQUEST',
@@ -475,23 +490,37 @@ export class SignalingHub {
     }
 
     if (message.type === 'PAIR_REJECT') {
-      const rejected = await DeviceService.rejectPairingRequest(requestId, sender.id);
-      if (!rejected) {
-        this.send(sender, { type: 'PAIR_ERROR', errorCode: 'PAIRING_REQUEST_EXPIRED', error: 'Pairing request has already been decided.', protocolVersion: 1 });
-        return;
+      try {
+        const rejected = await DeviceService.rejectPairingRequest(requestId, sender.id);
+        if (!rejected) throw new DeviceServiceError('PAIRING_REQUEST_EXPIRED', 'Pairing request has already been decided.');
+        await this.sendToEntity(request.controllerId, {
+          type: 'PAIR_REJECT',
+          requestId,
+          sender: sender.id,
+          reason: 'The receiver owner rejected the request.',
+          protocolVersion: 1,
+        });
+      } catch (error) {
+        if (error instanceof DeviceServiceError) {
+          this.send(sender, { type: 'PAIR_ERROR', requestId, errorCode: error.code, error: error.message, protocolVersion: 1 });
+          return;
+        }
+        throw error;
       }
-      await this.sendToEntity(request.controllerId, {
-        type: 'PAIR_REJECT',
-        requestId,
-        sender: sender.id,
-        reason: 'The receiver owner rejected the request.',
-        protocolVersion: 1,
-      });
       return;
     }
 
     const sessionId = crypto.randomUUID();
-    const result = await DeviceService.approvePairingRequest(requestId, sender.id, sessionId);
+    let result: Awaited<ReturnType<typeof DeviceService.approvePairingRequest>>;
+    try {
+      result = await DeviceService.approvePairingRequest(requestId, sender.id, sessionId);
+    } catch (error) {
+      if (error instanceof DeviceServiceError) {
+        this.send(sender, { type: 'PAIR_ERROR', requestId, errorCode: error.code, error: error.message, protocolVersion: 1 });
+        return;
+      }
+      throw error;
+    }
     const controllerToken = AuthService.generateSessionToken({
       entityId: result.session.controllerId,
       entityType: 'OPERATOR',
@@ -542,6 +571,9 @@ export class SignalingHub {
 
     if (type === 'FILE_COMMAND') {
       const action = String(message.action || payload.action || '').toUpperCase();
+      if (!['LIST', 'DELETE', 'READ_CHUNK', 'WRITE_CHUNK'].includes(action)) {
+        return 'Unsupported file operation.';
+      }
       const pathValue = String(message.path || payload.path || '');
       if (pathValue.length > 1024 || pathValue.includes('\0') || pathValue.split(/[\\/]/).includes('..')) {
         return 'File path is invalid or exceeds the allowed length.';
