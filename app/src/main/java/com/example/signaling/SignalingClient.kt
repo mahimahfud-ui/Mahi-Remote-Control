@@ -5,7 +5,7 @@ import com.example.security.AuditSeverity
 import com.example.BuildConfig
 import com.example.security.DeviceIdentity
 import android.content.Context
-import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.security.SecureRandom
 import android.util.Base64
 import kotlinx.coroutines.CoroutineScope
@@ -57,6 +57,7 @@ class SignalingClient(
     @Volatile private var sessionToken: String? = null
     @Volatile private var controllerFingerprint: String? = null
     @Volatile private var deviceAuthInFlight = false
+    @Volatile private var explicitDisconnect = false
     private val scope = CoroutineScope(Dispatchers.IO + Job())
     private var reconnectJob: Job? = null
 
@@ -112,6 +113,7 @@ class SignalingClient(
     }
 
     fun connect() {
+        explicitDisconnect = false
         if (_serverUrl.value.isBlank()) {
             loadRuntimeConfiguration()
             return
@@ -202,6 +204,7 @@ class SignalingClient(
     }
 
     private fun connectWebSocket() {
+        if (explicitDisconnect) return
         if (_connectionStatus.value == ConnectionStatus.CONNECTING ||
             _connectionStatus.value == ConnectionStatus.CONNECTED ||
             _connectionStatus.value == ConnectionStatus.AUTHENTICATED ||
@@ -218,6 +221,7 @@ class SignalingClient(
                 try {
                     // Every receiver socket obtains a fresh server challenge proof and short-lived token.
                     val access = deviceAuthenticationClient.authenticate()
+                    if (explicitDisconnect) return@launch
                     deviceAccessToken = access.value
                     openWebSocket()
                 } catch (error: Exception) {
@@ -308,12 +312,12 @@ class SignalingClient(
                 ws.close(1000, null)
                 _connectionStatus.value = ConnectionStatus.DISCONNECTED
                 AuditLogger.log("SIGNALING", "CLOSING", "Signaling socket closing ($code): $reason", AuditSeverity.INFO)
-                scheduleReconnect()
+                if (!explicitDisconnect) scheduleReconnect()
             }
 
             override fun onClosed(ws: WebSocket, code: Int, reason: String) {
                 _connectionStatus.value = ConnectionStatus.DISCONNECTED
-                scheduleReconnect()
+                if (!explicitDisconnect) scheduleReconnect()
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
@@ -323,7 +327,7 @@ class SignalingClient(
                     sessionToken = null
                 }
                 AuditLogger.log("SIGNALING", "ERROR", "Protocol-v1 signaling socket failed: ${t.message}. Reauthentication/reconnect armed.", AuditSeverity.WARNING)
-                scheduleReconnect()
+                if (!explicitDisconnect) scheduleReconnect()
             }
         })
     }
@@ -422,7 +426,8 @@ class SignalingClient(
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
             delay(5000L)
-            if (isActive && _connectionStatus.value != ConnectionStatus.AUTHENTICATED) {
+            if (isActive && !explicitDisconnect &&
+                _connectionStatus.value != ConnectionStatus.AUTHENTICATED) {
                 AuditLogger.log("SIGNALING", "RECONNECTING", "Attempting automatic signaling reconnect...", AuditSeverity.INFO)
                 connect()
             }
@@ -435,6 +440,7 @@ class SignalingClient(
     }
 
     fun disconnect() {
+        explicitDisconnect = true
         reconnectJob?.cancel()
         webSocket?.close(1000, "Device disconnecting")
         webSocket = null
