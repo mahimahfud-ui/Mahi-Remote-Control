@@ -118,3 +118,28 @@ CREATE TABLE IF NOT EXISTS signaling_outbox (
 );
 
 CREATE INDEX IF NOT EXISTS idx_signaling_outbox_created ON signaling_outbox(created_at);
+
+CREATE TABLE IF NOT EXISTS device_presence (
+  device_id TEXT NOT NULL REFERENCES devices(device_id) ON DELETE CASCADE,
+  instance_id VARCHAR(80) NOT NULL,
+  connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY(device_id, instance_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_presence_expiry ON device_presence(expires_at);
+
+CREATE TABLE IF NOT EXISTS audit_events (
+  id BIGSERIAL PRIMARY KEY,
+  actor_id TEXT,
+  device_id TEXT REFERENCES devices(device_id) ON DELETE SET NULL,
+  session_id UUID REFERENCES support_sessions(session_id) ON DELETE SET NULL,
+  category VARCHAR(32) NOT NULL,
+  action VARCHAR(64) NOT NULL,
+  details JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_events_device ON audit_events(device_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_events_session ON audit_events(session_id, created_at DESC);
