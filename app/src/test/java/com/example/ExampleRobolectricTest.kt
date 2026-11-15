@@ -32,11 +32,23 @@ class ExampleRobolectricTest {
     @Test
     fun testDeviceIdentityGeneration() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val identity = DeviceIdentity.getOrCreateIdentity(context)
+        val identity = try {
+            DeviceIdentity.getOrCreateIdentity(context)
+        } catch (error: IllegalStateException) {
+            // Robolectric may not provide AndroidKeyStore. The production code
+            // must fail closed rather than manufacture a fake identity.
+            assertTrue(error.message?.contains("Android Keystore") == true)
+            val prefs = context.getSharedPreferences("mahi_device_identity", Context.MODE_PRIVATE)
+            assertFalse(prefs.contains("device_id"))
+            return
+        }
+
         assertNotNull(identity.deviceId)
         assertTrue(identity.deviceId.startsWith("MAHI-"))
         assertNotNull(identity.fingerprint)
+        assertEquals(95, identity.fingerprint.length)
         assertTrue(identity.fingerprint.contains(":"))
+        assertFalse(identity.publicKeyBase64.isBlank())
     }
 
     @Test
