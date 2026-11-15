@@ -129,6 +129,7 @@ export class DeviceIdentityService {
     if (!deviceName) throw new DeviceServiceError('INVALID_REQUEST', 'A device name is required.');
 
     return Database.transaction(async (client) => {
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`mahi-device-enroll:${input.deviceId}`]);
       const existingInTransaction = await client.query(
         'SELECT 1 FROM devices WHERE device_id = $1 FOR UPDATE',
         [input.deviceId]
