@@ -3,7 +3,8 @@ name: Backend verification
 on:
   push:
     branches:
-      - work/remote-access-hardening
+      - main
+      - fix/full-remote-workflow
     paths:
       - "backend/**"
       - ".github/workflows/backend-verification.yml"
@@ -43,7 +44,9 @@ jobs:
         run: npm run build
 
       - name: Check browser controller JavaScript syntax
-        run: node --check public/app.js
+        run: |
+          node --check public/js/app.js
+          node --check public/app.js
 
       - name: Run backend integration tests
         run: npm test

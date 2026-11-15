@@ -706,53 +706,237 @@
     toast(`Opening ${pkg} on phone`);
   };
 
-  /* -------------------------------------------------------------
-   * 7. Emergency Stop Modal
+  function renderAppList(apps) {
     const list = $('#app-list');
     if (!list) return;
-    list.innerHTML = '';
-    if (!apps || apps.length === 0) {
-      list.innerHTML = '<li class="row"><div class="meta"><b>No apps returned</b></div></li>';
+    list.replaceChildren();
+    if (!Array.isArray(apps) || apps.length === 0) {
+      const empty = document.createElement('li');
+      empty.className = 'row';
+      empty.textContent = 'No installed apps were returned by the phone.';
+      list.appendChild(empty);
       return;
     }
     apps.forEach(app => {
-      const li = document.createElement('li');
-      li.className = 'row';
-      li.innerHTML = `
-        <div class="ico">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/></svg>
-        </div>
-        <div class="meta"><b>${app.name || app.appName}</b><span>${app.pkg || app.packageName}</span></div>
-        <button class="btn" onclick="window.sendAppLaunch('${app.pkg || app.packageName}')">Open</button>
-      `;
-      list.appendChild(li);
+      const pkg = String(app.pkg || app.packageName || '');
+      if (!pkg) return;
+      const row = document.createElement('li');
+      row.className = 'row';
+      const icon = document.createElement('div');
+      icon.className = 'ico';
+      icon.textContent = '▣';
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const name = document.createElement('b');
+      name.textContent = String(app.name || app.appName || pkg);
+      const detail = document.createElement('span');
+      detail.textContent = pkg;
+      meta.append(name, detail);
+      const launch = document.createElement('button');
+      launch.className = 'btn';
+      launch.type = 'button';
+      launch.textContent = 'Open';
+      launch.addEventListener('click', () => window.sendAppLaunch(pkg));
+      row.append(icon, meta, launch);
+      list.appendChild(row);
     });
+  }
+
+  function updateBreadcrumb() {
+    const crumbs = $('#crumbs');
+    if (crumbs) crumbs.textContent = state.currentPath;
+  }
+
+  function requestRemoteFileList(path = state.currentPath) {
+    if (!state.sessionToken || !state.targetDeviceId) return;
+    state.currentPath = path;
+    updateBreadcrumb();
+    sendWs({ type: 'FILE_COMMAND', action: 'LIST', path: state.currentPath, targetDeviceId: state.targetDeviceId });
   }
 
   function renderFileList(files) {
     const list = $('#file-list');
     if (!list) return;
-    list.innerHTML = '';
-    if (!files || files.length === 0) {
-      list.innerHTML = '<li class="row"><div class="meta"><b>Folder is empty</b></div></li>';
+    list.replaceChildren();
+    if (!Array.isArray(files) || files.length === 0) {
+      const empty = document.createElement('li');
+      empty.className = 'row';
+      empty.textContent = 'This folder is empty or is not accessible on the phone.';
+      list.appendChild(empty);
+      updateBreadcrumb();
       return;
     }
-    files.forEach(f => {
-      const li = document.createElement('li');
-      li.className = 'row';
-      li.innerHTML = `
-        <div class="ico">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z"/></svg>
-        </div>
-        <div class="meta"><b>${f.name}</b><span>${f.isDirectory ? 'Directory' : Math.round(f.sizeBytes / 1024) + ' KB'}</span></div>
-        <button class="icon-btn" aria-label="Download" onclick="window.toast('Downloading: ${f.name}')">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V5M7 10l5-5 5 5M5 20h14"/></svg>
-        </button>
-      `;
-      list.appendChild(li);
+    files.forEach(file => {
+      const filePath = String(file.path || '');
+      const fileName = String(file.name || filePath.split('/').pop() || 'Unnamed item');
+      const isDirectory = Boolean(file.isDir ?? file.isDirectory);
+      const size = Number(file.size ?? file.sizeBytes ?? 0);
+      const row = document.createElement('li');
+      row.className = 'row';
+      const icon = document.createElement('div');
+      icon.className = 'ico';
+      icon.textContent = isDirectory ? '📁' : '📄';
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const name = document.createElement('b');
+      name.textContent = fileName;
+      const detail = document.createElement('span');
+      detail.textContent = isDirectory ? 'Folder' : formatFileSize(size);
+      meta.append(name, detail);
+      const action = document.createElement('button');
+      action.className = 'icon-btn';
+      action.type = 'button';
+      action.textContent = isDirectory ? 'Open' : '↓';
+      action.setAttribute('aria-label', isDirectory ? 'Open ' + fileName : 'Download ' + fileName);
+      action.addEventListener('click', () => {
+        if (isDirectory) requestRemoteFileList(filePath);
+        else downloadRemoteFile(filePath, fileName, size);
+      });
+      row.append(icon, meta, action);
+      if (filePath) {
+        const remove = document.createElement('button');
+        remove.className = 'icon-btn';
+        remove.type = 'button';
+        remove.textContent = '×';
+        remove.setAttribute('aria-label', 'Delete ' + fileName);
+        remove.addEventListener('click', () => {
+          if (!confirm('Delete "' + fileName + '" from the phone?')) return;
+          sendWs({ type: 'FILE_COMMAND', action: 'DELETE', path: filePath, targetDeviceId: state.targetDeviceId });
+          setTimeout(() => requestRemoteFileList(), 500);
+        });
+        row.appendChild(remove);
+      }
+      list.appendChild(row);
     });
+    updateBreadcrumb();
   }
 
+  function formatFileSize(bytes) {
+    if (!Number.isFinite(bytes) || bytes < 0) return 'Unknown size';
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+    return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+  }
+
+  function downloadRemoteFile(path, name, size) {
+    if (!state.sessionToken || !state.targetDeviceId) {
+      toast('Connect to an approved phone before downloading.');
+      return;
+    }
+    if (!path || !Number.isFinite(size) || size < 0) {
+      toast('The phone did not provide a valid file path or size.');
+      return;
+    }
+    state.pendingDownload = { path, name, size, offset: 0, chunks: [], requestedLength: 32768 };
+    toast('Downloading ' + name + '…');
+    requestNextDownloadChunk();
+  }
+
+  function requestNextDownloadChunk() {
+    const transfer = state.pendingDownload;
+    if (!transfer) return;
+    const remaining = Math.max(0, transfer.size - transfer.offset);
+    const length = Math.min(32768, remaining || 32768);
+    transfer.requestedLength = length;
+    if (!sendWs({
+      type: 'FILE_COMMAND', action: 'READ_CHUNK', path: transfer.path,
+      offset: transfer.offset, length, targetDeviceId: state.targetDeviceId
+    })) {
+      state.pendingDownload = null;
+      toast('Could not request the next file chunk.');
+    }
+  }
+
+  function handleFileChunkResponse(payload) {
+    const transfer = state.pendingDownload;
+    if (!transfer || payload.path !== transfer.path || Number(payload.offset) !== transfer.offset) return;
+    let bytes;
+    try {
+      const binary = atob(String(payload.data || ''));
+      bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    } catch {
+      state.pendingDownload = null;
+      toast('The phone returned an invalid file chunk.');
+      return;
+    }
+    if (bytes.length) transfer.chunks.push(bytes);
+    transfer.offset += bytes.length;
+    const complete = bytes.length === 0 || bytes.length < transfer.requestedLength || transfer.offset >= transfer.size;
+    if (!complete) {
+      requestNextDownloadChunk();
+      return;
+    }
+    const blob = new Blob(transfer.chunks, { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = transfer.name;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+    toast('Downloaded ' + transfer.name);
+    state.pendingDownload = null;
+  }
+
+  async function uploadRemoteFile(file) {
+    if (!file || !state.sessionToken || !state.targetDeviceId) {
+      toast('Connect to an approved phone before uploading.');
+      return;
+    }
+    const safeName = file.name.replace(/[\\/]/g, '_').replace(/[\u0000-\u001f]/g, '_');
+    const targetPath = state.currentPath.replace(/\/$/, '') + '/' + safeName;
+    const chunkSize = 24576;
+    const progress = $('#file-transfer-status');
+    try {
+      for (let offset = 0; offset < file.size; offset += chunkSize) {
+        const chunk = new Uint8Array(await file.slice(offset, Math.min(file.size, offset + chunkSize)).arrayBuffer());
+        let binary = '';
+        for (let i = 0; i < chunk.length; i += 8192) {
+          binary += String.fromCharCode(...chunk.subarray(i, Math.min(i + 8192, chunk.length)));
+        }
+        if (!sendWs({
+          type: 'FILE_COMMAND', action: 'WRITE_CHUNK', path: targetPath,
+          data: btoa(binary), append: offset > 0, targetDeviceId: state.targetDeviceId
+        })) throw new Error('Signaling connection closed during upload.');
+        if (progress) progress.textContent = 'Uploading ' + safeName + ' · ' + Math.round(Math.min(file.size, offset + chunk.length) / Math.max(file.size, 1) * 100) + '%';
+        await new Promise(resolve => setTimeout(resolve, 25));
+      }
+      if (file.size === 0) {
+        if (!sendWs({ type: 'FILE_COMMAND', action: 'WRITE_CHUNK', path: targetPath, data: '', append: false, targetDeviceId: state.targetDeviceId })) {
+          throw new Error('Signaling connection closed during upload.');
+        }
+      }
+      if (progress) progress.textContent = 'Upload sent. Refreshing phone folder…';
+      setTimeout(() => requestRemoteFileList(), 700);
+      setTimeout(() => { if (progress) progress.textContent = ''; }, 4000);
+    } catch (error) {
+      if (progress) progress.textContent = 'Upload failed: ' + error.message;
+      toast('Upload failed.');
+    }
+  }
+
+  const uploadButton = $('#file-upload-btn');
+  const uploadInput = $('#file-upload-input');
+  uploadButton?.addEventListener('click', () => uploadInput?.click());
+  uploadInput?.addEventListener('change', async () => {
+    const file = uploadInput.files?.[0];
+    if (!file) return;
+    await uploadRemoteFile(file);
+    uploadInput.value = '';
+  });
+  $('#file-refresh')?.addEventListener('click', () => requestRemoteFileList());
+  $('#file-up')?.addEventListener('click', () => {
+    const trimmed = state.currentPath.replace(/\/$/, '');
+    const parent = trimmed.substring(0, trimmed.lastIndexOf('/')) || '/';
+    if (parent !== trimmed) requestRemoteFileList(parent);
+  });
+
+  /* -------------------------------------------------------------
+   * 7. Emergency Stop Modal & Keyboard Shortcuts
+   * ------------------------------------------------------------- */
   /* -------------------------------------------------------------
    * 7. Emergency Stop Modal & Keyboard Shortcuts
    * ------------------------------------------------------------- */
