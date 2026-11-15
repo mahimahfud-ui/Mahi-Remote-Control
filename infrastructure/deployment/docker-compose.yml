@@ -68,6 +68,7 @@ services:
     image: caddy:2-alpine
     environment:
       DOMAIN: ${DOMAIN:?Set DOMAIN to the public DNS hostname, e.g. remote.example.com}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL for TLS certificate notifications}
     ports:
       - "80:80"
       - "443:443"
