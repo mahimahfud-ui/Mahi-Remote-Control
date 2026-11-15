@@ -224,10 +224,14 @@ export class SignalingHub {
       }
       void this.handleMessage(client, parsed).catch((error) => {
         const code = error instanceof DeviceServiceError ? error.code : 'INTERNAL_ERROR';
+        const eventType = ['PAIR_BY_CODE', 'PAIR_CODE_CONNECT', 'PAIR_ACCEPT', 'PAIR_REJECT'].includes(String(parsed?.type))
+          ? 'PAIR_ERROR'
+          : 'SIGNALING_ERROR';
         this.send(client, {
-          type: 'SIGNALING_ERROR',
+          type: eventType,
           errorCode: code,
           error: error instanceof Error ? error.message : 'Signaling request failed.',
+          requestId: parsed?.requestId || parsed?.payload?.requestId,
           protocolVersion: 1,
         });
         if (!(error instanceof DeviceServiceError)) console.error('[signaling] message handler error', error);
