@@ -136,7 +136,7 @@ To scale the Node signaling backend, leave INSTANCE_ID unset so each process gen
 This report describes source/configuration committed to the implementation branch. It does not claim that a live backend, DNS name, HTTPS certificate, TURN relay, or Android-to-Android media session has been deployed or externally verified.
 
 - Repository source and configuration edits: committed on the isolated backend branch.
-- Backend Actions with real PostgreSQL, container build and Compose validation: configured; final run result must be read from the branch's Actions run.
+- Backend verification run #85: **PASS** at backend code SHA `dfb157f331f0ce1417798c2993cd9e90f7d2bf89`. TypeScript build, browser syntax checks, PostgreSQL 16-backed integration tests (including two backend processes and cross-instance signaling), migration-context check, production Docker image build, and Docker Compose validation all passed. [GitHub Actions run #85](https://github.com/mahimahfud-ui/Mahi-Remote-Control/actions/runs/43744038565).
 - Live server: NOT DEPLOYED. A real host, DNS, firewall access and owner-provided secrets/hosting access have not been supplied.
 - TURN relay: configuration is prepared; an external UDP relay test still needs a reachable Coturn host and network.
 - Android integration: Agent 1 must implement the published contract in Android source; that source is outside this agent's file ownership.
