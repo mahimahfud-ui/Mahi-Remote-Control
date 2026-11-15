@@ -318,11 +318,13 @@ apiRouter.post('/sessions/:id/terminate', asyncRoute(async (req, res) => {
 apiRouter.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
   const id = requestId(req);
   if (error instanceof DeviceServiceError) {
-    const status = error.code.includes('EXPIRED') || error.code.includes('USED') ? 409
+    const status = error.code.includes('EXPIRED') || error.code.includes('USED') ||
+        error.code.includes('REPLAY') || error.code.includes('ALREADY_ENROLLED') ||
+        error.code.includes('ACTIVE') || error.code.includes('PENDING') ||
+        error.code.includes('CONFLICT') ? 409
       : error.code.includes('NOT_FOUND') ? 404
-      : error.code.includes('INVALID') || error.code.includes('SIGNATURE') ? 400
-      : error.code.includes('ACTIVE') || error.code.includes('PENDING') || error.code.includes('CONFLICT') ? 409
       : error.code.includes('REVOKED') ? 403
+      : error.code.includes('INVALID') || error.code.includes('SIGNATURE') ? 400
       : 400;
     return errorResponse(res, status, error.code, error.message, id, status === 409);
   }
