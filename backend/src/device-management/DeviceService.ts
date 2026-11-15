@@ -302,6 +302,14 @@ export class DeviceService {
       );
       if (activeSession.rowCount) throw new DeviceServiceError('SESSION_ALREADY_ACTIVE', 'This receiver already has an active remote session.');
 
+      // Free the partial unique pending-request slot before creating a new request.
+      await client.query(
+        `UPDATE pairing_requests
+         SET status = 'EXPIRED', decided_at = NOW()
+         WHERE receiver_id = $1 AND status = 'PENDING' AND expires_at <= NOW()`,
+        [matched.device_id]
+      );
+
       const pending = await client.query(
         `SELECT 1 FROM pairing_requests
          WHERE receiver_id = $1 AND status = 'PENDING' AND expires_at > NOW()
