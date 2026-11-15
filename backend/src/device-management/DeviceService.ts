@@ -105,7 +105,7 @@ export class DeviceService {
       const version = Number(result.rows[0].key_version);
       await client.query(
         `UPDATE support_sessions SET status = 'REVOKED', ended_at = NOW(), end_reason = 'Device key rotated'
-         WHERE device_id = $1 AND status = 'ACTIVE'`,
+         WHERE (device_id = $1 OR controller_id = $1) AND status = 'ACTIVE'`,
         [deviceId]
       );
       await client.query(
@@ -452,6 +452,19 @@ export class DeviceService {
       );
       if (active.rowCount) throw new DeviceServiceError('SESSION_ALREADY_ACTIVE', 'This receiver already has an active remote session.');
 
+      const controllerDeviceResult = await client.query(
+        'SELECT fingerprint, is_revoked FROM devices WHERE device_id = $1 FOR UPDATE',
+        [row.controller_id]
+      );
+      const controllerDevice = controllerDeviceResult.rows[0] || null;
+      if (controllerDevice && (
+        controllerDevice.is_revoked ||
+        controllerDevice.fingerprint !== row.controller_fingerprint
+      )) {
+        throw new DeviceServiceError('DEVICE_REVOKED', 'The controller device identity is no longer active.');
+      }
+      const controllerParticipantType = controllerDevice ? 'DEVICE' : 'OPERATOR';
+
       const now = Date.now();
       const expiresAt = now + this.SESSION_TTL_MS;
       await client.query('UPDATE pairing_codes SET consumed_at = NOW() WHERE id = $1 AND consumed_at IS NULL', [row.code_id]);
@@ -470,8 +483,16 @@ export class DeviceService {
         `INSERT INTO session_participants (session_id, participant_id, participant_type, fingerprint, scopes)
          VALUES
            ($1, $2, 'DEVICE', $3, ARRAY['SCREEN_VIEW','REMOTE_INPUT','FILES','DIAGNOSTICS']),
-           ($1, $4, 'OPERATOR', $5, $6)`,
-        [sessionId, receiverId, device.fingerprint, row.controller_id, row.controller_fingerprint, row.requested_scopes]
+           ($1, $4, $7, $5, $6)`,
+        [
+          sessionId,
+          receiverId,
+          device.fingerprint,
+          row.controller_id,
+          row.controller_fingerprint,
+          row.requested_scopes,
+          controllerParticipantType,
+        ]
       );
       await client.query(
         `INSERT INTO audit_events (actor_id, device_id, session_id, category, action, details)
@@ -526,7 +547,7 @@ export class DeviceService {
         `SELECT s.session_id::text, p.participant_id
          FROM support_sessions s
          JOIN session_participants p ON p.session_id = s.session_id
-         WHERE s.device_id = $1 AND s.status = 'ACTIVE' AND s.expires_at > NOW()`,
+         WHERE (s.device_id = $1 OR s.controller_id = $1) AND s.status = 'ACTIVE' AND s.expires_at > NOW()`,
         [deviceId]
       );
 
@@ -598,7 +619,12 @@ export class DeviceService {
     };
   }
 
-  public static async isSessionParticipant(sessionId: string, entityId: string, fingerprint: string): Promise<boolean> {
+  public static async isSessionParticipant(
+    sessionId: string,
+    entityId: string,
+    fingerprint: string,
+    entityType: 'DEVICE' | 'OPERATOR'
+  ): Promise<boolean> {
     const result = await Database.query(
       `SELECT 1
        FROM support_sessions s
@@ -606,8 +632,9 @@ export class DeviceService {
        LEFT JOIN devices d ON d.device_id = p.participant_id AND p.participant_type = 'DEVICE'
        WHERE s.session_id = $1 AND s.status = 'ACTIVE' AND s.expires_at > NOW()
          AND p.participant_id = $2 AND p.fingerprint = $3
+         AND p.participant_type = $4
          AND (p.participant_type <> 'DEVICE' OR (d.is_revoked = FALSE AND d.fingerprint = p.fingerprint))`,
-      [sessionId, entityId, fingerprint]
+      [sessionId, entityId, fingerprint, entityType]
     );
     return Boolean(result.rowCount);
   }
