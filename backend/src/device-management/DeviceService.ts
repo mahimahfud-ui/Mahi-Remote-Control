@@ -258,67 +258,91 @@ export class DeviceService {
       throw new DeviceServiceError('PAIRING_CODE_INVALID', 'Invalid or expired pairing code.');
     }
 
+    // Candidate discovery is read-only. The receiver row is locked before the
+    // selected code row inside the transaction, matching code refresh/revocation
+    // and preventing a code-row/device-row lock-order deadlock.
+    const activeCodes = await Database.query(
+      `SELECT p.id::text AS code_id, p.code_hash, p.device_id
+       FROM pairing_codes p
+       WHERE p.consumed_at IS NULL AND p.expires_at > NOW()`
+    );
+    let candidate: any = null;
+    for (const row of activeCodes.rows) {
+      const candidateHash = this.pairingCodeHash(row.device_id, normalizedCode);
+      if (
+        typeof row.code_hash === 'string' &&
+        Buffer.byteLength(row.code_hash) === Buffer.byteLength(candidateHash) &&
+        crypto.timingSafeEqual(Buffer.from(row.code_hash), Buffer.from(candidateHash))
+      ) {
+        candidate = { ...row, codeHash: candidateHash };
+        break;
+      }
+    }
+    if (!candidate) {
+      throw new DeviceServiceError('PAIRING_CODE_INVALID', 'Invalid or expired pairing code.');
+    }
+
     return Database.transaction(async (client) => {
-      // Pairing code rows contain only a peppered HMAC, never the six-digit value.
-      // Codes are short-lived with one active code per enrolled device, so checking
-      // active hashes here is bounded by the online device population and avoids
-      // creating a public reverse index from a six-digit secret.
-      const activeCodes = await client.query(
-        `SELECT p.id::text AS code_id, p.code_hash, p.device_id, d.device_name,
+      const receiverResult = await client.query(
+        'SELECT device_id, device_name, is_revoked FROM devices WHERE device_id = $1 FOR UPDATE',
+        [candidate.device_id]
+      );
+      const receiver = receiverResult.rows[0];
+      if (!receiver || receiver.is_revoked) {
+        throw new DeviceServiceError('DEVICE_REVOKED', 'Receiver device is not active.');
+      }
+
+      const codeResult = await client.query(
+        `SELECT p.id::text AS code_id, p.code_hash,
                 (EXTRACT(EPOCH FROM p.expires_at) * 1000)::bigint AS expires_at_ms
          FROM pairing_codes p
-         JOIN devices d ON d.device_id = p.device_id
-         WHERE p.consumed_at IS NULL AND p.expires_at > NOW()
-           AND d.is_revoked = FALSE
-         FOR UPDATE OF p, d`
+         WHERE p.id = $1 AND p.device_id = $2 AND p.code_hash = $3
+           AND p.consumed_at IS NULL AND p.expires_at > NOW()
+         FOR UPDATE`,
+        [candidate.code_id, candidate.device_id, candidate.codeHash]
       );
-      let matched: any = null;
-      for (const row of activeCodes.rows) {
-        const candidateHash = this.pairingCodeHash(row.device_id, normalizedCode);
-        if (
-          typeof row.code_hash === 'string' &&
-          Buffer.byteLength(row.code_hash) === Buffer.byteLength(candidateHash) &&
-          crypto.timingSafeEqual(Buffer.from(row.code_hash), Buffer.from(candidateHash))
-        ) {
-          matched = row;
-          break;
-        }
-      }
-      if (!matched) {
-        throw new DeviceServiceError('PAIRING_CODE_INVALID', 'Invalid or expired pairing code.');
+      const code = codeResult.rows[0];
+      if (!code) {
+        throw new DeviceServiceError('PAIRING_CODE_INVALID', 'Invalid, expired or already consumed pairing code.');
       }
 
       const presence = await client.query(
         'SELECT 1 FROM device_presence WHERE device_id = $1 AND expires_at > NOW() LIMIT 1',
-        [matched.device_id]
+        [candidate.device_id]
       );
-      if (!presence.rowCount) throw new DeviceServiceError('RECEIVER_OFFLINE', 'Receiver is offline or unavailable.');
+      if (!presence.rowCount) {
+        throw new DeviceServiceError('RECEIVER_OFFLINE', 'Receiver is offline or unavailable.');
+      }
 
       const activeSession = await client.query(
         `SELECT 1 FROM support_sessions
          WHERE device_id = $1 AND status = 'ACTIVE' AND expires_at > NOW()
          LIMIT 1 FOR UPDATE`,
-        [matched.device_id]
+        [candidate.device_id]
       );
-      if (activeSession.rowCount) throw new DeviceServiceError('SESSION_ALREADY_ACTIVE', 'This receiver already has an active remote session.');
+      if (activeSession.rowCount) {
+        throw new DeviceServiceError('SESSION_ALREADY_ACTIVE', 'This receiver already has an active remote session.');
+      }
 
       // Free the partial unique pending-request slot before creating a new request.
       await client.query(
         `UPDATE pairing_requests
          SET status = 'EXPIRED', decided_at = NOW()
          WHERE receiver_id = $1 AND status = 'PENDING' AND expires_at <= NOW()`,
-        [matched.device_id]
+        [candidate.device_id]
       );
 
       const pending = await client.query(
         `SELECT 1 FROM pairing_requests
          WHERE receiver_id = $1 AND status = 'PENDING' AND expires_at > NOW()
          LIMIT 1 FOR UPDATE`,
-        [matched.device_id]
+        [candidate.device_id]
       );
-      if (pending.rowCount) throw new DeviceServiceError('PAIRING_ALREADY_PENDING', 'This receiver already has a pending connection request.');
+      if (pending.rowCount) {
+        throw new DeviceServiceError('PAIRING_ALREADY_PENDING', 'This receiver already has a pending connection request.');
+      }
 
-      const expiresAt = Math.min(Number(matched.expires_at_ms), Date.now() + this.REQUEST_TTL_MS);
+      const expiresAt = Math.min(Number(code.expires_at_ms), Date.now() + this.REQUEST_TTL_MS);
       const inserted = await client.query(
         `INSERT INTO pairing_requests
            (request_id, code_id, receiver_id, controller_id, controller_fingerprint, controller_name, requested_scopes, expires_at)
@@ -328,8 +352,8 @@ export class DeviceService {
                    (EXTRACT(EPOCH FROM expires_at) * 1000)::bigint AS expires_at_ms`,
         [
           input.requestId,
-          matched.code_id,
-          matched.device_id,
+          code.code_id,
+          candidate.device_id,
           input.controllerId,
           input.controllerFingerprint,
           input.controllerName.slice(0, 80),
@@ -342,7 +366,7 @@ export class DeviceService {
         requestId: row.request_id,
         codeId: row.code_id,
         receiverId: row.receiver_id,
-        receiverName: matched.device_name,
+        receiverName: receiver.device_name,
         controllerId: row.controller_id,
         controllerFingerprint: row.controller_fingerprint,
         controllerName: row.controller_name,
