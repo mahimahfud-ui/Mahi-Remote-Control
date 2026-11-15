@@ -25,6 +25,7 @@ interface ChallengeRow {
   challenge_id: string;
   purpose: DeviceChallengePurpose;
   device_id: string;
+  device_name: string;
   fingerprint: string;
   public_key: string;
   old_fingerprint: string | null;
@@ -90,6 +91,7 @@ export class DeviceIdentityService {
     deviceId: string,
     publicKey: string,
     fingerprint: string,
+    deviceName: string,
     oldFingerprint: string | null = null,
     oldKeyVersion: number | null = null
   ): Promise<DeviceChallengeResponse> {
@@ -143,12 +145,6 @@ export class DeviceIdentityService {
          VALUES ($1, 'ENROLL', $2, $3, $4, $5, TO_TIMESTAMP($6 / 1000.0))`,
         [challengeId, input.deviceId, key.fingerprint, key.value, nonce, expiresAtMs]
       );
-      // Device name is saved on the challenge only by the API's enrollment metadata.
-      await client.query(
-        `UPDATE device_challenges SET public_key = public_key || E'\\n' || $7
-         WHERE challenge_id = $1`,
-        [challengeId, key.value, '', '', '', '', deviceName]
-      );
       return {
         protocolVersion: 1,
         challengeId,
@@ -199,6 +195,7 @@ export class DeviceIdentityService {
       key.value,
       key.fingerprint,
       device.fingerprint,
+      device.deviceName,
       device.keyVersion
     );
   }
@@ -241,7 +238,7 @@ export class DeviceIdentityService {
     purpose: DeviceChallengePurpose
   ): Promise<ChallengeRow> {
     const result = await client.query(
-      `SELECT challenge_id::text, purpose, device_id, fingerprint, public_key, old_fingerprint,
+      `SELECT challenge_id::text, purpose, device_id, device_name, fingerprint, public_key, old_fingerprint,
               old_key_version, nonce,
               (EXTRACT(EPOCH FROM expires_at) * 1000)::bigint AS expires_at_ms,
               consumed_at
@@ -272,7 +269,7 @@ export class DeviceIdentityService {
       if (!this.signatureIsValid(publicKey, message, signature)) {
         throw new DeviceServiceError('INVALID_SIGNATURE', 'Device enrollment signature is invalid.');
       }
-      const deviceName = String(deviceNameRaw || 'Android device').slice(0, 128);
+      const deviceName = String(row.device_name || 'Android device').slice(0, 128);
       await client.query(
         'UPDATE device_challenges SET consumed_at = NOW() WHERE challenge_id = $1 AND consumed_at IS NULL',
         [challengeId]
