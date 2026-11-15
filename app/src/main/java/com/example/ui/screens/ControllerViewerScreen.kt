@@ -599,7 +599,7 @@ private fun RemoteFilesPane(viewModel: MahiViewModel) {
         }
 
         transfer?.let { progress ->
-            if (progress.status == "IN_PROGRESS" || progress.status == "FAILED") {
+            if (progress.status == "IN_PROGRESS" || progress.status == "FAILED" || progress.status == "COMPLETED") {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -610,7 +610,11 @@ private fun RemoteFilesPane(viewModel: MahiViewModel) {
                 ) {
                     Text(
                         text = "${if (progress.isUpload) "Uploading" else "Downloading"} ${progress.fileName} • ${progress.status}",
-                        color = if (progress.status == "FAILED") ErrorCoral else TextSecondary,
+                        color = when (progress.status) {
+                            "FAILED" -> ErrorCoral
+                            "COMPLETED" -> MintAccent
+                            else -> TextSecondary
+                        },
                         fontSize = 11.sp,
                         maxLines = 2
                     )
