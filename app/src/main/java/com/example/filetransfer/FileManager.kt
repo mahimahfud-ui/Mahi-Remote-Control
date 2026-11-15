@@ -164,6 +164,45 @@ class FileManager(private val context: Context) {
         return success
     }
 
+    /**
+     * Finalizes a staged upload by atomically renaming it to an exact destination path.
+     * Both files must be within an allowed root, in the same canonical directory, and
+     * the destination must not already exist. This method never overwrites.
+     */
+    fun moveFileToPath(sourcePath: String, destinationPath: String): Boolean {
+        if (sourcePath.isBlank() || destinationPath.isBlank()) return false
+        val roots = getPermittedRootFolders().map { it.absolutePath }
+        if (AllowlistValidator.validateFilePath(sourcePath, roots) !is AllowlistValidator.ValidationResult.Valid ||
+            AllowlistValidator.validateFilePath(destinationPath, roots) !is AllowlistValidator.ValidationResult.Valid) {
+            return false
+        }
+
+        return try {
+            val source = File(sourcePath).canonicalFile
+            val destination = File(destinationPath).canonicalFile
+            val sourceParent = source.parentFile ?: return false
+            val destinationParent = destination.parentFile ?: return false
+
+            if (!source.isFile || destination.exists() || !destinationParent.isDirectory ||
+                sourceParent.canonicalPath != destinationParent.canonicalPath) {
+                return false
+            }
+
+            val renamed = source.renameTo(destination)
+            if (renamed) {
+                AuditLogger.log(
+                    "FILE",
+                    "UPLOAD_FINALIZED",
+                    "Finalized staged upload as ${destination.name}.",
+                    AuditSeverity.SECURITY
+                )
+            }
+            renamed
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     fun readFileChunk(path: String, offset: Long, length: Int): ByteArray? {
         if (offset < 0L || length !in 1..MAX_CHUNK_BYTES) return null
         val roots = getPermittedRootFolders().map { it.absolutePath }
