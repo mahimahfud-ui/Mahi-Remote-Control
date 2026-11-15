@@ -518,6 +518,7 @@ export class DeviceService {
           deviceId: receiverId,
           controllerId: row.controller_id,
           operatorFingerprint: row.controller_fingerprint,
+          controllerEntityType: controllerParticipantType,
           receiverFingerprint: device.fingerprint,
           startedAt: now,
           expiresAt,
