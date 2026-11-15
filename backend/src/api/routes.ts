@@ -262,7 +262,7 @@ apiRouter.post('/devices/:deviceId/revoke', asyncRoute(async (req, res) => {
     await Database.publishSignal(item.participantId, {
       type: 'SESSION_ENDED',
       sessionId: item.sessionId,
-      reason: 'The receiver revoked its device identity.',
+      reason: 'The participant revoked its device identity.',
       protocolVersion: 1,
     });
   }));
