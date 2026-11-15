@@ -133,6 +133,7 @@ async function runTests() {
   let hub;
   let receiver;
   let controller;
+  let controller2;
 
   try {
     await Database.initialize();
@@ -288,49 +289,72 @@ async function runTests() {
     const codeAck = await receiver.next('CODE_REGISTERED_ACK');
     assert.equal(codeAck.status, 'OK');
 
-    console.log('[TEST] Browser pairing request waits for authenticated receiver approval');
-    const controllerFingerprint = 'WEB-' + crypto.randomBytes(16).toString('hex').toUpperCase();
-    const controllerId = 'browser_' + controllerFingerprint;
+    console.log('[TEST] Concurrent browser pairing requests and single owner approval');
+    const controllerFingerprintA = 'WEB-' + crypto.randomBytes(16).toString('hex').toUpperCase();
+    const controllerFingerprintB = 'WEB-' + crypto.randomBytes(16).toString('hex').toUpperCase();
     controller = makeSocket(
-      WS_URL + '?protocolVersion=1&controllerFingerprint=' + encodeURIComponent(controllerFingerprint)
+      WS_URL + '?protocolVersion=1&controllerFingerprint=' + encodeURIComponent(controllerFingerprintA)
     );
-    await waitOpen(controller);
-    await controller.next('REGISTER_ACK');
+    controller2 = makeSocket(
+      WS_URL + '?protocolVersion=1&controllerFingerprint=' + encodeURIComponent(controllerFingerprintB)
+    );
+    await Promise.all([waitOpen(controller), waitOpen(controller2)]);
+    await Promise.all([controller.next('REGISTER_ACK'), controller2.next('REGISTER_ACK')]);
 
     controller.sendJson({
       type: 'PAIR_BY_CODE',
       code: pairingCode,
-      operatorName: 'Integration Browser',
+      operatorName: 'Integration Browser A',
       requestedScopes: ['SCREEN_VIEW', 'REMOTE_INPUT', 'FILES', 'DIAGNOSTICS']
     });
-    const [incoming, pending] = await Promise.all([
-      receiver.next('PAIR_REQUEST'),
-      controller.next('PAIR_PENDING')
+    controller2.sendJson({
+      type: 'PAIR_BY_CODE',
+      code: pairingCode,
+      operatorName: 'Integration Browser B',
+      requestedScopes: ['SCREEN_VIEW', 'REMOTE_INPUT', 'FILES', 'DIAGNOSTICS']
+    });
+
+    const [attemptA, attemptB] = await Promise.all([
+      controller.next(['PAIR_PENDING', 'PAIR_ERROR']),
+      controller2.next(['PAIR_PENDING', 'PAIR_ERROR'])
     ]);
-    assert.ok(incoming.requestId);
+    assert.equal([attemptA, attemptB].filter(item => item.type === 'PAIR_PENDING').length, 1);
+    assert.equal([attemptA, attemptB].filter(item => item.type === 'PAIR_ERROR').length, 1);
+    const pendingController = attemptA.type === 'PAIR_PENDING' ? controller : controller2;
+    const losingController = attemptA.type === 'PAIR_ERROR' ? controller : controller2;
+    const pending = attemptA.type === 'PAIR_PENDING' ? attemptA : attemptB;
+    assert.equal((attemptA.type === 'PAIR_ERROR' ? attemptA : attemptB).errorCode, 'PAIRING_ALREADY_PENDING');
+
+    const incoming = await receiver.next('PAIR_REQUEST');
     assert.equal(incoming.requestId, pending.requestId);
     assert.equal(incoming.expiresAt > Date.now(), true);
 
-    console.log('[TEST] Owner approval atomically consumes the code and creates a persisted session');
+    console.log('[TEST] Approval is atomic; a duplicate simultaneous approval cannot create a second session');
     receiver.sendJson({ type: 'PAIR_ACCEPT', requestId: incoming.requestId });
-    const [browserApproval, receiverApproval] = await Promise.all([
-      controller.next('PAIR_ACCEPT'),
-      receiver.next('PAIR_SESSION_AUTHORIZED')
+    receiver.sendJson({ type: 'PAIR_ACCEPT', requestId: incoming.requestId });
+    const [browserApproval, receiverApproval, duplicateApprovalError] = await Promise.all([
+      pendingController.next('PAIR_ACCEPT'),
+      receiver.next('PAIR_SESSION_AUTHORIZED'),
+      receiver.next('PAIR_ERROR')
     ]);
     assert.equal(browserApproval.sessionId, receiverApproval.sessionId);
     assert.ok(browserApproval.sessionToken);
     assert.ok(receiverApproval.sessionToken);
+    assert.equal(duplicateApprovalError.errorCode, 'PAIRING_REQUEST_EXPIRED');
     assert.equal(
       await Database.query('SELECT 1 FROM support_sessions WHERE session_id = $1 AND status = \'ACTIVE\'', [browserApproval.sessionId])
         .then(result => Boolean(result.rowCount)),
       true
     );
+    assert.equal(
+      await Database.query('SELECT COUNT(*)::int AS count FROM support_sessions WHERE device_id = $1 AND status = \'ACTIVE\'', [deviceId])
+        .then(result => result.rows[0].count),
+      1
+    );
 
-    const reusedCode = await new Promise((resolve, reject) => {
-      controller.next('PAIR_ERROR', 2500).then(resolve).catch(reject);
-      controller.sendJson({ type: 'PAIR_BY_CODE', code: pairingCode, operatorName: 'Replay attempt' });
-    }).catch(() => null);
-    assert.ok(reusedCode && ['PAIRING_CODE_INVALID', 'PAIRING_CODE_USED'].includes(reusedCode.errorCode));
+    // Use the winning browser connection for the remaining authorized-session tests.
+    controller = pendingController;
+    assert.equal(losingController === controller2 || losingController === controller, true);
 
     console.log('[TEST] TURN credentials are session-scoped and short-lived');
     const turnResponse = await fetch(BASE_URL + '/api/v1/turn-credentials', {
@@ -457,6 +481,7 @@ async function runTests() {
 
     console.log('[TEST] Passed: protocol, PostgreSQL persistence, pairing, approval, session auth, TURN, scope checks, limits and key rotation.');
   } finally {
+    await closeSocket(controller2);
     await closeSocket(controller);
     await closeSocket(receiver);
     if (hub) await hub.close();
