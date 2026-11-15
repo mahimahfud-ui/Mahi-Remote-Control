@@ -26,17 +26,20 @@ Previous Android workflow: [run 43737218111](https://github.com/mahimahfud-ui/Ma
 2. **Signature verification:** malformed keys/signatures and verification exceptions now fail closed. A signature's length is never accepted as cryptographic proof.
 3. **File path validation:** validation resolves canonical paths and uses path-component-aware containment. Sibling-prefix paths and traversal segments are rejected.
 4. **Chunk limits:** file reads reject negative offsets and chunks outside 1..32 KiB; writes reject chunks larger than 32 KiB.
-5. **Input/pairing/file regression tests:** valid and tampered ECDSA signatures; canonical challenge format, expiry and replay; request-ID-bound owner approval and rejection; NaN/out-of-range tap/swipe coordinates; unsupported global actions and oversized text; traversal/sibling-prefix file paths; oversized/negative file chunks.
+5. **Regression tests:** valid/tampered/malformed ECDSA signatures; P-256 fingerprint format; challenge canonicalization, expiry, invalid nonce/purpose and replay; request-ID-bound owner approval/rejection; invalid tap/swipe coordinates; unauthorized global actions and oversized text; traversal/sibling-prefix paths; oversized/negative file chunks.
+6. **Receiver-side file safety:** canonical path validation and 32 KiB chunk limits; READ_CHUNK and WRITE_CHUNK handlers return per-chunk responses/acknowledgements.
+7. **Controller-side deletion:** the remote file list requires an explicit confirmation dialog before deleting and hides delete actions for directories.
+8. **Receiver registration:** use the server-issued REGISTER_ACK once; do not send a redundant REGISTER that triggers a second pairing-code registration.
 
 ## Android workflow inspection
 
 Source contains Android controller/receiver flows, six-digit pairing code and QR paths, explicit receiver approval, MediaProjection foreground-service capture, WebRTC PeerConnection and video rendering, AccessibilityService remote-input path, and app/file management.
 
-These are source inspections only. They do not establish that the complete workflows work on physical devices. No decoded video frame, real remote input, file transfer between phones, reconnect, or TURN relay was physically verified in this task.
+These are source inspections only. They do not establish that the complete workflows work on physical devices. The receiver implements bounded READ_CHUNK/WRITE_CHUNK handlers and acknowledgements, but the Android controller screen currently has no end-to-end file upload/download picker and transfer orchestration, and remote folder navigation is not yet wired in that screen. No decoded video frame, real remote input, file transfer between phones, reconnect, or TURN relay was physically verified in this task.
 
 ## Backend device-identity integration
 
-Agent 2 published `docs/BACKEND-ANDROID-CONTRACT.md` on branch `agent-backend/persistence-deployment`, latest inspected backend source head `b62d2de53f48baa5ba8af9e82121695390e6d86d` (contract blob `ea49e58bb21acd3f6474a8b8d45992095d6e7eec`). Android client changes follow its protocol-v1 interface:
+Agent 2 published `docs/BACKEND-ANDROID-CONTRACT.md` on branch `agent-backend/persistence-deployment`, latest inspected backend source head `d03d92c0b49b20c34204611f424bf5d3846883e7`. Android client changes follow its protocol-v1 interface:
 
 - ECDSA P-256 / `secp256r1`, `SHA256withECDSA`, X.509 SPKI DER public key and ASN.1 DER signature, standard Base64.
 - Server-derived fingerprint format `sha256:<64 lowercase hex>`; private key remains exclusively in Android Keystore.
@@ -55,13 +58,14 @@ The latest inspected Agent 2 backend source contains the v1 enrollment/authentic
 | QA branch APK compile | PASS on commit `4c3e89f160861090622f59094207a34ee75603da`; later refinements need the latest run |
 | QA branch Robolectric/unit tests | PASS on commit `4c3e89f160861090622f59094207a34ee75603da`; later refinements need the latest run |
 | Protocol integration APK / instrumentation compile / unit & Robolectric checks | PASS on commit `4c3e89f160861090622f59094207a34ee75603da`; later refinements need the latest run |
-| Latest Android source refinements (remote-delete confirmation, server ACK registration) | IN PROGRESS on `a075b24cd85896d78cf40c6f223ba3710841a2ef`; runs [43742613123](https://github.com/mahimahfud-ui/Mahi-Remote-Control/actions/runs/43742613123) / [43742608584](https://github.com/mahimahfud-ui/Mahi-Remote-Control/actions/runs/43742608584) |
+| Latest Android source refinements (remote-delete confirmation, single ACK registration, receiver identity ACK guard) | IN PROGRESS on `e9326b85fac9729e2b456f2e53898d4ffd96dac2`; runs [43742823755](https://github.com/mahimahfud-ui/Mahi-Remote-Control/actions/runs/43742823755) / [43742819508](https://github.com/mahimahfud-ui/Mahi-Remote-Control/actions/runs/43742819508) |
 | Physical execution of Android instrumentation tests | NOT RUN |
 | Physical Android device matrix | NOT RUN |
 | Android-to-Android owner approval / screen capture | NOT RUN |
 | Actual WebRTC video / decoded frame | NOT RUN |
 | Remote tap, swipe and text input | NOT RUN |
-| File upload/download between devices | NOT RUN |
+| Controller-side file upload/download workflow | NOT YET IMPLEMENTED end-to-end in the Android viewer; receiver chunk handlers exist |
+| Physical file upload/download between devices | NOT RUN |
 | Session expiry / network interruption / reconnection | NOT RUN |
 | Cross-network forced TURN relay | NOT RUN |
 
