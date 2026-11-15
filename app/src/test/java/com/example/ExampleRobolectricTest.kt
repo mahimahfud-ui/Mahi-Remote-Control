@@ -41,12 +41,14 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun testDeviceIdentityGeneration() {
-        // The Android Keystore is hardware/platform-backed and is verified by the
-        // instrumentation test on a physical/emulated Android runtime, not Robolectric.
-        val identity = testIdentity()
-        assertTrue(identity.deviceId.matches(Regex("MAHI-[A-Z0-9]{3}-[A-Z0-9]{8}")))
-        assertTrue(identity.fingerprint.matches(Regex("sha256:[0-9a-f]{64}")))
+    fun testPublicKeyFingerprintUsesProtocolV1Format() {
+        val generator = java.security.KeyPairGenerator.getInstance("EC")
+        generator.initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
+        val publicKeyDer = generator.generateKeyPair().public.encoded
+
+        val fingerprint = DeviceIdentity.fingerprintForPublicKey(publicKeyDer)
+        assertTrue(fingerprint.matches(Regex("sha256:[0-9a-f]{64}")))
+        assertEquals(fingerprint, DeviceIdentity.fingerprintForPublicKey(publicKeyDer))
     }
 
     @Test
@@ -205,7 +207,7 @@ class ExampleRobolectricTest {
         val nonce = java.util.Base64.getUrlEncoder().withoutPadding()
             .encodeToString(ByteArray(32) { it.toByte() })
         val challenge = DeviceChallenge(
-            challengeId = "4f3c8ed8-7ea6-4c3b-9f57-9f6e0a3f7ca1",
+            challengeId = java.util.UUID.randomUUID().toString(),
             purpose = "AUTHENTICATE",
             nonce = nonce,
             fingerprint = "sha256:" + "a".repeat(64),
@@ -227,7 +229,7 @@ class ExampleRobolectricTest {
             Charsets.UTF_8
         )
         assertEquals(
-            "MAHI-REMOTE-DEVICE-PROOF\n1\nAUTHENTICATE\n4f3c8ed8-7ea6-4c3b-9f57-9f6e0a3f7ca1\nMAHI-TST-12345678\nsha256:" + "a".repeat(64) + "\n" + nonce + "\n121000",
+            "MAHI-REMOTE-DEVICE-PROOF\n1\nAUTHENTICATE\n" + challenge.challengeId + "\nMAHI-TST-12345678\nsha256:" + "a".repeat(64) + "\n" + nonce + "\n121000",
             canonical
         )
 
@@ -242,6 +244,24 @@ class ExampleRobolectricTest {
                 challenge.fingerprint,
                 "AUTHENTICATE",
                 expired,
+                nowMillis = 1_000L
+            )
+        )
+        assertFalse(
+            DeviceChallengeProof.isValid(
+                "MAHI-TST-12345678",
+                challenge.fingerprint,
+                "AUTHENTICATE",
+                challenge.copy(nonce = challenge.nonce + "="),
+                nowMillis = 1_000L
+            )
+        )
+        assertFalse(
+            DeviceChallengeProof.isValid(
+                "MAHI-TST-12345678",
+                challenge.fingerprint,
+                "ENROLL",
+                challenge,
                 nowMillis = 1_000L
             )
         )
