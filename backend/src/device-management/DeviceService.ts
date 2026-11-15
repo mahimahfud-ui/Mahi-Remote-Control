@@ -642,13 +642,14 @@ export class DeviceService {
     );
   }
 
-  public static async heartbeatConnection(entityId: string, instanceId: string): Promise<void> {
-    await Database.query(
+  public static async heartbeatConnection(entityId: string, instanceId: string): Promise<boolean> {
+    const result = await Database.query(
       `UPDATE signaling_connections
        SET last_seen_at = NOW(), expires_at = NOW() + INTERVAL '60 seconds'
-       WHERE entity_id = $1 AND instance_id = $2`,
+       WHERE entity_id = $1 AND instance_id = $2 AND expires_at > NOW()`,
       [entityId, instanceId]
     );
+    return Boolean(result.rowCount);
   }
 
   public static async setConnectionOffline(entityId: string, instanceId: string): Promise<void> {
