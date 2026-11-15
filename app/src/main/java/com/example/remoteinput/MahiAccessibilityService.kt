@@ -184,7 +184,11 @@ class MahiAccessibilityService : AccessibilityService() {
                 "NOTIFICATIONS" -> GLOBAL_ACTION_NOTIFICATIONS
                 "QUICK_SETTINGS" -> GLOBAL_ACTION_QUICK_SETTINGS
                 "POWER_DIALOG" -> GLOBAL_ACTION_POWER_DIALOG
-                "LOCK_SCREEN" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) GLOBAL_ACTION_LOCK_SCREEN else GLOBAL_ACTION_BACK
+                "LOCK_SCREEN" -> if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                    GLOBAL_ACTION_LOCK_SCREEN
+                } else {
+                    return false
+                }
                 else -> return false
             }
 
