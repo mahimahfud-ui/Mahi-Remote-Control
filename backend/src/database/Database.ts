@@ -18,6 +18,7 @@ export class Database {
   private static listenerStarting = false;
   private static pollTimer: NodeJS.Timeout | null = null;
   private static pollingSignals = false;
+  private static readonly inFlightSignalIds = new Set<string>();
   private static migrationsReady = false;
 
   public static async initialize(): Promise<void> {
@@ -174,13 +175,23 @@ export class Database {
   private static async handleNotification(notification: Notification): Promise<void> {
     const eventId = notification.payload;
     if (!eventId || !/^[0-9a-f-]{36}$/i.test(eventId)) return;
+    await this.deliverOutboxEvent(eventId);
+  }
+
+  private static async deliverOutboxEvent(eventId: string): Promise<void> {
+    if (this.inFlightSignalIds.has(eventId) || !this.signalHandler) return;
+    this.inFlightSignalIds.add(eventId);
     try {
-      const result = await this.query<{ target_id: string; payload: SignalPayload; delivered_at: Date | null }>(
+      const result = await this.query<{
+        target_id: string;
+        payload: SignalPayload;
+        delivered_at: Date | null;
+      }>(
         'SELECT target_id, payload, delivered_at FROM signaling_outbox WHERE event_id = $1',
         [eventId]
       );
       const event = result.rows[0];
-      if (!event || event.delivered_at || !this.signalHandler) return;
+      if (!event || event.delivered_at) return;
       const delivered = await this.signalHandler(event.target_id, event.payload);
       if (delivered) {
         await this.query(
@@ -189,7 +200,9 @@ export class Database {
         );
       }
     } catch (error) {
-      console.error('[database] could not read signaling outbox event', error);
+      console.error('[database] could not deliver signaling outbox event', error);
+    } finally {
+      this.inFlightSignalIds.delete(eventId);
     }
   }
 
@@ -209,17 +222,7 @@ export class Database {
          LIMIT 100`
       );
       for (const event of pending.rows) {
-        try {
-          const delivered = await this.signalHandler(event.target_id, event.payload);
-          if (delivered) {
-            await this.query(
-              'UPDATE signaling_outbox SET delivered_at = NOW() WHERE event_id = $1 AND delivered_at IS NULL',
-              [event.event_id]
-            );
-          }
-        } catch (error) {
-          console.warn('[database] outbox delivery attempt failed', error);
-        }
+        await this.deliverOutboxEvent(event.event_id);
       }
     } catch (error) {
       console.warn('[database] outbox polling failed', error);
