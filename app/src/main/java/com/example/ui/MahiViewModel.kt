@@ -662,6 +662,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                     val valid = RemoteFileTransferRules.isValidTransferId(transferId) &&
                         offset >= 0L && offset == existingLength && append == (offset > 0L) &&
                         bytes.size <= RemoteFileTransferRules.CHUNK_BYTES &&
+                        path.endsWith(".mahi-upload-$transferId.part") &&
                         (append || !file.exists())
                     val success = valid && fileManager.writeFileChunk(path, bytes, append)
                     signalingClient.send(
@@ -676,7 +677,6 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                             .toString(),
                         msg.sender
                     )
-                    if (success) refreshFiles()
                 } catch (error: Exception) {
                     signalingClient.send(
                         "FILE_WRITE_ACK",
@@ -697,8 +697,9 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                 val temporaryPath = root.optString("temporaryPath")
                 val destinationPath = root.optString("destinationPath")
                 val destination = File(destinationPath)
+                val expectedTemporaryPath = "$destinationPath.mahi-upload-$transferId.part"
                 val success = RemoteFileTransferRules.isValidTransferId(transferId) &&
-                    temporaryPath.isNotBlank() && destinationPath.isNotBlank() &&
+                    destinationPath.isNotBlank() && temporaryPath == expectedTemporaryPath &&
                     !destination.exists() && fileManager.moveFile(temporaryPath, destinationPath)
                 signalingClient.send(
                     "FILE_OPERATION_RESULT",
@@ -715,7 +716,8 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
             "ABORT_UPLOAD" -> {
                 val transferId = root.optString("transferId")
                 val temporaryPath = root.optString("temporaryPath")
-                if (RemoteFileTransferRules.isValidTransferId(transferId) && temporaryPath.isNotBlank()) {
+                if (RemoteFileTransferRules.isValidTransferId(transferId) &&
+                    temporaryPath.endsWith(".mahi-upload-$transferId.part")) {
                     fileManager.deleteFile(temporaryPath, confirmed = true)
                     refreshFiles()
                 }
@@ -793,6 +795,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun disconnectControllerSession() {
+        failPendingRemoteFileResponses("The controller disconnected during file transfer.")
         val session = _activeControllerSession.value
         if (session != null) {
             signalingClient.send("EMERGENCY_DISCONNECT", """{"reason":"Controller disconnected"}""", session.targetDeviceId)
