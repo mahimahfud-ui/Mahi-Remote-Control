@@ -560,7 +560,7 @@ export class DeviceService {
       await client.query(
         `UPDATE pairing_requests
          SET status = 'CANCELLED', decided_at = NOW()
-         WHERE receiver_id = $1 AND status = 'PENDING'`,
+         WHERE (receiver_id = $1 OR controller_id = $1) AND status = 'PENDING'`,
         [deviceId]
       );
       await client.query(
