@@ -112,8 +112,9 @@ export class Database {
 
       const sql = fs.readFileSync(path.join(migrationDirectory, migrationName), 'utf8');
       await this.transaction(async (client) => {
-        // Re-check under the transaction so concurrent replicas cannot apply the
-        // same migration twice during a rolling deployment.
+        // A transaction-scoped advisory lock serializes migrations even when the
+        // migration ledger row does not exist yet.
+        await client.query("SELECT pg_advisory_xact_lock(hashtext('mahi-remote-schema-migrations'))");
         const locked = await client.query(
           'SELECT 1 FROM schema_migrations WHERE migration_name = $1 FOR UPDATE',
           [migrationName]
@@ -195,9 +196,6 @@ export class Database {
     await this.query('DELETE FROM device_challenges WHERE expires_at < NOW() - INTERVAL \'1 day\'');
     await this.query(
       "UPDATE pairing_requests SET status = 'EXPIRED', decided_at = NOW() WHERE status = 'PENDING' AND expires_at <= NOW()"
-    );
-    await this.query(
-      "UPDATE support_sessions SET status = 'EXPIRED', ended_at = NOW(), end_reason = 'Session expired' WHERE status = 'ACTIVE' AND expires_at <= NOW()"
     );
     await this.query('DELETE FROM rate_limit_counters WHERE updated_at < NOW() - INTERVAL \'1 day\'');
   }
