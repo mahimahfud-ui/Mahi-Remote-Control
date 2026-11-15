@@ -17,7 +17,7 @@ object RemoteFileTransferRules {
     }
 
     fun isValidTransferId(transferId: String): Boolean =
-        transferId.matches(Regex("^[0-9a-fA-F-]{36}$"))
+        transferId.matches(Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"))
 
     fun chunkLength(totalBytes: Long, offset: Long): Int {
         require(totalBytes in 0..MAX_FILE_BYTES) { "File size exceeds the allowed transfer limit." }
