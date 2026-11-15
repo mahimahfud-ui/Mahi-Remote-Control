@@ -3,7 +3,6 @@ import http from 'http';
 import path from 'path';
 import express from 'express';
 import cors from 'cors';
-import helmet from 'helmet';
 import { WebSocketServer } from 'ws';
 import { apiRouter } from './api/routes';
 import { SignalingHub } from './signaling/SignalingHub';
@@ -28,10 +27,6 @@ const configuredOrigin = (() => {
 
 app.disable('x-powered-by');
 app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : false);
-app.use(helmet({
-  contentSecurityPolicy: false, // Static browser controller has its own inline script configuration.
-  crossOriginEmbedderPolicy: false,
-}));
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin || (configuredOrigin && origin === configuredOrigin)) {
@@ -59,6 +54,8 @@ app.use(express.json({ limit: '256kb', strict: true }));
 app.use((req, res, next) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()');
   next();
 });
 
