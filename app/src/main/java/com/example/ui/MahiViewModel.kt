@@ -347,14 +347,22 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                     "DIAGNOSTICS_RESULT" -> {
                         val root = JSONObject(msg.payload)
                         val payloadObj = if (root.has("payload") && root.get("payload") is JSONObject) root.getJSONObject("payload") else root
-                        val battery = payloadObj.optInt("battery", 85)
-                        val temp = payloadObj.optDouble("temp", 33.5).toFloat()
-                        val storage = payloadObj.optString("storage", "38.2 GB")
+                        // Never fabricate remote telemetry. Keep the last real reading
+                        // until the receiver returns the requested fields.
+                        if (!payloadObj.has("battery") || !payloadObj.has("temp") || !payloadObj.has("storage")) {
+                            return@launch
+                        }
+                        val battery = payloadObj.optInt("battery", -1)
+                        val temp = payloadObj.optDouble("temp", Double.NaN).toFloat()
+                        val storage = payloadObj.optString("storage", "")
+                        if (battery !in 0..100 || !temp.isFinite() || storage.isBlank()) {
+                            return@launch
+                        }
                         _remoteTelemetry.value = RemoteTelemetry(
                             batteryPercent = battery,
                             batteryTempC = temp,
                             storageFree = storage,
-                            roundTripTimeMs = 30
+                            roundTripTimeMs = 0
                         )
                     }
                     "INPUT_EVENT" -> {
