@@ -483,7 +483,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun handleFileCommand(msg: SignalingMessage)    private fun handleFileCommand(msg: SignalingMessage) {
+    private fun handleFileCommand(msg: SignalingMessage) {
         val root = JSONObject(msg.payload)
         val action = root.optString("action", "LIST").uppercase()
         val path = root.optString("path", getApplication<Application>().filesDir.absolutePath)
