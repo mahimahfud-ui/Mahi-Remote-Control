@@ -3,7 +3,8 @@ name: Android verification
 on:
   push:
     branches:
-      - work/remote-access-hardening
+      - main
+      - fix/full-remote-workflow
     paths:
       - "app/**"
       - "gradle/**"
