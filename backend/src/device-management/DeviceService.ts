@@ -69,7 +69,7 @@ export class DeviceService {
     if (!pepper || Buffer.byteLength(pepper, 'utf8') < 32 || /replace|example|change[-_ ]?me/i.test(pepper)) {
       throw new Error('PAIRING_CODE_PEPPER must be configured with at least 32 bytes.');
     }
-    return crypto.createHmac('sha256', pepper).update(`mahi-remote:v1:${code}`).digest('hex');
+    return crypto.createHmac('sha256', pepper).update(`mahi-remote:v1:${deviceId}:${code}`).digest('hex');
   }
 
   public static async insertEnrolledDevice(
@@ -259,24 +259,32 @@ export class DeviceService {
     }
 
     return Database.transaction(async (client) => {
-      // The peppered HMAC permits an indexed lookup without persisting or scanning plaintext codes.
-      const codeHash = this.pairingCodeHash('', normalizedCode);
+      // Pairing code rows contain only a peppered HMAC, never the six-digit value.
+      // Codes are short-lived with one active code per enrolled device, so checking
+      // active hashes here is bounded by the online device population and avoids
+      // creating a public reverse index from a six-digit secret.
       const activeCodes = await client.query(
         `SELECT p.id::text AS code_id, p.code_hash, p.device_id, d.device_name,
                 (EXTRACT(EPOCH FROM p.expires_at) * 1000)::bigint AS expires_at_ms
          FROM pairing_codes p
          JOIN devices d ON d.device_id = p.device_id
-         WHERE p.code_hash = $1 AND p.consumed_at IS NULL
-           AND p.expires_at > NOW() AND d.is_revoked = FALSE
-         ORDER BY p.created_at DESC
-         FOR UPDATE OF p, d`,
-        [codeHash]
+         WHERE p.consumed_at IS NULL AND p.expires_at > NOW()
+           AND d.is_revoked = FALSE
+         FOR UPDATE OF p, d`
       );
-      if (activeCodes.rows.length > 1) {
-        throw new DeviceServiceError('PAIRING_CODE_AMBIGUOUS', 'This pairing code is currently active on more than one receiver. Regenerate the receiver code.');
+      let matched: any = null;
+      for (const row of activeCodes.rows) {
+        const candidateHash = this.pairingCodeHash(row.device_id, normalizedCode);
+        if (
+          typeof row.code_hash === 'string' &&
+          Buffer.byteLength(row.code_hash) === Buffer.byteLength(candidateHash) &&
+          crypto.timingSafeEqual(Buffer.from(row.code_hash), Buffer.from(candidateHash))
+        ) {
+          matched = row;
+          break;
+        }
       }
-      const matched = activeCodes.rows[0];
-      if (!matched || !crypto.timingSafeEqual(Buffer.from(matched.code_hash), Buffer.from(codeHash))) {
+      if (!matched) {
         throw new DeviceServiceError('PAIRING_CODE_INVALID', 'Invalid or expired pairing code.');
       }
 
