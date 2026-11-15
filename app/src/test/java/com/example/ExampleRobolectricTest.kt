@@ -10,6 +10,7 @@ import com.example.security.DeviceIdentity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -31,11 +32,34 @@ class ExampleRobolectricTest {
     @Test
     fun testDeviceIdentityGeneration() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val identity = DeviceIdentity.getOrCreateIdentity(context)
+        val identity = try {
+            DeviceIdentity.getOrCreateIdentity(context)
+        } catch (error: IllegalStateException) {
+            // Robolectric may not provide AndroidKeyStore. The production code
+            // must fail closed rather than manufacture a fake identity.
+            assertTrue(error.message?.contains("Android Keystore") == true)
+            val prefs = context.getSharedPreferences("mahi_device_identity", Context.MODE_PRIVATE)
+            assertFalse(prefs.contains("device_id"))
+            return
+        }
+
         assertNotNull(identity.deviceId)
         assertTrue(identity.deviceId.startsWith("MAHI-"))
         assertNotNull(identity.fingerprint)
+        assertEquals(95, identity.fingerprint.length)
         assertTrue(identity.fingerprint.contains(":"))
+        assertFalse(identity.publicKeyBase64.isBlank())
+    }
+
+    @Test
+    fun testMalformedDeviceSignatureFailsClosed() {
+        assertFalse(
+            DeviceIdentity.verifyMessageSignature(
+                byteArrayOf(1, 2, 3),
+                "not-a-valid-signature",
+                "not-a-valid-public-key"
+            )
+        )
     }
 
     @Test
@@ -80,9 +104,26 @@ class ExampleRobolectricTest {
             timestamp = System.currentTimeMillis()
         )
 
-        manager.approveRequest(request)
+        // Approval only notifies the backend. A local session starts only
+        // after the backend returns its signed session authorization.
+        manager.recordIncomingOperatorRequest(
+            controllerId = "MAHI-TEST-CONTROLLER",
+            operatorName = request.operatorName,
+            location = request.operatorLocation,
+            fingerprint = request.controllerFingerprint,
+            scopes = request.requestedScopes,
+            requestId = request.requestId
+        )
+        val pendingRequest = manager.pendingRequest.value
+        assertNotNull(pendingRequest)
+        manager.approveRequest(pendingRequest!!)
+        assertTrue(manager.approvalInProgress.value)
+        assertNull(manager.activeSession.value)
+
+        assertTrue(manager.markSessionAuthorized("test-session-1"))
         val active = manager.activeSession.value
         assertNotNull(active)
+        assertEquals("test-session-1", active?.sessionId)
         assertEquals("Sylhet NOC Operator", active?.operatorName)
 
         manager.emergencyDisconnect("Test disconnect")
@@ -147,7 +188,12 @@ class ExampleRobolectricTest {
 
         // Approve
         manager.approveRequest(pending!!)
+        assertTrue(manager.approvalInProgress.value)
+        assertNull(manager.activeSession.value)
+
+        assertTrue(manager.markSessionAuthorized("mobile-session-1"))
         assertNotNull(manager.activeSession.value)
+        assertEquals("mobile-session-1", manager.activeSession.value?.sessionId)
         assertEquals("Phone A (Pixel 8 Pro)", manager.activeSession.value?.operatorName)
 
         // Emergency disconnect terminates cleanly

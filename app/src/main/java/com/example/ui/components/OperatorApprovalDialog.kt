@@ -47,7 +47,8 @@ import com.example.ui.theme.TextSecondary
 fun OperatorApprovalDialog(
     request: OperatorRequest,
     onApprove: () -> Unit,
-    onReject: () -> Unit
+    onReject: () -> Unit,
+    isSubmitting: Boolean = false
 ) {
     AlertDialog(
         onDismissRequest = { /* Require explicit decision */ },
@@ -80,7 +81,7 @@ fun OperatorApprovalDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "A Windows desktop operator is requesting a secure support session:",
+                    text = "A remote controller is requesting permission to access this phone:",
                     color = TextSecondary,
                     fontSize = 13.sp
                 )
@@ -121,7 +122,7 @@ fun OperatorApprovalDialog(
                 }
 
                 Text(
-                    text = "You can terminate this session anytime via the persistent notification or emergency disconnect button.",
+                    text = if (isSubmitting) "Approval sent. Waiting for the server to confirm the secure session…" else "Nothing is shared until you approve. You can stop an active session at any time.",
                     color = TextSecondary,
                     fontSize = 11.sp,
                     lineHeight = 15.sp
@@ -131,6 +132,7 @@ fun OperatorApprovalDialog(
         confirmButton = {
             Button(
                 onClick = onApprove,
+                enabled = !isSubmitting,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MintAccent,
                     contentColor = DarkCharcoalBg
@@ -140,12 +142,13 @@ fun OperatorApprovalDialog(
             ) {
                 Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Authorize Session", fontWeight = FontWeight.Bold)
+                Text(if (isSubmitting) "Waiting…" else "Authorize Session", fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {
             OutlinedButton(
                 onClick = onReject,
+                enabled = !isSubmitting,
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = ErrorCoral),
                 border = ButtonDefaults.outlinedButtonBorder.copy(brush = androidx.compose.ui.graphics.SolidColor(ErrorCoral)),
                 shape = RoundedCornerShape(10.dp),

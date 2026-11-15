@@ -1,12 +1,14 @@
 package com.example.pairing
 
 import android.content.Context
+import android.net.Uri
 import com.example.security.AuditLogger
 import com.example.security.AuditSeverity
 import com.example.security.DeviceIdentity
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONObject
 import java.security.SecureRandom
 import java.util.UUID
 
@@ -14,6 +16,7 @@ class PairingManager(private val context: Context) {
 
     private val secureRandom = SecureRandom()
     private val identity = DeviceIdentity.getOrCreateIdentity(context)
+    @Volatile private var browserAccessUrl: String? = null
 
     private val _currentPairingCode = MutableStateFlow<PairingCodeData?>(null)
     val currentPairingCode: StateFlow<PairingCodeData?> = _currentPairingCode.asStateFlow()
@@ -24,19 +27,11 @@ class PairingManager(private val context: Context) {
     private val _pendingRequest = MutableStateFlow<OperatorRequest?>(null)
     val pendingRequest: StateFlow<OperatorRequest?> = _pendingRequest.asStateFlow()
 
-    private val _trustedControllers = MutableStateFlow<List<TrustedController>>(
-        listOf(
-            TrustedController(
-                id = "ctrl_sylhet_admin",
-                name = "Sylhet NOC - Workstation #1",
-                location = "Sylhet, Bangladesh",
-                fingerprint = "8E:4A:91:D2:11:F9:6C:55:A3:40:99:BC:14:8A:EF:29",
-                pairedAtMillis = System.currentTimeMillis() - 86400000L * 2,
-                lastConnectedAtMillis = System.currentTimeMillis() - 3600000L * 5,
-                isRevoked = false
-            )
-        )
-    )
+    private val _approvalInProgress = MutableStateFlow(false)
+    val approvalInProgress: StateFlow<Boolean> = _approvalInProgress.asStateFlow()
+    private var approvalRequest: OperatorRequest? = null
+
+    private val _trustedControllers = MutableStateFlow<List<TrustedController>>(emptyList())
     val trustedControllers: StateFlow<List<TrustedController>> = _trustedControllers.asStateFlow()
 
     init {
@@ -49,16 +44,7 @@ class PairingManager(private val context: Context) {
         val formattedCode = "%03d-%03d".format(num / 1000, num % 1000)
         val expiresAt = System.currentTimeMillis() + (5 * 60 * 1000L) // 5 minutes
 
-        val qrPayload = """
-            {
-              "deviceId": "${identity.deviceId}",
-              "deviceName": "${identity.deviceName}",
-              "fingerprint": "${identity.fingerprint}",
-              "pairingCode": "$formattedCode",
-              "expiresAt": $expiresAt,
-              "v": 1
-            }
-        """.trimIndent()
+        val qrPayload = buildQrPayload(formattedCode, expiresAt)
 
         val data = PairingCodeData(
             code = formattedCode,
@@ -70,19 +56,41 @@ class PairingManager(private val context: Context) {
         return data
     }
 
-    fun simulateIncomingOperatorRequest(
-        operatorName: String = "Mahi Windows Operator (Sylhet)",
-        location: String = "Sylhet, Bangladesh",
-        fingerprint: String = "8E:4A:91:D2:11:F9:6C:55:A3:40:99:BC:14:8A:EF:29",
-        scopes: List<String> = listOf("Screen Mirroring", "Remote Interaction", "File Transfer", "Diagnostics")
-    ) {
-        recordIncomingOperatorRequest(
-            controllerId = "operator_sylhet_mock",
-            operatorName = operatorName,
-            location = location,
-            fingerprint = fingerprint,
-            scopes = scopes
-        )
+    fun setBrowserAccessUrl(url: String?) {
+        val validated = url?.takeIf {
+            runCatching {
+                val parsed = Uri.parse(it)
+                parsed.scheme == "https" && !parsed.host.isNullOrBlank()
+            }.getOrDefault(false)
+        }?.trimEnd('/')
+        if (browserAccessUrl == validated) return
+        browserAccessUrl = validated
+        _currentPairingCode.value?.let { current ->
+            _currentPairingCode.value = current.copy(
+                qrPayloadJson = buildQrPayload(current.code, current.expiresAtMillis)
+            )
+        }
+    }
+
+    private fun buildQrPayload(code: String, expiresAt: Long): String {
+        val baseUrl = browserAccessUrl
+        if (!baseUrl.isNullOrBlank()) {
+            return Uri.parse(baseUrl)
+                .buildUpon()
+                .appendQueryParameter("code", code.filter(Char::isDigit))
+                .appendQueryParameter("expiresAt", expiresAt.toString())
+                .build()
+                .toString()
+        }
+
+        return JSONObject()
+            .put("deviceId", identity.deviceId)
+            .put("deviceName", identity.deviceName)
+            .put("fingerprint", identity.fingerprint)
+            .put("pairingCode", code)
+            .put("expiresAt", expiresAt)
+            .put("v", 1)
+            .toString()
     }
 
     fun recordIncomingOperatorRequest(
@@ -90,10 +98,11 @@ class PairingManager(private val context: Context) {
         operatorName: String,
         location: String,
         fingerprint: String,
-        scopes: List<String>
+        scopes: List<String>,
+        requestId: String? = null
     ) {
         val request = OperatorRequest(
-            requestId = UUID.randomUUID().toString(),
+            requestId = requestId?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString(),
             controllerId = controllerId,
             operatorName = operatorName,
             operatorLocation = location,
@@ -106,19 +115,36 @@ class PairingManager(private val context: Context) {
     }
 
     fun approveRequest(request: OperatorRequest) {
+        if (_pendingRequest.value?.requestId != request.requestId || _approvalInProgress.value) return
+        approvalRequest = request
+        _approvalInProgress.value = true
+        AuditLogger.log(
+            "PAIRING",
+            "APPROVAL_SENT",
+            "Owner approval was sent to the backend; waiting for a signed session authorization.",
+            AuditSeverity.SECURITY
+        )
+    }
+
+    fun markSessionAuthorized(sessionId: String): Boolean {
+        val request = approvalRequest ?: return false
+        if (sessionId.isBlank()) return false
+
         val session = ActiveSession(
-            sessionId = UUID.randomUUID().toString(),
+            sessionId = sessionId,
             operatorName = request.operatorName,
             operatorLocation = request.operatorLocation,
             controllerFingerprint = request.controllerFingerprint,
             startedAtMillis = System.currentTimeMillis(),
-            isScreenStreaming = true,
+            controllerId = request.controllerId,
+            isScreenStreaming = false,
             isInputEnabled = true
         )
         _activeSession.value = session
         _pendingRequest.value = null
+        approvalRequest = null
+        _approvalInProgress.value = false
 
-        // Add or update trusted controller
         val existing = _trustedControllers.value.find { it.fingerprint == request.controllerFingerprint }
         val updatedList = if (existing != null) {
             _trustedControllers.value.map {
@@ -138,10 +164,26 @@ class PairingManager(private val context: Context) {
         }
         _trustedControllers.value = updatedList
 
-        AuditLogger.log("SESSION", "ESTABLISHED", "Session ${session.sessionId.take(8)} authorized for ${request.operatorName}", AuditSeverity.SECURITY)
+        AuditLogger.log(
+            "SESSION",
+            "ESTABLISHED",
+            "Backend authorized session ${session.sessionId.take(8)} for ${request.operatorName}.",
+            AuditSeverity.SECURITY
+        )
+        return true
+    }
+
+    fun failApproval(reason: String) {
+        if (approvalRequest == null && !_approvalInProgress.value) return
+        approvalRequest = null
+        _approvalInProgress.value = false
+        _pendingRequest.value = null
+        AuditLogger.log("PAIRING", "APPROVAL_FAILED", reason, AuditSeverity.WARNING)
     }
 
     fun rejectRequest(request: OperatorRequest) {
+        approvalRequest = null
+        _approvalInProgress.value = false
         _pendingRequest.value = null
         AuditLogger.log("PAIRING", "REJECTED_BY_USER", "Denied connection from ${request.operatorName}", AuditSeverity.WARNING)
     }
@@ -161,6 +203,8 @@ class PairingManager(private val context: Context) {
         val currentSession = _activeSession.value
         _activeSession.value = null
         _pendingRequest.value = null
+        approvalRequest = null
+        _approvalInProgress.value = false
         AuditLogger.log(
             category = "SECURITY",
             action = "EMERGENCY_DISCONNECT",
