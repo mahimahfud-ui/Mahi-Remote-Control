@@ -588,17 +588,21 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         _isControllerConnecting.value = true
         _controllerErrorMessage.value = null
 
-        val formatted = code.trim().uppercase()
-        val payload = """
-            {
-              "type": "PAIR_BY_CODE",
-              "code": "$formatted",
-              "controllerName": "${identity.deviceName}",
-              "controllerModel": "${android.os.Build.MODEL}",
-              "fingerprint": "${identity.fingerprint}",
-              "requestedScopes": ["Screen Mirroring", "Remote Interaction", "File Transfer", "Diagnostics"]
-            }
-        """.trimIndent()
+        val formattedCode = code.filter(Char::isDigit)
+        if (formattedCode.length != 6) {
+            _isControllerConnecting.value = false
+            _controllerErrorMessage.value = "Enter the six-digit pairing code."
+            return
+        }
+
+        val payload = JSONObject()
+            .put("code", formattedCode)
+            .put("operatorName", identity.deviceName)
+            .put(
+                "requestedScopes",
+                JSONArray(listOf("Screen Mirroring", "Remote Interaction", "File Transfer", "Diagnostics"))
+            )
+            .toString()
 
         val sent = signalingClient.send("PAIR_BY_CODE", payload)
         if (!sent) {
