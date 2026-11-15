@@ -1,607 +1,985 @@
-// Mahi Remote Control — Browser Controller Client
-(function () {
+(() => {
   'use strict';
 
-  // State Management
+  const $ = (selector, root = document) => root.querySelector(selector);
+  const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
   const state = {
     ws: null,
+    wsConnecting: false,
+    reconnectTimer: null,
+    pingTimer: null,
+    lastPingAt: 0,
+    runtimeConfig: null,
+    controllerFingerprint: null,
+    sessionId: null,
+    sessionToken: null,
+    targetDeviceId: null,
+    targetDeviceName: 'Android device',
+    pairingRequestId: null,
     peerConnection: null,
-    operatorFingerprint: 'OP-WEB-' + Math.random().toString(36).substring(2, 10).toUpperCase(),
-    operatorName: 'Web Operator (Chrome/Windows)',
-    operatorLocation: 'Sylhet NOC',
-    activeDeviceId: 'MAHI-SAM-9B7C12F0',
-    pairedDevices: [
-      {
-        deviceId: 'MAHI-SAM-9B7C12F0',
-        deviceName: 'Samsung Galaxy S24 Ultra',
-        location: 'Noakhali, Bangladesh',
-        battery: 86,
-        isOnline: true
-      }
-    ],
+    pendingIceCandidates: [],
+    hasFirstFrame: false,
+    sessionStartedAt: 0,
+    durationTimer: null,
     commandSequence: 1,
-    dragStart: null,
-    lastClickTime: 0,
-    clickCount: 0,
-    currentPath: '/storage/emulated/0/Documents'
+    pointerStart: null,
+    targetWidth: 1080,
+    targetHeight: 1920,
+    currentPath: '',
+    apps: [],
+    files: []
   };
 
-  // DOM Elements
   const el = {
-    badge: document.getElementById('connectionBadge'),
-    latency: document.getElementById('latencyDisplay'),
-    hostPill: document.getElementById('hostPill'),
-    deviceList: document.getElementById('deviceList'),
-    canvas: document.getElementById('phoneCanvas'),
-    video: document.getElementById('remoteVideo'),
-    placeholder: document.getElementById('streamPlaceholder'),
-    streamStats: document.getElementById('streamStats'),
-    auditBox: document.getElementById('auditLogBox'),
-    pairModal: document.getElementById('pairModal'),
-    btnPair: document.getElementById('btnPairDevice'),
-    btnCloseModal: document.getElementById('btnCloseModal'),
-    btnSubmitPair: document.getElementById('btnSubmitPair'),
-    inputPairCode: document.getElementById('inputPairCode'),
-    btnEmergencyKill: document.getElementById('btnEmergencyKill'),
-    btnRunDiag: document.getElementById('btnRunDiag'),
-    btnLaunchPkg: document.getElementById('btnLaunchPkg'),
-    launchPkgInput: document.getElementById('launchPkgInput'),
-    appList: document.getElementById('appList'),
-    fileList: document.getElementById('fileList'),
-    currentFilePath: document.getElementById('currentFilePath'),
-    btnTriggerUpload: document.getElementById('btnTriggerUpload'),
-    fileUploadInput: document.getElementById('fileUploadInput'),
-    fileUploadProgress: document.getElementById('fileUploadProgress'),
-    progressBarFill: document.getElementById('progressBarFill'),
-    progressText: document.getElementById('progressText'),
-    btnNewFolder: document.getElementById('btnNewFolder'),
-    btnRefreshFiles: document.getElementById('btnRefreshFiles'),
-    btnClearLogs: document.getElementById('btnClearLogs'),
-    qualitySelect: document.getElementById('qualitySelect'),
-    diagBattery: document.getElementById('diagBattery'),
-    diagTemp: document.getElementById('diagTemp'),
-    diagStorage: document.getElementById('diagStorage')
+    pair: $('#pair'),
+    app: $('#app'),
+    codeBoxes: $$('.code input'),
+    pairStatus: $('#pair-status'),
+    connect: $('#connect'),
+    deviceName: $('#device-model-text'),
+    deviceStatus: $('#device-status-text'),
+    latency: $('#latency-text'),
+    duration: $('#dur'),
+    stage: $('.stage'),
+    canvas: $('#screen'),
+    video: $('#remote-video'),
+    coords: $('#coords'),
+    drawer: $('#drawer'),
+    closeDrawer: $('#close-drawer'),
+    apps: $('#app-list'),
+    files: $('#file-list'),
+    search: $('#search'),
+    crumbs: $('#crumbs'),
+    battery: $('#diag-battery'),
+    batteryBar: $('#diag-battery-bar'),
+    storage: $('#diag-storage'),
+    memory: $('#diag-memory'),
+    temperature: $('#diag-temp'),
+    diagLatency: $('#diag-latency'),
+    fps: $('#diag-fps'),
+    bitrate: $('#diag-bitrate'),
+    modal: $('#modal'),
+    cancel: $('#cancel'),
+    confirm: $('#confirm'),
+    retry: $('#retry'),
+    toast: $('#toast')
   };
 
-  const ctx = el.canvas.getContext('2d');
+  const canvasContext = el.canvas ? el.canvas.getContext('2d') : null;
 
-  // Initialize
-  function init() {
-    el.hostPill.textContent = window.location.host;
-    setupTabs();
-    setupCanvasMouse();
-    setupToolbar();
-    setupModal();
-    setupFileUpload();
-    renderDevices();
-    connectSignaling();
-    startCanvasRenderLoop();
-    logAudit('INIT', `Browser Operator Console active. Fingerprint: ${state.operatorFingerprint}`, 'security');
+  function toast(message) {
+    if (!el.toast) return;
+    el.toast.textContent = message;
+    el.toast.classList.add('show');
+    clearTimeout(el.toastTimer);
+    el.toastTimer = setTimeout(() => el.toast.classList.remove('show'), 2600);
   }
 
-  // WebSocket Signaling Connection (Dynamically works with ANY IP or Cloudflare tunnel!)
-  function connectSignaling() {
-    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+  function audit(message, severity) {
+    const prefix = severity ? '[' + severity.toUpperCase() + '] ' : '';
+    console.info('[Mahi Remote] ' + prefix + message);
+  }
 
-    logAudit('SIGNALING', `Connecting to signaling socket at ${wsUrl}...`);
-    el.badge.textContent = 'CONNECTING';
-    el.badge.className = 'badge badge-warning';
+  function setPairStatus(message, error) {
+    if (!el.pairStatus) return;
+    el.pairStatus.textContent = message || '';
+    el.pairStatus.className = 'status' + (error ? ' error' : '');
+    if (el.pairStatus.querySelector('.spinner')) el.pairStatus.querySelector('.spinner').remove();
+  }
 
+  function setStage(mode) {
+    if (el.stage) el.stage.dataset.state = mode;
+  }
+
+  function setDeviceStatus(message) {
+    if (el.deviceStatus) el.deviceStatus.textContent = message;
+  }
+
+  function setCodeValue(code) {
+    const digits = String(code || '').replace(/\D/g, '').slice(0, 6);
+    el.codeBoxes.forEach((box, index) => { box.value = digits[index] || ''; });
+    if (el.connect) el.connect.disabled = digits.length !== 6;
+  }
+
+  function getCodeValue() {
+    return el.codeBoxes.map(box => box.value).join('');
+  }
+
+  function getControllerFingerprint() {
+    const storageKey = 'mahi.remote.controllerFingerprint.v1';
+    let value = '';
     try {
-      state.ws = new WebSocket(wsUrl);
+      value = sessionStorage.getItem(storageKey) || '';
+      if (!/^WEB-[A-F0-9]{32}$/.test(value)) {
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        value = 'WEB-' + Array.from(bytes).map(byte => byte.toString(16).padStart(2, '0')).join('').toUpperCase();
+        sessionStorage.setItem(storageKey, value);
+      }
+    } catch (error) {
+      const bytes = crypto.getRandomValues(new Uint8Array(16));
+      value = 'WEB-' + Array.from(bytes).map(byte => byte.toString(16).padStart(2, '0')).join('').toUpperCase();
+    }
+    return value;
+  }
 
-      state.ws.onopen = () => {
-        el.badge.textContent = 'ONLINE / READY';
-        el.badge.className = 'badge badge-success';
-        logAudit('SIGNALING', `Connected to signaling hub. Authenticated as ${state.operatorFingerprint}`, 'security');
-        
-        // Initial ping for latency
-        sendPing();
-        setInterval(sendPing, 15000);
-      };
+  function parsePayload(value) {
+    if (typeof value === 'string') {
+      try { return JSON.parse(value); } catch (_) { return {}; }
+    }
+    return value || {};
+  }
 
-      state.ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data);
-          handleSignalingMessage(msg);
-        } catch (e) {
-          console.error('Invalid WS payload', e);
+  function setConnectedUi() {
+    el.pair.hidden = true;
+    el.app.hidden = false;
+    if (el.deviceName) el.deviceName.textContent = state.targetDeviceName;
+    setDeviceStatus('Approved · establishing encrypted media path');
+    if (el.latency) el.latency.textContent = 'Negotiating video';
+    setStage('loading');
+    if (el.drawer) el.drawer.inert = true;
+  }
+
+  function startDurationTimer() {
+    state.sessionStartedAt = Date.now();
+    clearInterval(state.durationTimer);
+    state.durationTimer = setInterval(() => {
+      const seconds = Math.max(0, Math.floor((Date.now() - state.sessionStartedAt) / 1000));
+      const values = [
+        String(Math.floor(seconds / 3600)).padStart(2, '0'),
+        String(Math.floor((seconds % 3600) / 60)).padStart(2, '0'),
+        String(seconds % 60).padStart(2, '0')
+      ];
+      if (el.duration) el.duration.textContent = values.join(':');
+    }, 1000);
+  }
+
+  async function loadRuntimeConfig() {
+    const response = await fetch('/api/v1/config', {
+      method: 'GET',
+      cache: 'no-store',
+      credentials: 'same-origin'
+    });
+    if (!response.ok) throw new Error('Configuration endpoint returned HTTP ' + response.status);
+    const config = await response.json();
+    if (!config.browserAccessConfigured || !config.signalingUrl || !String(config.signalingUrl).startsWith('wss://')) {
+      throw new Error('Public HTTPS/WSS access is not configured on the backend.');
+    }
+    state.runtimeConfig = config;
+    if (!config.turnConfigured) {
+      audit('TURN is not configured. Direct ICE may work, but some mobile carrier networks will require a deployed TURN relay.', 'warning');
+    }
+  }
+
+  function connectSignaling() {
+    if (state.wsConnecting || (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING))) return;
+    const configured = state.runtimeConfig && state.runtimeConfig.signalingUrl;
+    if (!configured) {
+      setPairStatus('Secure signaling is not configured. Ask the administrator to configure PUBLIC_BASE_URL.', true);
+      return;
+    }
+
+    state.wsConnecting = true;
+    const wsUrl = new URL(configured);
+    wsUrl.searchParams.set('controllerFingerprint', state.controllerFingerprint);
+    try {
+      const socket = new WebSocket(wsUrl.toString());
+      state.ws = socket;
+
+      socket.onopen = () => {
+        state.wsConnecting = false;
+        audit('Secure WSS signaling connected.');
+        clearInterval(state.pingTimer);
+        sendWs({ type: 'PING' });
+        state.pingTimer = setInterval(() => sendWs({ type: 'PING' }), 15000);
+        if (state.sessionToken && state.targetDeviceId) {
+          startControllerOffer().catch(error => {
+            audit('Media reconnect failed: ' + error.message, 'error');
+            setStage('error');
+          });
+        } else {
+          setPairStatus('Secure connection ready. Enter the code shown on the phone.');
         }
       };
 
-      state.ws.onclose = () => {
-        el.badge.textContent = 'OFFLINE';
-        el.badge.className = 'badge badge-danger';
-        logAudit('SIGNALING', 'Socket disconnected. Retrying in 5 seconds...', 'critical');
-        setTimeout(connectSignaling, 5000);
+      socket.onmessage = event => {
+        try {
+          handleSignalingMessage(JSON.parse(event.data));
+        } catch (error) {
+          audit('Invalid signaling message: ' + error.message, 'error');
+        }
       };
 
-      state.ws.onerror = (err) => {
-        console.error('WebSocket error:', err);
+      socket.onerror = () => {
+        audit('WSS transport reported an error.', 'error');
       };
-    } catch (e) {
-      console.error('Failed to init WebSocket:', e);
+
+      socket.onclose = () => {
+        if (state.ws === socket) state.ws = null;
+        state.wsConnecting = false;
+        clearInterval(state.pingTimer);
+        state.pingTimer = null;
+        if (!state.sessionToken) setPairStatus('Signaling disconnected. Reconnecting…', true);
+        setDeviceStatus(state.sessionToken ? 'Signaling reconnecting · session retained' : 'Not connected');
+        if (!state.reconnectTimer) {
+          state.reconnectTimer = setTimeout(() => {
+            state.reconnectTimer = null;
+            connectSignaling();
+          }, 3000);
+        }
+      };
+    } catch (error) {
+      state.wsConnecting = false;
+      setPairStatus('Could not connect to the secure signaling service: ' + error.message, true);
+      if (!state.reconnectTimer) {
+        state.reconnectTimer = setTimeout(() => {
+          state.reconnectTimer = null;
+          connectSignaling();
+        }, 5000);
+      }
     }
   }
 
   function sendWs(data) {
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-      state.ws.send(JSON.stringify(data));
-      return true;
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return false;
+    const message = Object.assign({}, data);
+    if (message.type === 'PING') state.lastPingAt = Date.now();
+    const publicTypes = new Set(['PING', 'REGISTER', 'REGISTER_PAIRING_CODE', 'PAIR_BY_CODE', 'PAIR_CODE_CONNECT', 'PAIR_ACCEPT', 'PAIR_REJECT']);
+    if (state.sessionToken && !publicTypes.has(message.type)) {
+      message.sessionToken = state.sessionToken;
     }
-    return false;
+    state.ws.send(JSON.stringify(message));
+    return true;
   }
 
-  let lastPingTimestamp = 0;
-  function sendPing() {
-    lastPingTimestamp = Date.now();
-    sendWs({ type: 'PING', timestamp: lastPingTimestamp });
-  }
-
-  // Handle incoming messages
-  function handleSignalingMessage(msg) {
-    switch (msg.type) {
+  function handleSignalingMessage(message) {
+    switch (message.type) {
       case 'PONG': {
-        const rtt = Date.now() - lastPingTimestamp;
-        el.latency.textContent = `${rtt} ms RTT`;
+        const rtt = state.lastPingAt ? Date.now() - state.lastPingAt : null;
+        if (rtt !== null && el.latency && !state.hasFirstFrame) el.latency.textContent = rtt + ' ms RTT · waiting for video';
         break;
       }
-      case 'COMMAND_ACK': {
-        logAudit('ACK', `Command #${msg.sequence} confirmed by Noakhali phone (${msg.rtt}ms RTT)`);
+      case 'PAIR_PENDING':
+        state.pairingRequestId = message.requestId || null;
+        setPairStatus('Request sent. Waiting for the phone owner to approve.');
+        toast('Waiting for phone owner approval');
         break;
-      }
-      case 'APP_LIST_RESPONSE': {
-        renderAppList(JSON.parse(msg.payload || '[]'));
+      case 'PAIR_ACCEPT':
+        if (!message.sessionToken || !message.sessionId || !message.sender) {
+          setPairStatus('The server did not return valid session authorization.', true);
+          return;
+        }
+        state.sessionToken = message.sessionToken;
+        state.sessionId = message.sessionId;
+        state.targetDeviceId = message.sender;
+        state.targetDeviceName = message.receiverName || 'Android device';
+        state.pairingRequestId = null;
+        state.hasFirstFrame = false;
+        state.pendingIceCandidates = [];
+        setConnectedUi();
+        startDurationTimer();
+        audit('Owner approval received. Session token is active; requesting session-scoped ICE credentials.');
+        startControllerOffer().catch(error => {
+          audit('Unable to start WebRTC: ' + error.message, 'error');
+          setStage('error');
+          setDeviceStatus('Approved · media connection failed');
+        });
         break;
-      }
-      case 'FILE_LIST_RESPONSE': {
-        renderFileList(JSON.parse(msg.payload || '[]'));
+      case 'PAIR_REJECT':
+        state.pairingRequestId = null;
+        if (el.connect) el.connect.disabled = getCodeValue().length !== 6;
+        setPairStatus('The phone owner declined this connection request.', true);
+        toast('Connection request declined');
         break;
-      }
-      case 'DIAGNOSTICS_RESULT': {
-        try {
-          const diag = JSON.parse(msg.payload);
-          if (diag.battery) el.diagBattery.textContent = `${diag.battery}% (Nominal)`;
-          if (diag.temp) el.diagTemp.textContent = `${diag.temp}°C`;
-          if (diag.storage) el.diagStorage.textContent = `${diag.storage} free`;
-          logAudit('DIAGNOSTICS', `Diagnostics telemetry update: Battery ${diag.battery}%, Temp ${diag.temp}°C`, 'security');
-        } catch (e) {}
+      case 'PAIR_ERROR':
+        state.pairingRequestId = null;
+        if (el.connect) el.connect.disabled = getCodeValue().length !== 6;
+        setPairStatus(message.error || 'Pairing failed. Check the code and try again.', true);
         break;
-      }
+      case 'SESSION_ERROR':
+        audit(message.error || 'Session authorization failed.', 'error');
+        setDeviceStatus('Session authorization error');
+        break;
+      case 'SESSION_ENDED':
+      case 'EMERGENCY_DISCONNECT':
+        finishSession(message.reason || 'The approved session has ended.');
+        break;
       case 'SDP_ANSWER': {
-        handleSdpAnswer(msg.payload.sdp);
+        if (!state.sessionId || message.sessionId !== state.sessionId) return;
+        const payload = parsePayload(message.payload);
+        const sdp = payload.sdp || message.sdp;
+        if (sdp) applyRemoteAnswer(sdp).catch(error => audit('Could not apply SDP answer: ' + error.message, 'error'));
         break;
       }
+      case 'ICE_CANDIDATE': {
+        if (!state.sessionId || message.sessionId !== state.sessionId) return;
+        const candidateData = parsePayload(message.payload);
+        if (candidateData.candidate) addRemoteIceCandidate(candidateData).catch(error => audit('Could not add ICE candidate: ' + error.message, 'error'));
+        break;
+      }
+      case 'APP_LIST_RESPONSE':
+        renderApps(parsePayload(message.payload));
+        break;
+      case 'FILE_LIST_RESPONSE':
+        renderFiles(parsePayload(message.payload));
+        break;
+      case 'DIAGNOSTICS_RESULT':
+        renderDiagnostics(parsePayload(message.payload));
+        break;
+      case 'DISPLAY_INFO': {
+        const display = parsePayload(message.payload);
+        if (display.width > 0 && display.height > 0) {
+          state.targetWidth = display.width;
+          state.targetHeight = display.height;
+        }
+        break;
+      }
+      case 'COMMAND_ACK':
+        audit('Remote command acknowledged.');
+        break;
     }
   }
 
-  // WebRTC Setup
-  async function initWebRTC() {
-    const config = {
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        {
-          urls: 'turn:turn.mahi-remote.cloud:3478',
-          username: 'mahi_operator',
-          credential: 'mahi-turn-shared-secret-auth-key'
+  async function loadSessionIceServers() {
+    if (!state.sessionToken) throw new Error('A receiver-approved session token is required for ICE configuration.');
+    const response = await fetch('/api/v1/turn-credentials', {
+      method: 'GET',
+      cache: 'no-store',
+      credentials: 'same-origin',
+      headers: { Authorization: 'Bearer ' + state.sessionToken }
+    });
+    if (!response.ok) throw new Error('Approved-session ICE endpoint returned HTTP ' + response.status);
+    const result = await response.json();
+    if (!Array.isArray(result.iceServers) || result.iceServers.length === 0) {
+      throw new Error('The backend returned no ICE servers.');
+    }
+    if (!result.turnConfigured) {
+      audit('No TURN relay is configured. Some carrier-grade NAT paths may not connect.', 'warning');
+    } else {
+      audit('Received short-lived TURN credentials for this approved session.');
+    }
+    return result.iceServers;
+  }
+
+  async function startControllerOffer() {
+    if (!state.sessionToken || !state.sessionId || !state.targetDeviceId) {
+      throw new Error('No receiver-approved session is active.');
+    }
+    const sessionId = state.sessionId;
+    const iceServers = await loadSessionIceServers();
+    if (state.sessionId !== sessionId || !state.sessionToken) return;
+
+    if (state.peerConnection) {
+      state.peerConnection.ontrack = null;
+      state.peerConnection.close();
+      state.peerConnection = null;
+    }
+    state.pendingIceCandidates = [];
+    state.hasFirstFrame = false;
+    setStage('loading');
+    if (el.latency) el.latency.textContent = 'Negotiating media';
+
+    const peer = new RTCPeerConnection({ iceServers });
+    state.peerConnection = peer;
+    peer.addTransceiver('video', { direction: 'recvonly' });
+
+    peer.ontrack = event => {
+      const stream = event.streams && event.streams[0] ? event.streams[0] : new MediaStream([event.track]);
+      if (!el.video) return;
+      el.video.srcObject = stream;
+      // Keep the decoder surface in the rendering tree (visually hidden) so
+      // requestVideoFrameCallback can observe actual presented frames.
+      el.video.style.display = 'block';
+      el.video.style.position = 'absolute';
+      el.video.style.width = '1px';
+      el.video.style.height = '1px';
+      el.video.style.opacity = '0';
+      el.video.style.pointerEvents = 'none';
+      el.video.play().catch(error => audit('Browser autoplay requires a user gesture: ' + error.message, 'warning'));
+      setStage('loading');
+      watchForRealVideoFrames(peer);
+    };
+
+    peer.onicecandidate = event => {
+      if (!event.candidate || state.peerConnection !== peer || state.sessionId !== sessionId) return;
+      const candidate = event.candidate;
+      const sent = sendWs({
+        type: 'ICE_CANDIDATE',
+        targetDeviceId: state.targetDeviceId,
+        payload: {
+          candidate: candidate.candidate,
+          sdpMid: candidate.sdpMid,
+          sdpMLineIndex: candidate.sdpMLineIndex
         }
-      ]
+      });
+      if (!sent) audit('Could not send a local ICE candidate because signaling is offline.', 'warning');
     };
 
-    state.peerConnection = new RTCPeerConnection(config);
-
-    state.peerConnection.ontrack = (event) => {
-      el.video.srcObject = event.streams[0];
-      el.placeholder.style.display = 'none';
-      logAudit('WEBRTC', 'Video track received. Hardware H.264 rendering started.', 'security');
+    peer.onconnectionstatechange = () => {
+      if (state.peerConnection !== peer) return;
+      const status = peer.connectionState;
+      if (status === 'connected') {
+        setDeviceStatus('Media transport connected · waiting for first video frame');
+      } else if (status === 'failed') {
+        setStage('error');
+        setDeviceStatus('Media connection failed · check TURN and network access');
+      } else if (status === 'disconnected') {
+        setStage('loading');
+        setDeviceStatus('Media connection interrupted');
+      }
     };
 
-    state.peerConnection.onicecandidate = (event) => {
-      if (event.candidate) {
-        sendWs({
-          type: 'ICE_CANDIDATE',
-          candidate: event.candidate.candidate,
-          targetDeviceId: state.activeDeviceId
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    if (state.peerConnection !== peer || state.sessionId !== sessionId) return;
+    const sent = sendWs({
+      type: 'SDP_OFFER',
+      targetDeviceId: state.targetDeviceId,
+      payload: { sdp: peer.localDescription.sdp }
+    });
+    if (!sent) throw new Error('Could not send the WebRTC offer over the secure signaling channel.');
+    audit('WebRTC receive-only offer sent to the approved Android receiver.');
+  }
+
+  function watchForRealVideoFrames(peer) {
+    if (!el.video || state.peerConnection !== peer) return;
+    const markFirstFrame = () => {
+      if (state.peerConnection !== peer || state.hasFirstFrame) return;
+      state.hasFirstFrame = true;
+      if (el.canvas && el.video.videoWidth > 0 && el.video.videoHeight > 0) {
+        el.canvas.width = el.video.videoWidth;
+        el.canvas.height = el.video.videoHeight;
+      }
+      setStage('live');
+      setDeviceStatus('Live · real video frames received');
+      if (el.latency && state.lastPingAt) el.latency.textContent = 'Video active';
+      audit('First decoded remote video frame received. Live status enabled.');
+    };
+
+    if (typeof el.video.requestVideoFrameCallback === 'function') {
+      const onFrame = () => {
+        markFirstFrame();
+        if (state.peerConnection === peer && !state.hasFirstFrame) {
+          el.video.requestVideoFrameCallback(onFrame);
+        }
+      };
+      el.video.requestVideoFrameCallback(onFrame);
+    } else {
+      const check = setInterval(() => {
+        if (state.peerConnection !== peer) {
+          clearInterval(check);
+          return;
+        }
+        if (el.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+            el.video.videoWidth > 0 && el.video.currentTime > 0) {
+          markFirstFrame();
+          clearInterval(check);
+        }
+      }, 180);
+    }
+  }
+
+  async function applyRemoteAnswer(sdp) {
+    const peer = state.peerConnection;
+    if (!peer) throw new Error('WebRTC PeerConnection is not initialized.');
+    await peer.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: sdp }));
+    const candidates = state.pendingIceCandidates.splice(0);
+    for (const candidate of candidates) await peer.addIceCandidate(candidate);
+  }
+
+  async function addRemoteIceCandidate(data) {
+    const candidate = new RTCIceCandidate({
+      candidate: data.candidate,
+      sdpMid: data.sdpMid || null,
+      sdpMLineIndex: Number.isInteger(data.sdpMLineIndex) ? data.sdpMLineIndex : 0
+    });
+    const peer = state.peerConnection;
+    if (!peer || !peer.remoteDescription) {
+      state.pendingIceCandidates.push(candidate);
+      return;
+    }
+    await peer.addIceCandidate(candidate);
+  }
+
+  function drawRealFrame() {
+    if (!canvasContext || !el.canvas || !el.video) return;
+    if (state.hasFirstFrame &&
+        el.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+        el.video.videoWidth > 0 && el.video.videoHeight > 0) {
+      if (el.canvas.width !== el.video.videoWidth || el.canvas.height !== el.video.videoHeight) {
+        el.canvas.width = el.video.videoWidth;
+        el.canvas.height = el.video.videoHeight;
+      }
+      canvasContext.drawImage(el.video, 0, 0, el.canvas.width, el.canvas.height);
+    } else {
+      canvasContext.clearRect(0, 0, el.canvas.width, el.canvas.height);
+      canvasContext.fillStyle = '#0b1117';
+      canvasContext.fillRect(0, 0, el.canvas.width, el.canvas.height);
+    }
+    requestAnimationFrame(drawRealFrame);
+  }
+
+  function finishSession(reason) {
+    if (state.peerConnection) {
+      state.peerConnection.ontrack = null;
+      state.peerConnection.close();
+      state.peerConnection = null;
+    }
+    if (el.video) {
+      el.video.srcObject = null;
+      el.video.style.display = 'none';
+      el.video.style.position = '';
+      el.video.style.width = '';
+      el.video.style.height = '';
+      el.video.style.opacity = '';
+      el.video.style.pointerEvents = '';
+    }
+    state.sessionId = null;
+    state.sessionToken = null;
+    state.targetDeviceId = null;
+    state.pairingRequestId = null;
+    state.pendingIceCandidates = [];
+    state.hasFirstFrame = false;
+    state.sessionStartedAt = 0;
+    clearInterval(state.durationTimer);
+    state.durationTimer = null;
+    if (el.duration) el.duration.textContent = '00:00:00';
+    if (el.app) el.app.hidden = true;
+    if (el.pair) el.pair.hidden = false;
+    if (el.deviceName) el.deviceName.textContent = 'Android device';
+    setDeviceStatus('Not connected');
+    if (el.latency) el.latency.textContent = 'Waiting for an approved session';
+    setStage('empty');
+    setPairStatus(reason || 'Session ended. Enter a new pairing code to connect again.');
+    closeDrawer();
+    toast('Remote session ended');
+  }
+
+  function pair() {
+    const code = getCodeValue();
+    if (!/^\d{6}$/.test(code)) {
+      setPairStatus('Enter all six digits from the phone.', true);
+      return;
+    }
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+      setPairStatus('Secure signaling is not connected yet. Please retry after it reconnects.', true);
+      return;
+    }
+    if (el.connect) el.connect.disabled = true;
+    setPairStatus('Sending request. The phone owner must approve before access is granted.');
+    state.pairingRequestId = null;
+    const sent = sendWs({
+      type: 'PAIR_BY_CODE',
+      code: code,
+      fingerprint: state.controllerFingerprint,
+      operatorName: 'Mahi Web Controller',
+      requestedScopes: ['Screen Mirroring', 'Remote Interaction', 'File Transfer', 'Diagnostics']
+    });
+    if (!sent) {
+      if (el.connect) el.connect.disabled = false;
+      setPairStatus('Pairing request was not sent. Check your connection.', true);
+      return;
+    }
+    audit('One-time pairing request sent. No access is available until the receiver owner approves.');
+  }
+
+  function sendCommand(command) {
+    if (!state.sessionToken || !state.targetDeviceId || !state.hasFirstFrame) {
+      toast('Remote controls are available after the live video stream starts.');
+      return false;
+    }
+    return sendWs({
+      type: 'INPUT_EVENT',
+      targetDeviceId: state.targetDeviceId,
+      sequence: state.commandSequence++,
+      command: Object.assign({ timestamp: Date.now() }, command)
+    });
+  }
+
+  function bindInputControls() {
+    if (!el.canvas) return;
+    el.canvas.addEventListener('pointerdown', event => {
+      if (!state.hasFirstFrame) return;
+      const rect = el.canvas.getBoundingClientRect();
+      if (!rect.width || !rect.height) return;
+      el.canvas.setPointerCapture(event.pointerId);
+      state.pointerStart = {
+        x: Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width)),
+        y: Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height)),
+        at: Date.now()
+      };
+      if ($('#switch-ripples') && $('#switch-ripples').checked) {
+        const ripple = document.createElement('i');
+        ripple.className = 'ripple';
+        ripple.style.left = (event.clientX - rect.left) + 'px';
+        ripple.style.top = (event.clientY - rect.top) + 'px';
+        el.canvas.parentNode.appendChild(ripple);
+        setTimeout(() => ripple.remove(), 550);
+      }
+    });
+
+    el.canvas.addEventListener('pointerup', event => {
+      if (!state.pointerStart || !state.hasFirstFrame) return;
+      const rect = el.canvas.getBoundingClientRect();
+      const start = state.pointerStart;
+      state.pointerStart = null;
+      const endX = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+      const endY = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+      const duration = Math.max(80, Date.now() - start.at);
+      const dx = endX - start.x;
+      const dy = endY - start.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      const width = state.targetWidth || 1080;
+      const height = state.targetHeight || 1920;
+      const x = Math.round(start.x * width);
+      const y = Math.round(start.y * height);
+
+      if (distance < 0.02) {
+        sendCommand({
+          type: duration > 550 ? 'LONG_PRESS' : 'TAP',
+          x: x,
+          y: y,
+          durationMs: duration
+        });
+      } else {
+        sendCommand({
+          type: duration > 550 ? 'DRAG' : 'SWIPE',
+          x: x,
+          y: y,
+          x2: Math.round(endX * width),
+          y2: Math.round(endY * height),
+          durationMs: duration
         });
       }
-    };
-  }
-
-  async function handleSdpAnswer(sdp) {
-    if (!state.peerConnection) await initWebRTC();
-    await state.peerConnection.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp }));
-  }
-
-  // Mouse to Touch Translation Engine
-  function setupCanvasMouse() {
-    let isMouseDown = false;
-
-    el.canvas.addEventListener('mousedown', (e) => {
-      isMouseDown = true;
-      state.dragStart = getNativeCoords(e);
-      state.dragStartTime = Date.now();
-
-      if (Date.now() - state.lastClickTime < 300) {
-        state.clickCount++;
-      } else {
-        state.clickCount = 1;
-      }
-      state.lastClickTime = Date.now();
     });
 
-    el.canvas.addEventListener('mouseup', (e) => {
-      if (!isMouseDown) return;
-      isMouseDown = false;
-
-      const endCoords = getNativeCoords(e);
-      const duration = Date.now() - state.dragStartTime;
-      const dx = endCoords.x - state.dragStart.x;
-      const dy = endCoords.y - state.dragStart.y;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-
-      if (dist < 15) {
-        if (state.clickCount === 2) {
-          // Double Tap
-          sendCommand('Tap', { x: state.dragStart.x, y: state.dragStart.y, action: 'DOUBLE_TAP' });
-          logAudit('INPUT', `Double Tap at (${Math.round(state.dragStart.x)}, ${Math.round(state.dragStart.y)})`);
-        } else if (duration > 600) {
-          // Long Press
-          sendCommand('Tap', { x: state.dragStart.x, y: state.dragStart.y, action: 'LONG_PRESS', durationMs: duration });
-          logAudit('INPUT', `Long Press (${duration}ms) at (${Math.round(state.dragStart.x)}, ${Math.round(state.dragStart.y)})`);
-        } else {
-          // Single Tap
-          sendCommand('Tap', { x: state.dragStart.x, y: state.dragStart.y, action: 'TAP' });
-          logAudit('INPUT', `Tap at (${Math.round(state.dragStart.x)}, ${Math.round(state.dragStart.y)})`);
-        }
-      } else {
-        if (duration > 500) {
-          // Drag
-          sendCommand('Swipe', {
-            x: state.dragStart.x, y: state.dragStart.y,
-            x2: endCoords.x, y2: endCoords.y,
-            action: 'DRAG', durationMs: duration
-          });
-          logAudit('INPUT', `Sustained Drag from (${Math.round(state.dragStart.x)}, ${Math.round(state.dragStart.y)}) to (${Math.round(endCoords.x)}, ${Math.round(endCoords.y)})`);
-        } else {
-          // Swipe
-          sendCommand('Swipe', {
-            x: state.dragStart.x, y: state.dragStart.y,
-            x2: endCoords.x, y2: endCoords.y,
-            action: 'SWIPE', durationMs: Math.max(100, duration)
-          });
-          logAudit('INPUT', `Swipe from (${Math.round(state.dragStart.x)}, ${Math.round(state.dragStart.y)}) to (${Math.round(endCoords.x)}, ${Math.round(endCoords.y)}) in ${duration}ms`);
-        }
-      }
-    });
-
-    el.canvas.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      const action = e.deltaY > 0 ? 'DOWN' : 'UP';
-      sendCommand('Scroll', { action });
-      logAudit('INPUT', `Scroll ${action}`);
+    el.canvas.addEventListener('pointercancel', () => { state.pointerStart = null; });
+    el.canvas.addEventListener('wheel', event => {
+      event.preventDefault();
+      sendCommand({ type: 'SCROLL', action: event.deltaY < 0 ? 'UP' : 'DOWN' });
     }, { passive: false });
 
-    // Keyboard Text Input
-    window.addEventListener('keydown', (e) => {
-      // Ignore if user is typing into input fields
-      if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
-
-      if (e.key === 'Backspace') {
-        sendCommand('GlobalAction', { action: 'BACK' });
-      } else if (e.key === 'Home') {
-        sendCommand('GlobalAction', { action: 'HOME' });
-      } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
-        sendCommand('TextInput', { text: e.key });
-        logAudit('INPUT', `Key Typed: '${e.key}'`);
+    window.addEventListener('keydown', event => {
+      if (!el.app || el.app.hidden || ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+      if (event.key === 'Backspace') {
+        event.preventDefault();
+        sendCommand({ type: 'GLOBAL_ACTION', action: 'BACK' });
+      } else if (event.key === 'Home') {
+        event.preventDefault();
+        sendCommand({ type: 'GLOBAL_ACTION', action: 'HOME' });
+      } else if (event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) {
+        sendCommand({ type: 'TEXT_INPUT', text: event.key });
       }
     });
   }
 
-  function getNativeCoords(event) {
-    const rect = el.canvas.getBoundingClientRect();
-    const clientX = event.clientX - rect.left;
-    const clientY = event.clientY - rect.top;
-
-    // Scale to native 1080x1920
-    const scaleX = 1080 / rect.width;
-    const scaleY = 1920 / rect.height;
-
-    return {
-      x: Math.max(0, Math.min(1080, clientX * scaleX)),
-      y: Math.max(0, Math.min(1920, clientY * scaleY))
-    };
-  }
-
-  function sendCommand(type, params) {
-    const seq = state.commandSequence++;
-    const payload = {
-      type: 'INPUT_EVENT',
-      sequence: seq,
-      targetDeviceId: state.activeDeviceId,
-      command: {
-        commandId: 'cmd_' + Math.random().toString(36).substring(2, 9),
-        type: type,
-        timestamp: Date.now(),
-        ...params
-      }
-    };
-    sendWs(payload);
-  }
-
-  // Canvas Render Loop
-  function startCanvasRenderLoop() {
-    function render() {
-      if (el.video.srcObject && el.video.readyState >= 2) {
-        ctx.drawImage(el.video, 0, 0, el.canvas.width, el.canvas.height);
-      } else {
-        // Draw crisp modern UI frame on canvas
-        ctx.fillStyle = '#0E1116';
-        ctx.fillRect(0, 0, el.canvas.width, el.canvas.height);
-
-        // Status Header
-        ctx.fillStyle = '#161B22';
-        ctx.fillRect(0, 0, el.canvas.width, 100);
-
-        ctx.fillStyle = '#F0F6FC';
-        ctx.font = 'bold 36px Inter, sans-serif';
-        ctx.fillText('10:42', 60, 68);
-
-        ctx.fillStyle = '#00E676';
-        ctx.fillRect(el.canvas.width - 140, 42, 60, 26);
-        ctx.fillStyle = '#000';
-        ctx.font = 'bold 20px monospace';
-        ctx.fillText('86%', el.canvas.width - 130, 62);
-
-        // Grid lines
-        ctx.strokeStyle = '#21262D';
-        ctx.lineWidth = 2;
-        for (let i = 200; i < el.canvas.height - 200; i += 200) {
-          ctx.beginPath();
-          ctx.moveTo(40, i);
-          ctx.lineTo(el.canvas.width - 40, i);
-          ctx.stroke();
-        }
-
-        // Navigation bar
-        ctx.fillStyle = '#161B22';
-        ctx.fillRect(0, el.canvas.height - 120, el.canvas.width, 120);
-
-        ctx.fillStyle = '#8B949E';
-        ctx.font = '32px sans-serif';
-        ctx.fillText('◄', el.canvas.width * 0.25, el.canvas.height - 50);
-        ctx.fillText('●', el.canvas.width * 0.50, el.canvas.height - 50);
-        ctx.fillText('■', el.canvas.width * 0.75, el.canvas.height - 50);
-      }
-      requestAnimationFrame(render);
+  function requestPanelData(name) {
+    if (!state.sessionToken || !state.targetDeviceId) {
+      toast('Connect to an approved phone first.');
+      return;
     }
-    requestAnimationFrame(render);
+    if (name === 'diag') sendWs({ type: 'DIAGNOSTICS_RUN', targetDeviceId: state.targetDeviceId });
+    if (name === 'apps') sendWs({ type: 'APP_COMMAND', targetDeviceId: state.targetDeviceId, action: 'LIST' });
+    if (name === 'files') sendWs({ type: 'FILE_COMMAND', targetDeviceId: state.targetDeviceId, action: 'LIST', path: state.currentPath });
   }
 
-  // Navigation Toolbar actions
-  function setupToolbar() {
-    document.getElementById('btnNavBack').onclick = () => sendCommand('GlobalAction', { action: 'BACK' });
-    document.getElementById('btnNavHome').onclick = () => sendCommand('GlobalAction', { action: 'HOME' });
-    document.getElementById('btnNavRecents').onclick = () => sendCommand('GlobalAction', { action: 'RECENTS' });
-    document.getElementById('btnNavNotifs').onclick = () => sendCommand('GlobalAction', { action: 'NOTIFICATIONS' });
-    document.getElementById('btnNavSettings').onclick = () => sendCommand('GlobalAction', { action: 'QUICK_SETTINGS' });
-    document.getElementById('btnVolDown').onclick = () => sendCommand('Volume', { action: 'DOWN' });
-    document.getElementById('btnVolUp').onclick = () => sendCommand('Volume', { action: 'UP' });
-
-    el.qualitySelect.onchange = () => {
-      const q = el.qualitySelect.value;
-      const stats = q === '1080p' ? '60 FPS | 4000 Kbps' : q === '720p' ? '30 FPS | 2048 Kbps' : '15 FPS | 800 Kbps';
-      el.streamStats.textContent = stats;
-      logAudit('STREAM', `Video profile switched to ${q} (${stats})`);
-    };
-
-    el.btnEmergencyKill.onclick = () => {
-      if (confirm('Sever connection and terminate all remote sessions on the phone immediately?')) {
-        sendWs({ type: 'EMERGENCY_DISCONNECT', targetDeviceId: state.activeDeviceId });
-        logAudit('SECURITY', 'EMERGENCY DISCONNECT EXECUTED. Session wiped.', 'critical');
-        el.badge.textContent = 'DISCONNECTED';
-        el.badge.className = 'badge badge-danger';
-      }
-    };
-
-    el.btnRunDiag.onclick = () => {
-      sendWs({ type: 'DIAGNOSTICS_RUN', targetDeviceId: state.activeDeviceId });
-      logAudit('DIAGNOSTICS', 'Requested remote diagnostic suite execution on target phone.');
-    };
-
-    el.btnLaunchPkg.onclick = () => {
-      const pkg = el.launchPkgInput.value.trim();
-      if (pkg) {
-        sendWs({ type: 'APP_COMMAND', action: 'LAUNCH', packageName: pkg, targetDeviceId: state.activeDeviceId });
-        logAudit('APP', `Requested launch of package: ${pkg}`);
-      }
-    };
-
-    el.btnRefreshFiles.onclick = () => {
-      sendWs({ type: 'FILE_COMMAND', action: 'LIST', path: state.currentPath, targetDeviceId: state.activeDeviceId });
-      logAudit('FILES', `Refreshing directory: ${state.currentPath}`);
-    };
-
-    el.btnNewFolder.onclick = () => {
-      const name = prompt('Enter new folder name:');
-      if (name) {
-        sendWs({ type: 'FILE_COMMAND', action: 'CREATE_FOLDER', path: state.currentPath, name: name, targetDeviceId: state.activeDeviceId });
-        logAudit('FILES', `Created folder '${name}' in ${state.currentPath}`);
-      }
-    };
-
-    el.btnClearLogs.onclick = () => { el.auditBox.innerHTML = ''; };
+  function openPanel(name) {
+    if (!el.drawer) return;
+    el.drawer.classList.add('open');
+    el.drawer.inert = false;
+    $$('.tab').forEach(tab => tab.setAttribute('aria-selected', String(tab.dataset.panel === name)));
+    $$('.panel').forEach(panel => { panel.hidden = panel.id !== 'p-' + name; });
+    $$('[data-open]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.open === name)));
+    requestPanelData(name);
   }
 
-  // File Upload Handling
-  function setupFileUpload() {
-    el.btnTriggerUpload.onclick = () => el.fileUploadInput.click();
+  function closeDrawer() {
+    if (!el.drawer) return;
+    el.drawer.classList.remove('open');
+    el.drawer.inert = true;
+    $$('[data-open]').forEach(button => button.setAttribute('aria-pressed', 'false'));
+  }
 
-    el.fileUploadInput.onchange = (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-
-      const reader = new FileReader();
-      el.fileUploadProgress.style.display = 'block';
-      el.progressText.textContent = `Uploading ${file.name} (0%)...`;
-      el.progressBarFill.style.width = '0%';
-
-      reader.onload = async (evt) => {
-        const arrayBuffer = evt.target.result;
-        const totalBytes = arrayBuffer.byteLength;
-        const chunkSize = 32768; // 32KB
-        let offset = 0;
-
-        while (offset < totalBytes) {
-          const slice = arrayBuffer.slice(offset, offset + chunkSize);
-          const base64 = btoa(String.fromCharCode.apply(null, new Uint8Array(slice)));
-
-          sendWs({
-            type: 'FILE_COMMAND',
-            action: 'WRITE_CHUNK',
-            path: `${state.currentPath}/${file.name}`,
-            data: base64,
-            append: offset > 0,
-            targetDeviceId: state.activeDeviceId
-          });
-
-          offset += chunkSize;
-          const percent = Math.min(100, Math.round((offset / totalBytes) * 100));
-          el.progressBarFill.style.width = `${percent}%`;
-          el.progressText.textContent = `Uploading ${file.name} (${percent}%)...`;
-
-          // Small throttle to avoid socket congestion
-          await new Promise(r => setTimeout(r, 20));
+  function renderApps(payload) {
+    const rows = Array.isArray(payload) ? payload : (Array.isArray(payload.apps) ? payload.apps : []);
+    state.apps = rows;
+    if (!el.apps) return;
+    el.apps.replaceChildren();
+    if (!rows.length) {
+      const li = document.createElement('li');
+      li.className = 'row';
+      li.textContent = 'No app list was returned by the device.';
+      el.apps.appendChild(li);
+      return;
+    }
+    rows.forEach(app => {
+      const name = String(app.name || app.appName || 'Unnamed application');
+      const packageName = String(app.pkg || app.packageName || '');
+      const li = document.createElement('li');
+      li.className = 'row';
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const title = document.createElement('b');
+      title.textContent = name;
+      const detail = document.createElement('span');
+      detail.textContent = packageName;
+      const button = document.createElement('button');
+      button.className = 'btn';
+      button.type = 'button';
+      button.textContent = 'Open';
+      button.disabled = !packageName;
+      button.addEventListener('click', () => {
+        if (sendWs({ type: 'APP_COMMAND', targetDeviceId: state.targetDeviceId, action: 'LAUNCH', packageName: packageName })) {
+          toast('Launch request sent for ' + name);
         }
-
-        el.progressText.textContent = `Upload completed: ${file.name}`;
-        logAudit('FILES', `Uploaded file ${file.name} (${totalBytes} bytes) successfully.`, 'security');
-        setTimeout(() => { el.fileUploadProgress.style.display = 'none'; }, 2000);
-      };
-
-      reader.readAsArrayBuffer(file);
-    };
+      });
+      meta.append(title, detail);
+      li.append(meta, button);
+      el.apps.appendChild(li);
+    });
+    filterApps();
   }
 
-  // Pairing Modal
-  function setupModal() {
-    el.btnPair.onclick = () => {
-      el.pairModal.style.display = 'flex';
-      el.inputPairCode.focus();
-    };
-
-    el.btnCloseModal.onclick = () => { el.pairModal.style.display = 'none'; };
-
-    el.btnSubmitPair.onclick = () => {
-      const code = el.inputPairCode.value.trim();
-      if (code.length >= 6) {
-        el.pairModal.style.display = 'none';
-        logAudit('PAIRING', `Submitting 6-digit pairing code: ${code}...`, 'security');
-        sendWs({
-          type: 'PAIR_REQUEST',
-          pairingCode: code,
-          targetDeviceId: state.activeDeviceId,
-          operatorFingerprint: state.operatorFingerprint,
-          operatorName: state.operatorName,
-          operatorLocation: state.operatorLocation
+  function renderFiles(payload) {
+    const rows = Array.isArray(payload) ? payload : (Array.isArray(payload.files) ? payload.files : []);
+    state.files = rows;
+    if (!el.files) return;
+    el.files.replaceChildren();
+    if (!rows.length) {
+      const li = document.createElement('li');
+      li.className = 'row';
+      li.textContent = 'No files or folders were returned for this location.';
+      el.files.appendChild(li);
+      return;
+    }
+    rows.forEach(file => {
+      const name = String(file.name || 'Unnamed');
+      const path = String(file.path || '');
+      const isDirectory = Boolean(file.isDir || file.isDirectory);
+      const size = Number(file.size ?? file.sizeBytes ?? 0);
+      const li = document.createElement('li');
+      li.className = 'row';
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const title = document.createElement('b');
+      title.textContent = (isDirectory ? '📁 ' : '📄 ') + name;
+      const detail = document.createElement('span');
+      detail.textContent = isDirectory ? 'Folder' : (Number.isFinite(size) ? Math.round(size / 1024) + ' KB' : 'File');
+      meta.append(title, detail);
+      li.appendChild(meta);
+      if (isDirectory && path) {
+        const open = document.createElement('button');
+        open.className = 'btn';
+        open.type = 'button';
+        open.textContent = 'Open';
+        open.addEventListener('click', () => {
+          state.currentPath = path;
+          if (el.crumbs) el.crumbs.textContent = path;
+          requestPanelData('files');
         });
-        alert('Pairing challenge sent to phone in Noakhali. Device owner must tap "Authorize Session".');
+        li.appendChild(open);
       }
-    };
+      el.files.appendChild(li);
+    });
+    if (el.crumbs) el.crumbs.textContent = state.currentPath || 'Device files';
   }
 
-  // Tab switching
-  function setupTabs() {
-    document.querySelectorAll('.tab-btn').forEach(btn => {
-      btn.onclick = () => {
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
-        btn.classList.add('active');
-        document.getElementById(btn.dataset.tab).classList.add('active');
+  function renderDiagnostics(data) {
+    if (el.battery && data.battery !== undefined) {
+      el.battery.textContent = String(data.battery) + '%';
+      if (el.batteryBar) el.batteryBar.style.width = Math.max(0, Math.min(100, Number(data.battery) || 0)) + '%';
+    }
+    if (el.temperature && data.temp !== undefined) el.temperature.textContent = String(data.temp) + ' °C';
+    if (el.storage && data.storage !== undefined) el.storage.textContent = String(data.storage) + ' free';
+    if (el.diagLatency && data.roundTripTimeMs !== undefined) el.diagLatency.textContent = String(data.roundTripTimeMs) + ' ms';
+    if (el.memory && data.memory !== undefined) el.memory.textContent = String(data.memory);
+    audit('Received device diagnostic data.');
+  }
 
-        // Trigger fetches
-        if (btn.dataset.tab === 'tabApps') {
-          sendWs({ type: 'APP_COMMAND', action: 'LIST', targetDeviceId: state.activeDeviceId });
-        } else if (btn.dataset.tab === 'tabFiles') {
-          sendWs({ type: 'FILE_COMMAND', action: 'LIST', path: state.currentPath, targetDeviceId: state.activeDeviceId });
+  function filterApps() {
+    if (!el.apps || !el.search) return;
+    const query = el.search.value.trim().toLowerCase();
+    $$('.row', el.apps).forEach(row => { row.hidden = !row.textContent.toLowerCase().includes(query); });
+  }
+
+  function bindPanels() {
+    $$('[data-open]').forEach(button => {
+      button.addEventListener('click', () => {
+        if (button.getAttribute('aria-pressed') === 'true') closeDrawer();
+        else openPanel(button.dataset.open);
+      });
+    });
+    $$('.tab').forEach(tab => tab.addEventListener('click', () => openPanel(tab.dataset.panel)));
+    if (el.closeDrawer) el.closeDrawer.addEventListener('click', closeDrawer);
+    if (el.search) el.search.addEventListener('input', filterApps);
+    const fullscreen = $('#btn-fullscreen');
+    if (fullscreen) {
+      fullscreen.addEventListener('click', () => {
+        const stage = $('.stage') || document.documentElement;
+        if (!document.fullscreenElement) {
+          if (stage.requestFullscreen) stage.requestFullscreen().catch(error => audit(error.message, 'warning'));
+        } else if (document.exitFullscreen) {
+          document.exitFullscreen();
         }
-      };
-    });
-  }
-
-  function renderDevices() {
-    el.deviceList.innerHTML = '';
-    state.pairedDevices.forEach(d => {
-      const card = document.createElement('div');
-      card.className = 'device-card active';
-      card.innerHTML = `
-        <div class="device-card-title">${d.deviceName}</div>
-        <div class="device-card-id">${d.deviceId}</div>
-        <div class="device-card-meta">${d.location} • <span class="text-mint">${d.battery}% Batt</span></div>
-      `;
-      el.deviceList.appendChild(card);
-    });
-  }
-
-  function renderAppList(apps) {
-    el.appList.innerHTML = '';
-    if (apps.length === 0) {
-      el.appList.innerHTML = '<p class="micro-text">No apps loaded.</p>';
-      return;
+      });
     }
-    apps.forEach(app => {
-      const row = document.createElement('div');
-      row.className = 'app-item';
-      row.innerHTML = `
-        <div>
-          <strong>${app.name}</strong>
-          <div class="micro-text mono-pill">${app.pkg}</div>
-        </div>
-        <button class="btn btn-small btn-secondary" onclick="window.launchApp('${app.pkg}')">Launch</button>
-      `;
-      el.appList.appendChild(row);
+    if (el.retry) {
+      el.retry.addEventListener('click', () => {
+        if (!state.sessionToken) {
+          connectSignaling();
+          return;
+        }
+        startControllerOffer().catch(error => {
+          audit('Media retry failed: ' + error.message, 'error');
+          setStage('error');
+        });
+      });
+    }
+
+    const quality = $('#quality-select');
+    if (quality) quality.disabled = true;
+    ['switch-awake', 'switch-clip'].forEach(id => {
+      const control = $('#' + id);
+      if (control) control.disabled = true;
+    });
+    const preview = $('#state-select');
+    if (preview) preview.disabled = true;
+    const wake = $('#btn-wake');
+    if (wake) {
+      wake.removeAttribute('data-toast');
+      wake.disabled = true;
+      wake.title = 'Wake requests are not implemented by the Android receiver yet.';
+    }
+  }
+
+  function bindStopModal() {
+    const modal = el.modal;
+    $$('[data-stop]').forEach(button => button.addEventListener('click', () => {
+      if (modal) modal.hidden = false;
+    }));
+    if (el.cancel) el.cancel.addEventListener('click', () => { if (modal) modal.hidden = true; });
+    if (el.confirm) el.confirm.addEventListener('click', () => {
+      if (modal) modal.hidden = true;
+      if (!state.sessionToken || !state.targetDeviceId) {
+        finishSession('No approved session is active.');
+        return;
+      }
+      const sent = sendWs({
+        type: 'EMERGENCY_DISCONNECT',
+        targetDeviceId: state.targetDeviceId,
+        payload: { reason: 'Browser controller requested emergency disconnect.' }
+      });
+      if (!sent) {
+        toast('Emergency stop was not delivered. Keep this page open and retry.');
+        setDeviceStatus('Emergency stop not confirmed');
+        return;
+      }
+      setDeviceStatus('Emergency disconnect requested · waiting for server confirmation');
+      toast('Emergency disconnect request sent');
+    });
+    window.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && modal && !modal.hidden) modal.hidden = true;
+      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'x' && el.app && !el.app.hidden) {
+        if (modal) modal.hidden = false;
+      }
     });
   }
-  window.launchApp = (pkg) => {
-    sendWs({ type: 'APP_COMMAND', action: 'LAUNCH', packageName: pkg, targetDeviceId: state.activeDeviceId });
-    logAudit('APP', `Launched package: ${pkg}`);
-  };
 
-  function renderFileList(files) {
-    el.fileList.innerHTML = '';
-    if (files.length === 0) {
-      el.fileList.innerHTML = '<p class="micro-text">Folder is empty.</p>';
-      return;
-    }
-    files.forEach(f => {
-      const row = document.createElement('div');
-      row.className = 'file-item';
-      row.innerHTML = `
-        <div>
-          <span>${f.isDir ? '📁' : '📄'} ${f.name}</span>
-          <div class="micro-text">${f.isDir ? 'Directory' : Math.round(f.size / 1024) + ' KB'}</div>
-        </div>
-        <button class="btn btn-small btn-danger" onclick="window.deleteFile('${f.path}')">Del</button>
-      `;
-      el.fileList.appendChild(row);
+  function bindCodeInputs() {
+    el.codeBoxes.forEach((box, index) => {
+      box.addEventListener('input', () => {
+        box.value = box.value.replace(/\D/g, '').slice(-1);
+        if (box.value && el.codeBoxes[index + 1]) el.codeBoxes[index + 1].focus();
+        if (el.connect) el.connect.disabled = getCodeValue().length !== 6;
+        if (el.pairStatus) setPairStatus('');
+      });
+      box.addEventListener('keydown', event => {
+        if (event.key === 'Backspace' && !box.value && el.codeBoxes[index - 1]) el.codeBoxes[index - 1].focus();
+        if (event.key === 'Enter' && getCodeValue().length === 6) pair();
+      });
+      box.addEventListener('paste', event => {
+        const digits = (event.clipboardData.getData('text') || '').replace(/\D/g, '').slice(0, 6);
+        if (!digits) return;
+        event.preventDefault();
+        setCodeValue(digits);
+        el.codeBoxes[Math.min(digits.length, 5)].focus();
+      });
     });
+    if (el.connect) el.connect.addEventListener('click', pair);
   }
-  window.deleteFile = (path) => {
-    if (confirm(`Delete file '${path}' on device?`)) {
-      sendWs({ type: 'FILE_COMMAND', action: 'DELETE', path: path, targetDeviceId: state.activeDeviceId });
-      logAudit('FILES', `Deleted remote file: ${path}`, 'critical');
+
+  function clearDemoContent() {
+    if (el.apps) {
+      el.apps.replaceChildren();
+      const li = document.createElement('li');
+      li.className = 'row';
+      li.textContent = 'Connect to an approved device to load its installed apps.';
+      el.apps.appendChild(li);
     }
-  };
-
-  function logAudit(category, message, severity = 'info') {
-    const time = new Date().toLocaleTimeString();
-    const div = document.createElement('div');
-    div.className = `log-line ${severity}`;
-    div.textContent = `[${time}] [${category}] ${message}`;
-    el.auditBox.appendChild(div);
-    el.auditBox.scrollTop = el.auditBox.scrollHeight;
+    if (el.files) {
+      el.files.replaceChildren();
+      const li = document.createElement('li');
+      li.className = 'row';
+      li.textContent = 'Connect to an approved device to browse its files.';
+      el.files.appendChild(li);
+    }
+    const values = [
+      ['#diag-battery', 'Not available'],
+      ['#diag-storage', 'Not available'],
+      ['#diag-memory', 'Not available'],
+      ['#diag-temp', 'Not available'],
+      ['#diag-latency', '—'],
+      ['#diag-fps', '—'],
+      ['#diag-bitrate', '—'],
+      ['#device-model-text', 'Android device'],
+      ['#device-status-text', 'Not connected'],
+      ['#latency-text', 'Waiting for an approved session']
+    ];
+    values.forEach(([selector, value]) => {
+      const node = $(selector);
+      if (node) node.textContent = value;
+    });
+    if (el.batteryBar) el.batteryBar.style.width = '0%';
   }
 
-  // Start on DOM ready
+  async function init() {
+    state.controllerFingerprint = getControllerFingerprint();
+    setCodeValue('');
+    setStage('empty');
+    clearDemoContent();
+    bindCodeInputs();
+    bindPanels();
+    bindStopModal();
+    bindInputControls();
+    requestAnimationFrame(drawRealFrame);
+
+    const params = new URL(window.location.href).searchParams;
+    const initialCode = params.get('code');
+    if (initialCode) setCodeValue(initialCode);
+
+    try {
+      setPairStatus('Loading secure connection settings…');
+      await loadRuntimeConfig();
+      connectSignaling();
+    } catch (error) {
+      setPairStatus(error.message, true);
+      audit('Runtime configuration error: ' + error.message, 'error');
+    }
+  }
+
+  window.addEventListener('pagehide', () => {
+    if (state.sessionToken && state.targetDeviceId && state.ws && state.ws.readyState === WebSocket.OPEN) {
+      try {
+        state.ws.send(JSON.stringify({
+          type: 'EMERGENCY_DISCONNECT',
+          targetDeviceId: state.targetDeviceId,
+          sessionToken: state.sessionToken,
+          payload: { reason: 'Browser controller page closed.' }
+        }));
+      } catch (_) {
+        // Best-effort notification only. Backend session expiry remains authoritative.
+      }
+    }
+  });
+
   document.addEventListener('DOMContentLoaded', init);
 })();

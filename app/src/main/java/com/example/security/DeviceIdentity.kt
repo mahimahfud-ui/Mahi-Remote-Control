@@ -33,54 +33,64 @@ object DeviceIdentity {
         var fingerprint = prefs.getString(KEY_FINGERPRINT, null)
         var pubKey = prefs.getString(KEY_PUBLIC_KEY, null)
 
-        if (deviceId == null || fingerprint == null || pubKey == null) {
-            val randomSuffix = UUID.randomUUID().toString().replace("-", "").take(8).uppercase()
-            deviceId = "MAHI-${Build.MANUFACTURER.take(3).uppercase()}-$randomSuffix"
-
-            try {
-                val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-                if (!keyStore.containsAlias(KEY_ALIAS)) {
-                    val kpg = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, ANDROID_KEYSTORE)
-                    val parameterSpec = KeyGenParameterSpec.Builder(
-                        KEY_ALIAS,
-                        KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY
-                    ).apply {
-                        setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
-                        setDigests(KeyProperties.DIGEST_SHA256)
-                    }.build()
-                    kpg.initialize(parameterSpec)
-                    kpg.generateKeyPair()
-                }
-
-                val cert = keyStore.getCertificate(KEY_ALIAS)
-                val publicKeyBytes = cert.publicKey.encoded
-                pubKey = android.util.Base64.encodeToString(publicKeyBytes, android.util.Base64.NO_WRAP)
-
-                val md = MessageDigest.getInstance("SHA-256")
-                val digest = md.digest(publicKeyBytes)
-                fingerprint = digest.joinToString(":") { "%02X".format(it) }.take(47)
-            } catch (e: Exception) {
-                // Fallback for JVM testing / sandbox where AndroidKeyStore may be unavailable
-                val rawKey = "$deviceId:${System.currentTimeMillis()}:${UUID.randomUUID()}"
-                val md = MessageDigest.getInstance("SHA-256")
-                val digest = md.digest(rawKey.toByteArray())
-                fingerprint = digest.joinToString(":") { "%02X".format(it) }.take(47)
-                pubKey = android.util.Base64.encodeToString(digest, android.util.Base64.NO_WRAP)
-            }
-
-            prefs.edit()
-                .putString(KEY_DEVICE_ID, deviceId)
-                .putString(KEY_FINGERPRINT, fingerprint)
-                .putString(KEY_PUBLIC_KEY, pubKey)
-                .apply()
+        val keyStore = try {
+            KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+        } catch (e: Exception) {
+            throw IllegalStateException("Android Keystore is unavailable. Refusing an unverifiable device identity.", e)
         }
 
-        val deviceName = "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}"
+        val existingKeyMatchesPreferences = runCatching {
+            val certificate = keyStore.getCertificate(KEY_ALIAS) ?: return@runCatching false
+            val publicKeyBytes = certificate.publicKey.encoded
+            val storedBytes = android.util.Base64.decode(pubKey ?: return@runCatching false, android.util.Base64.DEFAULT)
+            val digest = MessageDigest.getInstance("SHA-256").digest(publicKeyBytes)
+            val expectedFingerprint = digest.joinToString(":") { "%02X".format(it) }
+            storedBytes.contentEquals(publicKeyBytes) && fingerprint == expectedFingerprint
+        }.getOrDefault(false)
+
+        if (deviceId.isNullOrBlank() || fingerprint.isNullOrBlank() ||
+            pubKey.isNullOrBlank() || !existingKeyMatchesPreferences) {
+            // Rotate the identifier if the backing key is missing or inconsistent.
+            val randomSuffix = UUID.randomUUID().toString().replace("-", "").take(8).uppercase()
+            deviceId = "MAHI-" + Build.MANUFACTURER.take(3).uppercase() + "-" + randomSuffix
+
+            try {
+                if (keyStore.containsAlias(KEY_ALIAS)) keyStore.deleteEntry(KEY_ALIAS)
+                val keyPairGenerator = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, ANDROID_KEYSTORE)
+                val parameterSpec = KeyGenParameterSpec.Builder(
+                    KEY_ALIAS,
+                    KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY
+                ).apply {
+                    setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+                    setDigests(KeyProperties.DIGEST_SHA256)
+                }.build()
+                keyPairGenerator.initialize(parameterSpec)
+                keyPairGenerator.generateKeyPair()
+
+                val certificate = keyStore.getCertificate(KEY_ALIAS)
+                    ?: throw IllegalStateException("Android Keystore did not return an identity certificate.")
+                val publicKeyBytes = certificate.publicKey.encoded
+                pubKey = android.util.Base64.encodeToString(publicKeyBytes, android.util.Base64.NO_WRAP)
+
+                val digest = MessageDigest.getInstance("SHA-256").digest(publicKeyBytes)
+                fingerprint = digest.joinToString(":") { "%02X".format(it) }
+
+                prefs.edit()
+                    .putString(KEY_DEVICE_ID, deviceId)
+                    .putString(KEY_FINGERPRINT, fingerprint)
+                    .putString(KEY_PUBLIC_KEY, pubKey)
+                    .apply()
+            } catch (e: Exception) {
+                throw IllegalStateException("Android Keystore identity could not be created. Refusing an unverifiable device identity.", e)
+            }
+        }
+
+        val deviceName = Build.MANUFACTURER.replaceFirstChar { it.uppercase() } + " " + Build.MODEL
         return Identity(
-            deviceId = deviceId,
+            deviceId = deviceId ?: throw IllegalStateException("Device identity ID is unavailable."),
             deviceName = deviceName,
-            fingerprint = fingerprint,
-            publicKeyBase64 = pubKey
+            fingerprint = fingerprint ?: throw IllegalStateException("Device fingerprint is unavailable."),
+            publicKeyBase64 = pubKey ?: throw IllegalStateException("Device public key is unavailable.")
         )
     }
 
@@ -112,9 +122,9 @@ object DeviceIdentity {
                 update(data)
             }
             verifier.verify(sigBytes)
-        } catch (e: Exception) {
-            // Basic sanity verification fallback
-            signatureBase64.length >= 32
+        } catch (_: Exception) {
+            // Invalid keys or signatures must never be accepted as a fallback.
+            false
         }
     }
 }
