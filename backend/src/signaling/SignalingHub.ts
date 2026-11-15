@@ -531,6 +531,53 @@ export class SignalingHub {
     });
   }
 
+  private validateOperationBounds(message: any): string | null {
+    const type = String(message.type || '');
+    const payload = this.payloadObject(message);
+
+    if (type === 'ICE_CANDIDATE') {
+      const candidate = String(payload.candidate || message.candidate || '');
+      if (candidate.length > 16_384) return 'ICE candidate exceeds the 16 KiB limit.';
+    }
+
+    if (type === 'FILE_COMMAND') {
+      const action = String(message.action || payload.action || '').toUpperCase();
+      const pathValue = String(message.path || payload.path || '');
+      if (pathValue.length > 1024 || pathValue.includes('\0') || pathValue.split(/[\\/]/).includes('..')) {
+        return 'File path is invalid or exceeds the allowed length.';
+      }
+
+      if (action === 'READ_CHUNK') {
+        const offset = Number(message.offset ?? payload.offset);
+        const length = Number(message.length ?? payload.length);
+        if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 1 || length > 65_536) {
+          return 'File read chunks must use a non-negative offset and a length from 1 to 65536 bytes.';
+        }
+      }
+
+      if (action === 'WRITE_CHUNK') {
+        const encoded = String(message.data || payload.data || '');
+        if (encoded.length > 87_384 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+          return 'File upload chunks must contain valid Base64 data of at most 64 KiB.';
+        }
+        if (Buffer.from(encoded, 'base64').byteLength > 65_536) {
+          return 'File upload chunks exceed the 64 KiB limit.';
+        }
+      }
+    }
+
+    if (type === 'APP_COMMAND') {
+      const action = String(message.action || payload.action || '').toUpperCase();
+      if (!['LIST', 'LAUNCH', 'STOP'].includes(action)) return 'Unsupported application operation.';
+      const packageName = String(message.packageName || payload.packageName || '');
+      if (action !== 'LIST' && (packageName.length < 3 || packageName.length > 255 || !/^[A-Za-z0-9_.]+$/.test(packageName))) {
+        return 'Application package name is invalid.';
+      }
+    }
+
+    return null;
+  }
+
   private async authorizeSessionMessage(
     sender: ClientConnection,
     message: any
@@ -650,6 +697,12 @@ export class SignalingHub {
 
     const authorization = await this.authorizeSessionMessage(sender, message);
     if (!authorization) return;
+
+    const invalidOperation = this.validateOperationBounds(message);
+    if (invalidOperation) {
+      this.send(sender, { type: 'SESSION_ERROR', errorCode: 'INVALID_REQUEST', error: invalidOperation, protocolVersion: 1 });
+      return;
+    }
 
     if (type === 'EMERGENCY_DISCONNECT') {
       const ended = await DeviceService.endSession(authorization.sessionId, 'Emergency disconnect');
