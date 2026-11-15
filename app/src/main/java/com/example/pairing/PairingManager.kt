@@ -128,9 +128,9 @@ class PairingManager(
         )
     }
 
-    fun markSessionAuthorized(sessionId: String): Boolean {
+    fun markSessionAuthorized(requestId: String, sessionId: String): Boolean {
         val request = approvalRequest ?: return false
-        if (sessionId.isBlank()) return false
+        if (requestId.isBlank() || requestId != request.requestId || sessionId.isBlank()) return false
 
         val session = ActiveSession(
             sessionId = sessionId,
