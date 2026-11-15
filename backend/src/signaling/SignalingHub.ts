@@ -629,7 +629,7 @@ export class SignalingHub {
       return null;
     }
 
-    if (!await DeviceService.isSessionParticipant(auth.sessionId, sender.id, sender.fingerprint)) {
+    if (!await DeviceService.isSessionParticipant(auth.sessionId, sender.id, sender.fingerprint, auth.entityType)) {
       this.send(sender, { type: 'SESSION_ERROR', errorCode: 'SESSION_REVOKED', error: 'Session is expired or has been revoked.', protocolVersion: 1 });
       return null;
     }
