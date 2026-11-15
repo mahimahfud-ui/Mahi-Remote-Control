@@ -112,6 +112,7 @@
 
     const wsUrl = new URL(configuredUrl);
     wsUrl.searchParams.set('controllerFingerprint', state.operatorFingerprint);
+    wsUrl.searchParams.set('protocolVersion', '1');
     try {
       state.ws = new WebSocket(wsUrl.toString());
       state.ws.onopen = () => {
@@ -144,7 +145,7 @@
 
   function sendWs(data) {
     if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return false;
-    const message = { ...data };
+    const message = { ...data, protocolVersion: 1 };
     if (state.sessionToken && !['PING', 'PAIR_BY_CODE', 'PAIR_CODE_CONNECT'].includes(message.type)) {
       message.sessionToken = state.sessionToken;
     }

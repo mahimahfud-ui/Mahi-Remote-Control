@@ -1,62 +1,110 @@
-version: '3.8'
+name: mahi-remote-control
 
 services:
+  postgres-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mahi_admin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the deployment environment}
+      POSTGRES_DB: mahi_remote
+    volumes:
+      - mahi-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mahi_admin -d mahi_remote"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+
   signaling-backend:
     build:
       context: ../../backend
       dockerfile: Dockerfile
-    container_name: mahi-signaling-backend
-    ports:
-      - "8080:8080"
     environment:
-      - PORT=8080
-      - NODE_ENV=production
-      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL to your HTTPS browser host}
-      - JWT_SECRET=${JWT_SECRET:?Set a random JWT_SECRET of at least 32 bytes}
-      - STUN_SERVER_URL=${STUN_SERVER_URL:-stun:stun.l.google.com:19302}
-      - TURN_SERVER_URL=${TURN_SERVER_URL:?Set TURN_SERVER_URL to your deployed Coturn endpoint}
-      - TURN_REALM=${TURN_REALM:?Set TURN_REALM to your public TURN hostname}
-      - TURN_SHARED_SECRET=${TURN_SHARED_SECRET:?Set TURN_SHARED_SECRET in the deployment environment}
-      - DATABASE_URL=postgres://mahi_admin:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres-db:5432/mahi_remote
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      NODE_ENV: production
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL to the real HTTPS origin}
+      TRUST_PROXY: "true"
+      JWT_SECRET: ${JWT_SECRET:?Set a random JWT_SECRET (32+ bytes)}
+      PAIRING_CODE_PEPPER: ${PAIRING_CODE_PEPPER:?Set a different random PAIRING_CODE_PEPPER (32+ bytes)}
+      DATABASE_URL: postgres://mahi_admin:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres-db:5432/mahi_remote
+      DATABASE_SSL: "false"
+      PG_POOL_MAX: ${PG_POOL_MAX:-10}
+      STUN_SERVER_URL: ${STUN_SERVER_URL:-stun:stun.l.google.com:19302}
+      TURN_SERVER_URL: ${TURN_SERVER_URL:?Set TURN_SERVER_URL to the real public Coturn URL}
+      TURN_REALM: ${TURN_REALM:?Set TURN_REALM to the public TURN hostname}
+      TURN_SHARED_SECRET: ${TURN_SHARED_SECRET:?Set a different random TURN_SHARED_SECRET}
+      INSTANCE_ID: ${INSTANCE_ID:-}
+    expose:
+      - "8080"
     depends_on:
-      - postgres-db
-    restart: always
+      postgres-db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/api/v1/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 10s
+      timeout: 4s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
-  postgres-db:
-    image: postgres:16-alpine
-    container_name: mahi-postgres
-    ports:
-      - "5432:5432"
+  caddy:
+    image: caddy:2-alpine
     environment:
-      - POSTGRES_USER=mahi_admin
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the deployment environment}
-      - POSTGRES_DB=mahi_remote
+      DOMAIN: ${DOMAIN:?Set DOMAIN to the public DNS hostname, e.g. remote.example.com}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL for TLS certificate notifications}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
     volumes:
-      - mahi-postgres-data:/var/lib/postgresql/data
-      - ../database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
-    restart: always
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      signaling-backend:
+        condition: service_healthy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
 
   coturn-server:
-    image: coturn/coturn:latest
-    container_name: mahi-coturn
-    network_mode: "host"
-    volumes:
-      - ./coturn.conf:/etc/coturn/turnserver.conf:ro
+    image: coturn/coturn:4.6.3
+    network_mode: host
     command:
       - -n
       - --log-file=stdout
-      - --realm=${TURN_REALM:?Set TURN_REALM in the deployment environment}
-      - --static-auth-secret=${TURN_SHARED_SECRET:?Set TURN_SHARED_SECRET in the deployment environment}
-    restart: always
-
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: mahi-prometheus
-    ports:
-      - "9090:9090"
+      - --realm=${TURN_REALM:?Set TURN_REALM}
+      - --static-auth-secret=${TURN_SHARED_SECRET:?Set TURN_SHARED_SECRET}
+      - --use-auth-secret
+      - --fingerprint
+      - --no-loopback-peers
+      - --no-multicast-peers
+      - --min-port=49152
+      - --max-port=65535
     volumes:
-      - ../monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    restart: always
+      - ./coturn.conf:/etc/coturn/turnserver.conf:ro
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   mahi-postgres-data:
+  caddy-data:
+  caddy-config:

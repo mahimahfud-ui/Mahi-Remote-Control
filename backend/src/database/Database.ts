@@ -1,0 +1,298 @@
+import fs from 'fs';
+import path from 'path';
+import {
+  Pool,
+  PoolClient,
+  QueryResult,
+  QueryResultRow,
+  Notification,
+} from 'pg';
+
+export type SignalPayload = Record<string, unknown>;
+type SignalHandler = (targetId: string, payload: SignalPayload) => Promise<boolean>;
+
+export class Database {
+  private static pool: Pool | null = null;
+  private static listener: PoolClient | null = null;
+  private static signalHandler: SignalHandler | null = null;
+  private static listenerStarting = false;
+  private static pollTimer: NodeJS.Timeout | null = null;
+  private static pollingSignals = false;
+  private static readonly inFlightSignalIds = new Set<string>();
+  private static migrationsReady = false;
+
+  public static async initialize(): Promise<void> {
+    if (this.pool) return;
+
+    const connectionString = process.env.DATABASE_URL;
+    if (!connectionString || /replace|example\.com|localhost:5432\/change/i.test(connectionString)) {
+      throw new Error('DATABASE_URL must point to a real PostgreSQL database. Refusing to start without durable storage.');
+    }
+
+    const max = Number.parseInt(process.env.PG_POOL_MAX || '10', 10);
+    this.pool = new Pool({
+      connectionString,
+      max: Number.isFinite(max) && max > 0 ? Math.min(max, 50) : 10,
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 10_000,
+      statement_timeout: 15_000,
+      query_timeout: 20_000,
+      ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: true } : undefined,
+      application_name: 'mahi-remote-backend',
+    });
+
+    this.pool.on('error', (error) => {
+      // Pool-level idle client errors are logged; the pool replaces the client.
+      console.error('[database] idle client error', error.message);
+    });
+
+    await this.pool.query('SELECT 1');
+    await this.runMigrations();
+    this.migrationsReady = true;
+    console.log('[database] PostgreSQL connected and migrations are current');
+  }
+
+  private static getPool(): Pool {
+    if (!this.pool || !this.migrationsReady) {
+      throw new Error('Database is not initialized. Call Database.initialize() before accepting traffic.');
+    }
+    return this.pool;
+  }
+
+  public static async query<T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    values: unknown[] = []
+  ): Promise<QueryResult<T>> {
+    return this.getPool().query<T>(text, values as any[]);
+  }
+
+  public static async transaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
+    // Migrations use this helper before migrationsReady becomes true. The pool
+    // itself must exist, but application queries remain blocked until migration
+    // startup validation completes.
+    if (!this.pool) {
+      throw new Error('Database pool is not initialized.');
+    }
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await work(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Preserve the original transaction error.
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private static async runMigrations(): Promise<void> {
+    const migrationDirectory = path.resolve(process.cwd(), 'migrations');
+    if (!fs.existsSync(migrationDirectory)) {
+      throw new Error(`Database migration directory is missing: ${migrationDirectory}`);
+    }
+
+    await this.pool!.query(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        migration_name TEXT PRIMARY KEY,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    const migrationFiles = fs.readdirSync(migrationDirectory)
+      .filter((name) => /^\d+_[a-z0-9_-]+\.sql$/i.test(name))
+      .sort();
+
+    if (migrationFiles.length === 0) {
+      throw new Error('No backend SQL migrations were found.');
+    }
+
+    for (const migrationName of migrationFiles) {
+      const alreadyApplied = await this.pool!.query(
+        'SELECT 1 FROM schema_migrations WHERE migration_name = $1',
+        [migrationName]
+      );
+      if (alreadyApplied.rowCount) continue;
+
+      const sql = fs.readFileSync(path.join(migrationDirectory, migrationName), 'utf8');
+      await this.transaction(async (client) => {
+        // A transaction-scoped advisory lock serializes migrations even when the
+        // migration ledger row does not exist yet.
+        await client.query("SELECT pg_advisory_xact_lock(hashtext('mahi-remote-schema-migrations'))");
+        const locked = await client.query(
+          'SELECT 1 FROM schema_migrations WHERE migration_name = $1 FOR UPDATE',
+          [migrationName]
+        );
+        if (locked.rowCount) return;
+        await client.query(sql);
+        await client.query(
+          'INSERT INTO schema_migrations (migration_name) VALUES ($1) ON CONFLICT DO NOTHING',
+          [migrationName]
+        );
+      });
+      console.log(`[database] applied migration ${migrationName}`);
+    }
+  }
+
+  public static setSignalHandler(handler: SignalHandler): void {
+    this.signalHandler = handler;
+  }
+
+  private static scheduleSignalListenerReconnect(): void {
+    if (!this.pool || !this.migrationsReady || this.listenerStarting) return;
+    const retry = setTimeout(() => {
+      void this.startSignalListener().catch((error) => {
+        console.error('[database] signaling listener reconnect failed', error);
+      });
+    }, 3000);
+    retry.unref?.();
+  }
+
+  public static async startSignalListener(): Promise<void> {
+    if (this.listener || this.listenerStarting) return;
+    this.listenerStarting = true;
+    try {
+      const client = await this.getPool().connect();
+      this.listener = client;
+      await client.query('LISTEN mahi_signaling');
+      if (!this.pollTimer) {
+        this.pollTimer = setInterval(() => { void this.pollPendingSignals(); }, 2000);
+        this.pollTimer.unref?.();
+      }
+
+      client.on('notification', (notification: Notification) => {
+        void this.handleNotification(notification);
+      });
+      client.on('error', (error: Error) => {
+        console.error('[database] signaling listener error', error.message);
+        if (this.listener === client) this.listener = null;
+        try { client.release(true); } catch { /* already released */ }
+        this.scheduleSignalListenerReconnect();
+      });
+      client.on('end', () => {
+        if (this.listener === client) this.listener = null;
+        this.scheduleSignalListenerReconnect();
+      });
+      console.log('[database] cross-instance signaling listener ready');
+    } finally {
+      this.listenerStarting = false;
+    }
+  }
+
+  private static async handleNotification(notification: Notification): Promise<void> {
+    const eventId = notification.payload;
+    if (!eventId || !/^[0-9a-f-]{36}$/i.test(eventId)) return;
+    await this.deliverOutboxEvent(eventId);
+  }
+
+  private static async deliverOutboxEvent(eventId: string): Promise<void> {
+    if (this.inFlightSignalIds.has(eventId) || !this.signalHandler) return;
+    this.inFlightSignalIds.add(eventId);
+    try {
+      const result = await this.query<{
+        target_id: string;
+        payload: SignalPayload;
+        delivered_at: Date | null;
+      }>(
+        'SELECT target_id, payload, delivered_at FROM signaling_outbox WHERE event_id = $1',
+        [eventId]
+      );
+      const event = result.rows[0];
+      if (!event || event.delivered_at) return;
+      const delivered = await this.signalHandler(event.target_id, event.payload);
+      if (delivered) {
+        await this.query(
+          'UPDATE signaling_outbox SET delivered_at = NOW() WHERE event_id = $1 AND delivered_at IS NULL',
+          [eventId]
+        );
+      }
+    } catch (error) {
+      console.error('[database] could not deliver signaling outbox event', error);
+    } finally {
+      this.inFlightSignalIds.delete(eventId);
+    }
+  }
+
+  private static async pollPendingSignals(): Promise<void> {
+    if (this.pollingSignals || !this.signalHandler || !this.pool || !this.migrationsReady) return;
+    this.pollingSignals = true;
+    try {
+      const pending = await this.query<{
+        event_id: string;
+        target_id: string;
+        payload: SignalPayload;
+      }>(
+        `SELECT event_id::text, target_id, payload
+         FROM signaling_outbox
+         WHERE delivered_at IS NULL AND created_at > NOW() - INTERVAL '10 minutes'
+         ORDER BY created_at ASC
+         LIMIT 100`
+      );
+      for (const event of pending.rows) {
+        await this.deliverOutboxEvent(event.event_id);
+      }
+    } catch (error) {
+      console.warn('[database] outbox polling failed', error);
+    } finally {
+      this.pollingSignals = false;
+    }
+  }
+
+  public static async publishSignal(targetId: string, payload: SignalPayload): Promise<void> {
+    const eventId = cryptoRandomUuid();
+    await this.transaction(async (client) => {
+      await client.query(
+        'INSERT INTO signaling_outbox (event_id, target_id, payload) VALUES ($1, $2, $3::jsonb)',
+        [eventId, targetId, JSON.stringify(payload)]
+      );
+      await client.query("SELECT pg_notify('mahi_signaling', $1)", [eventId]);
+    });
+  }
+
+  public static async cleanupEphemeralRecords(): Promise<void> {
+    await this.query('DELETE FROM signaling_outbox WHERE (delivered_at IS NOT NULL AND delivered_at < NOW() - INTERVAL \'1 minute\') OR created_at < NOW() - INTERVAL \'10 minutes\'');
+    await this.query('DELETE FROM device_challenges WHERE expires_at < NOW() - INTERVAL \'1 day\'');
+    await this.query(
+      "UPDATE pairing_requests SET status = 'EXPIRED', decided_at = NOW() WHERE status = 'PENDING' AND expires_at <= NOW()"
+    );
+    await this.query('DELETE FROM rate_limit_counters WHERE updated_at < NOW() - INTERVAL \'1 day\'');
+  }
+
+  public static async isReady(): Promise<boolean> {
+    if (!this.pool || !this.migrationsReady) return false;
+    try {
+      await this.pool.query('SELECT 1');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  public static async close(): Promise<void> {
+    this.migrationsReady = false;
+    if (this.pollTimer) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+    if (this.listener) {
+      try { await this.listener.query('UNLISTEN mahi_signaling'); } catch { /* closing */ }
+      try { this.listener.release(); } catch { /* already released */ }
+      this.listener = null;
+    }
+    if (this.pool) {
+      const current = this.pool;
+      this.pool = null;
+      await current.end();
+    }
+  }
+}
+
+function cryptoRandomUuid(): string {
+  // UUIDs are generated locally by Node's cryptographic random source.
+  return require('crypto').randomUUID();
+}

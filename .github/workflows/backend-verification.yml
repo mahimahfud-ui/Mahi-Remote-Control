@@ -5,12 +5,14 @@ on:
     branches:
       - main
       - fix/full-remote-workflow
+      - agent-backend/persistence-deployment
     paths:
       - "backend/**"
       - ".github/workflows/backend-verification.yml"
   pull_request:
     branches:
       - main
+      - fix/full-remote-workflow
     paths:
       - "backend/**"
       - ".github/workflows/backend-verification.yml"
@@ -22,7 +24,33 @@ permissions:
 jobs:
   backend:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mahi_remote
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d mahi_remote"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/mahi_remote
+      DATABASE_SSL: "false"
+      JWT_SECRET: integration-test-only-jwt-secret-32-bytes-minimum
+      PAIRING_CODE_PEPPER: integration-test-only-pairing-pepper-32-bytes
+      PUBLIC_BASE_URL: https://remote.integration.invalid
+      STUN_SERVER_URL: stun:stun.integration.invalid:3478
+      TURN_SERVER_URL: turn:turn.integration.invalid:3478
+      TURN_REALM: turn.integration.invalid
+      TURN_SHARED_SECRET: integration-only-turn-secret-not-for-production
+      INSTANCE_ID: backend-ci
     defaults:
       run:
         working-directory: backend
@@ -48,5 +76,15 @@ jobs:
           node --check public/js/app.js
           node --check public/app.js
 
-      - name: Run backend integration tests
+      - name: Run PostgreSQL-backed backend integration tests
         run: npm test
+
+      - name: Verify migration files are present in the production image context
+        run: test -s migrations/001_persistent_backend.sql
+
+      - name: Build production backend container
+        run: docker build -t mahi-remote-backend:ci .
+
+      - name: Validate production Docker Compose configuration
+        working-directory: .
+        run: docker compose --env-file infrastructure/deployment/.env.example -f infrastructure/deployment/docker-compose.yml config --quiet

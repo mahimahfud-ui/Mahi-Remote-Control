@@ -16,3 +16,6 @@
 local.properties
 .env
 debug.keystore
+
+# Local deployment secrets and externally provisioned TURN TLS material
+infrastructure/deployment/turn-certs/

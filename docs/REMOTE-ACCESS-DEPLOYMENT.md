@@ -1,66 +1,77 @@
-# Mahi Remote Control — Remote Access Deployment Configuration
+# Mahi Remote Control — Remote Access Deployment
 
-This document covers configuration for access across different Wi-Fi/mobile networks. It does not mean remote video control is complete; the Android WebRTC media pipeline is still a release blocker.
+The backend deployment architecture and current acceptance status are maintained in [BACKEND-PRODUCTION-REPORT.md](BACKEND-PRODUCTION-REPORT.md). The shared Android/backend protocol is specified in [BACKEND-ANDROID-CONTRACT.md](BACKEND-ANDROID-CONTRACT.md).
 
-## Public URL model
+## Public endpoint model
 
-The browser controller and backend must be hosted on a public HTTPS origin. The backend serves:
-- Browser controller: `https://<public-host>/connect`
-- Runtime config: `https://<public-host>/api/v1/config`
-- Signaling: `wss://<public-host>/ws`
+Deploy one public HTTPS origin for browser UI, REST API and signaling:
+- Browser controller: `https://<DOMAIN>/connect`
+- Runtime configuration: `https://<DOMAIN>/api/v1/config`
+- Liveness: `https://<DOMAIN>/api/v1/health`
+- Readiness: `https://<DOMAIN>/api/v1/ready`
+- Signaling: `wss://<DOMAIN>/ws?protocolVersion=1`
 
-The Android app receives the public origin through the non-secret `PUBLIC_BASE_URL` build property or the root `.env` file. Android fetches the WSS endpoint and ICE server configuration from `/api/v1/config`. Do not put JWT or TURN secrets in the Android project.
+Android must use the configured origin and WSS URL supplied by the server. It must enroll/authenticate with a P-256 Android Keystore key before establishing a receiver WebSocket. Do not embed JWT, pairing pepper, database or TURN shared secrets in Android or browser code.
 
-## Backend environment
+## Deployment files
 
-Copy `backend/.env.example` to the backend runtime's private environment file and replace every placeholder. For Docker Compose, make the required variables available to Compose from its deployment environment or its ignored `.env` file:
+- `infrastructure/deployment/docker-compose.yml`: PostgreSQL 16, signaling backend, Caddy HTTPS proxy and Coturn.
+- `infrastructure/deployment/Caddyfile`: public HTTPS and WebSocket reverse proxy.
+- `infrastructure/deployment/.env.example`: private root deployment environment template.
+- `infrastructure/deployment/coturn.conf`: authenticated TURN and relay port configuration.
+- `backend/migrations/*.sql`: authoritative PostgreSQL schema and migration history.
+- `backend/.env.example`: reference backend runtime environment.
 
-- `PUBLIC_BASE_URL`: the real HTTPS origin, e.g. `https://remote.example.com`.
-- `JWT_SECRET`: random secret, at least 32 bytes; never commit it.
-- `TURN_SERVER_URL`: actual public Coturn endpoint, e.g. `turn:turn.example.com:3478`.
-- `TURN_REALM`: actual TURN server realm/host.
-- `TURN_SHARED_SECRET`: a different random secret shared only by the backend and Coturn.
-- `POSTGRES_PASSWORD`: database password.
-- `STUN_SERVER_URL`: STUN URL.
+The old `infrastructure/database/schema.sql` is deprecated. Back up any existing database before applying the v1 migration: incompatible legacy tables are renamed to `legacy_*_v1` and are not treated as securely enrolled v1 identities.
 
-The Compose configuration fails closed if required secrets/URLs are not supplied. The root `.env.example` is intentionally limited to the public Android build URL so private secrets cannot be copied into the APK by the Android Secrets Gradle plugin.
+## Required network access
 
-## TURN/NAT traversal
+Configure DNS records for both the HTTPS domain and the TURN hostname. Permit:
 
-The backend creates expiring TURN REST credentials using the shared secret. The username contains an expiry timestamp and the credential is an HMAC-SHA1 digest encoded as Base64, matching Coturn's REST authentication scheme. See the [Coturn server documentation](https://github.com/coturn/coturn/wiki/turnserver).
+| Port | Protocol | Purpose |
+|---|---|---|
+| 80 | TCP | Caddy ACME HTTP challenge and redirect |
+| 443 | TCP | HTTPS and WSS browser/API access |
+| 443 | UDP | Optional HTTP/3 |
+| 3478 | UDP and TCP | Coturn STUN/TURN listener |
+| 49152–65535 | UDP | Coturn media relay allocation |
 
-The TURN server must have a public address and firewall access to its listening port and allocated relay UDP port range. A Cloudflare Tunnel can proxy the HTTPS browser UI and WSS signaling endpoint; it does not relay WebRTC UDP media. TURN is required when direct ICE connectivity fails because of NAT/firewall restrictions.
+Do not expose PostgreSQL port 5432 publicly. Coturn TURN/TLS on 5349 is not enabled until real certificate/key files are provisioned.
 
-## Build configuration
+## Start and verify
 
-From a checkout with JDK, Android SDK and a compatible Gradle installation:
+From the repository root, copy the deployment environment template to a private `.env`, set a real domain/URLs and independent random secrets, then run:
 
 ```bash
-# Public URL is safe to embed in the Android APK.
-gradle :app:assembleDebug -PPUBLIC_BASE_URL=https://remote.example.com
-gradle :app:assembleRelease -PPUBLIC_BASE_URL=https://remote.example.com
+cp infrastructure/deployment/.env.example .env
+# Generate separate values with: openssl rand -hex 32
+docker compose --env-file .env -f infrastructure/deployment/docker-compose.yml config
+docker compose --env-file .env -f infrastructure/deployment/docker-compose.yml up -d --build
+docker compose --env-file .env -f infrastructure/deployment/docker-compose.yml ps
+```
 
-# Backend build and tests.
+From an external network, verify:
+
+```bash
+curl -fsS https://<DOMAIN>/api/v1/health
+curl -fsS https://<DOMAIN>/api/v1/ready
+curl -fsS https://<DOMAIN>/api/v1/config
+```
+
+A green local container build is not evidence of a live deployment. Production acceptance also requires authenticated Android enrollment, approved browser pairing, real WSS, external TURN relay and cross-network video/control tests.
+
+## Build
+
+The public origin is safe to include in the Android build configuration. Backend secrets are not.
+
+```bash
+gradle :app:assembleDebug -PPUBLIC_BASE_URL=https://<DOMAIN>
+gradle :app:assembleRelease -PPUBLIC_BASE_URL=https://<DOMAIN>
+
 cd backend
 npm ci
 npm run build
 npm test
 ```
 
-Release signing still requires a private keystore configured outside source control. Do not upload the keystore to GitHub or include it in a source archive.
-
-## Current backend limitation
-
-Although Compose provisions PostgreSQL, the current pairing/device/session service still uses in-memory Maps. Database persistence, migrations and cross-replica coordination must be implemented before a production deployment can reliably run more than one backend instance or survive restarts.
-
-## Network test matrix still required
-
-| Controller | Receiver | Expected path |
-|---|---|---|
-| Android Wi-Fi | Android same Wi-Fi | Direct ICE where possible |
-| Android mobile data | Android Wi-Fi | Direct ICE or TURN |
-| Android carrier A | Android carrier B | Direct ICE where possible; TURN fallback required |
-| Windows browser | Android mobile data | WSS signaling + WebRTC direct/TURN |
-| iPhone/iPad browser | Android Wi-Fi/mobile | Safari WebRTC support + WSS/TURN |
-
-These are required tests, not verified results.
+The backend integration test suite requires a disposable PostgreSQL instance via `DATABASE_URL`. Release signing still requires the owner's private Android signing key and must remain outside source control.

@@ -1,0 +1,22 @@
+{
+  email {$ACME_EMAIL}
+  admin off
+}
+
+{$DOMAIN} {
+  encode zstd gzip
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "no-referrer"
+    -Server
+  }
+
+  reverse_proxy signaling-backend:8080 {
+    # Caddy automatically supports HTTP/1.1 Upgrade for WebSocket connections.
+    health_uri /api/v1/ready
+    health_interval 15s
+    health_timeout 3s
+  }
+}

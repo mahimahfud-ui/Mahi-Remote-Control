@@ -1,240 +1,782 @@
-// Integration-only secret. Production must supply JWT_SECRET through its secret manager.
-process.env.JWT_SECRET = process.env.JWT_SECRET || 'integration-test-only-secret-change-before-production-0001';
+// Integration tests use the same PostgreSQL persistence and signaling code as production.
+process.env.NODE_ENV = 'test';
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'integration-test-only-jwt-secret-32-bytes-minimum';
+process.env.PAIRING_CODE_PEPPER = process.env.PAIRING_CODE_PEPPER || 'integration-test-only-pairing-pepper-32-bytes';
 process.env.TURN_SERVER_URL = 'turn:turn.integration.invalid:3478';
+process.env.TURN_REALM = 'turn.integration.invalid';
 process.env.TURN_SHARED_SECRET = 'integration-only-turn-secret-not-for-production';
+process.env.STUN_SERVER_URL = 'stun:stun.integration.invalid:3478';
+process.env.PUBLIC_BASE_URL = 'https://remote.integration.invalid';
+process.env.INSTANCE_ID = 'integration-instance-1';
 
-const http = require('http');
+const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const http = require('node:http');
+const net = require('node:net');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
 const express = require('express');
-const cors = require('cors');
 const { WebSocket, WebSocketServer } = require('ws');
-const assert = require('assert');
 
-// Import compiled backend modules
+const { Database } = require('../dist/database/Database');
 const { apiRouter } = require('../dist/api/routes');
 const { SignalingHub } = require('../dist/signaling/SignalingHub');
-const { DeviceService } = require('../dist/device-management/DeviceService');
 const { AuthService } = require('../dist/authentication/AuthService');
 
+const BASE_URL = 'http://127.0.0.1:8099';
+const WS_URL = 'ws://127.0.0.1:8099/ws';
+const PROTOCOL_HEADERS = {
+  'Content-Type': 'application/json',
+  'X-Mahi-Protocol-Version': '1'
+};
+
+function signedMessage(challenge) {
+  return [
+    'MAHI-REMOTE-DEVICE-PROOF',
+    '1',
+    challenge.purpose,
+    challenge.challengeId,
+    challenge.deviceId || 'MAHI-INTEGRATION-DEVICE',
+    challenge.fingerprint,
+    challenge.nonce,
+    String(challenge.expiresAtMs)
+  ].join('\n');
+}
+
+function signChallenge(challenge, privateKey, deviceId = 'MAHI-INTEGRATION-DEVICE') {
+  const message = [
+    'MAHI-REMOTE-DEVICE-PROOF',
+    '1',
+    challenge.purpose,
+    challenge.challengeId,
+    deviceId,
+    challenge.fingerprint,
+    challenge.nonce,
+    String(challenge.expiresAtMs)
+  ].join('\n');
+  return crypto.sign('sha256', Buffer.from(message, 'utf8'), privateKey).toString('base64');
+}
+
+async function post(path, body, token) {
+  const headers = { ...PROTOCOL_HEADERS };
+  if (token) headers.Authorization = 'Bearer ' + token;
+  const response = await fetch(BASE_URL + path, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ protocolVersion: 1, ...body })
+  });
+  let payload = {};
+  try { payload = await response.json(); } catch { /* empty response */ }
+  return { response, payload };
+}
+
+function makeSocket(url, options = {}) {
+  const ws = new WebSocket(url, options);
+  const queue = [];
+  const waiters = [];
+  ws.on('message', raw => {
+    let message;
+    try { message = JSON.parse(raw.toString()); }
+    catch { message = { type: 'INVALID_JSON' }; }
+    const index = waiters.findIndex(waiter => waiter.predicate(message));
+    if (index >= 0) {
+      const waiter = waiters.splice(index, 1)[0];
+      clearTimeout(waiter.timer);
+      waiter.resolve(message);
+    } else {
+      queue.push(message);
+    }
+  });
+  ws.next = (type, timeoutMs = 4000) => {
+    const acceptedTypes = Array.isArray(type) ? type : [type];
+    const matches = message => acceptedTypes.includes(message.type);
+    const index = queue.findIndex(matches);
+    if (index >= 0) return Promise.resolve(queue.splice(index, 1)[0]);
+    return new Promise((resolve, reject) => {
+      const waiter = {
+        predicate: matches,
+        resolve,
+        timer: setTimeout(() => {
+          const at = waiters.indexOf(waiter);
+          if (at >= 0) waiters.splice(at, 1);
+          reject(new Error('Timed out waiting for WebSocket event ' + type));
+        }, timeoutMs)
+      };
+      waiters.push(waiter);
+    });
+  };
+  ws.sendJson = message => ws.send(JSON.stringify({ protocolVersion: 1, ...message }));
+  return ws;
+}
+
+async function waitOpen(ws) {
+  if (ws.readyState === WebSocket.OPEN) return;
+  await new Promise((resolve, reject) => {
+    ws.once('open', resolve);
+    ws.once('error', reject);
+  });
+}
+
+async function closeSocket(ws) {
+  if (!ws || ws.readyState === WebSocket.CLOSED) return;
+  await new Promise(resolve => {
+    const timer = setTimeout(() => {
+      try { ws.terminate(); } catch { /* no-op */ }
+      resolve();
+    }, 1000);
+    ws.once('close', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    try { ws.close(); } catch { clearTimeout(timer); resolve(); }
+  });
+}
+
+async function findFreePort() {
+  const probe = net.createServer();
+  await new Promise((resolve, reject) => {
+    probe.once('error', reject);
+    probe.listen(0, '127.0.0.1', resolve);
+  });
+  const address = probe.address();
+  const port = typeof address === 'object' && address ? address.port : 0;
+  await new Promise(resolve => probe.close(resolve));
+  return port;
+}
+
+async function waitForReady(url, child, getOutput, timeoutMs = 20000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) {
+      throw new Error('Secondary backend exited before readiness: ' + getOutput());
+    }
+    try {
+      const response = await fetch(url + '/api/v1/ready');
+      if (response.ok) return;
+    } catch { /* backend is still starting */ }
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+  throw new Error('Secondary backend did not become ready: ' + getOutput());
+}
+
+async function stopChild(child) {
+  if (!child || child.exitCode !== null) return;
+  child.kill('SIGTERM');
+  await new Promise(resolve => {
+    const timer = setTimeout(() => {
+      if (child.exitCode === null) child.kill('SIGKILL');
+      resolve();
+    }, 7000);
+    child.once('exit', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
 async function runTests() {
-  console.log('=== STARTING BACKEND INTEGRATION TESTS ===');
-  
-  // 1. Setup ephemeral test server
-  const app = express();
-  app.use(cors());
-  app.use(express.json());
-  app.use('/api/v1', apiRouter);
-
-  const server = http.createServer(app);
-  const wss = new WebSocketServer({ server, path: '/ws' });
-  new SignalingHub(wss);
-
-  await new Promise((resolve) => server.listen(8099, resolve));
-  console.log('Test Server listening on port 8099');
+  let server;
+  let wss;
+  let hub;
+  let receiver;
+  let controller;
+  let controller2;
+  let androidController;
+  let secondaryBackend;
+  let secondaryOutput = '';
 
   try {
-    // 2. Test /api/v1/health
-    console.log('[TEST] Checking /api/v1/health...');
-    const healthRes = await fetch('http://localhost:8099/api/v1/health');
-    assert.strictEqual(healthRes.status, 200);
-    const healthData = await healthRes.json();
-    assert.strictEqual(healthData.status, 'healthy');
-    console.log('✓ /api/v1/health PASSED');
+    await Database.initialize();
+    await Database.query(`
+      TRUNCATE TABLE
+        signaling_outbox,
+        signaling_connections,
+        device_presence,
+        session_participants,
+        support_sessions,
+        pairing_requests,
+        pairing_codes,
+        device_challenges,
+        audit_events,
+        devices,
+        rate_limit_counters
+      RESTART IDENTITY CASCADE
+    `);
 
-    // Public configuration may expose STUN/public endpoints, but never TURN credentials.
-    const publicConfigRes = await fetch('http://localhost:8099/api/v1/config');
-    assert.strictEqual(publicConfigRes.status, 200);
-    const publicConfig = await publicConfigRes.json();
-    assert.strictEqual(publicConfig.turnConfigured, true);
-    assert(!JSON.stringify(publicConfig).includes('credential'));
-    assert(!JSON.stringify(publicConfig).includes('integration-only-turn-secret'));
-    console.log('✓ Public runtime config does not disclose TURN credentials');
+    const app = express();
+    app.disable('x-powered-by');
+    app.use(express.json({ limit: '256kb' }));
+    app.use('/api/v1', apiRouter);
+    server = http.createServer(app);
+    wss = new WebSocketServer({ server, path: '/ws', maxPayload: 1024 * 1024 });
+    hub = new SignalingHub(wss);
 
-    const unauthTurnRes = await fetch('http://localhost:8099/api/v1/turn-credentials');
-    assert.strictEqual(unauthTurnRes.status, 401);
-    console.log('✓ TURN credentials require an approved session token');
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(8099, '127.0.0.1', resolve);
+    });
 
-    // 3. Global device enumeration must not disclose device IDs/fingerprints.
-    console.log('[TEST] Verifying unauthenticated device enumeration is disabled...');
-    const devRes = await fetch('http://localhost:8099/api/v1/devices');
-    assert.strictEqual(devRes.status, 410);
-    console.log('✓ Public device enumeration is disabled');
+    console.log('[TEST] PostgreSQL readiness and protocol contract');
+    const health = await fetch(BASE_URL + '/api/v1/health');
+    assert.equal(health.status, 200);
+    assert.equal((await health.json()).protocolVersion, 1);
+    const ready = await fetch(BASE_URL + '/api/v1/ready');
+    assert.equal(ready.status, 200);
+    assert.equal((await ready.json()).status, 'ready');
 
-    // 4. Ensure the legacy REST endpoint cannot mint a session before owner approval.
-    console.log('[TEST] Verifying REST code-only pairing is disabled...');
-    const pairingCode = '839-201';
-    DeviceService.storePairingCode('MAHI-TEST-NOAKHALI', pairingCode, Date.now() + 300000);
-    const pairRes = await fetch('http://localhost:8099/api/v1/pair/verify', {
+    const configRes = await fetch(BASE_URL + '/api/v1/config');
+    const config = await configRes.json();
+    assert.equal(config.protocolVersion, 1);
+    assert.equal(config.signalingUrl, 'wss://remote.integration.invalid/ws');
+    assert.equal(config.turnConfigured, true);
+    assert(!JSON.stringify(config).includes('credential'));
+    assert(!JSON.stringify(config).includes(process.env.TURN_SHARED_SECRET));
+
+    const noTurn = await fetch(BASE_URL + '/api/v1/turn-credentials');
+    assert.equal(noTurn.status, 401);
+    const publicDevices = await fetch(BASE_URL + '/api/v1/devices');
+    assert.equal(publicDevices.status, 410);
+
+    const missingVersion = await fetch(BASE_URL + '/api/v1/devices/enrollment/challenges', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ code: pairingCode, operatorFingerprint: 'OPERATOR-SYLHET-99' })
+      body: JSON.stringify({ deviceId: 'MAHI-INTEGRATION-DEVICE' })
     });
-    assert.strictEqual(pairRes.status, 410, 'REST endpoint must not issue a token before receiver approval');
-    assert(DeviceService.getPairingCode(pairingCode), 'Pairing code should remain available until owner approval');
-    console.log('✓ Pre-approval REST token issuance blocked');
+    assert.equal(missingVersion.status, 426);
 
-    // 5. Expired pairing codes are rejected without issuing a token.
-    console.log('[TEST] Testing expired code lookup...');
-    const expiredCode = '111-222';
-    DeviceService.storePairingCode('MAHI-TEST-NOAKHALI', expiredCode, Date.now() - 1000);
-    assert.strictEqual(DeviceService.getPairingCode(expiredCode), null);
-    console.log('✓ Expired Pairing Code Rejection PASSED');
+    console.log('[TEST] ECDSA P-256 enrollment, server-derived fingerprint and single-use proof');
+    const deviceId = 'MAHI-INTEGRATION-DEVICE';
+    const firstPair = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const publicKey = firstPair.publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
 
-    // 6. Test Rate Limiting
-    console.log('[TEST] Testing Rate Limiter threshold...');
-    const clientKey = '192.168.1.99';
-    let blocked = false;
-    for (let i = 0; i < 70; i++) {
-      if (!AuthService.checkRateLimit(clientKey, 50, 10000)) {
-        blocked = true;
-        break;
+    const challengeResult = await post('/api/v1/devices/enrollment/challenges', {
+      deviceId,
+      deviceName: 'Integration Android',
+      publicKey: {
+        format: 'spki-der-base64',
+        algorithm: 'EC',
+        curve: 'P-256',
+        value: publicKey
       }
+    });
+    assert.equal(challengeResult.response.status, 201);
+    const challenge = challengeResult.payload;
+    assert.equal(challenge.purpose, 'ENROLL');
+    assert.equal(challenge.signatureAlgorithm, 'SHA256withECDSA');
+    assert.equal(challenge.fingerprint, 'sha256:' + crypto.createHash('sha256')
+      .update(Buffer.from(publicKey, 'base64')).digest('hex'));
+
+    const signature = signChallenge(challenge, firstPair.privateKey, deviceId);
+    const enrolled = await post('/api/v1/devices/enrollment/verify', {
+      challengeId: challenge.challengeId,
+      signature
+    });
+    assert.equal(enrolled.response.status, 201);
+    assert.equal(enrolled.payload.fingerprint, challenge.fingerprint);
+    assert.equal(enrolled.payload.tokenType, 'Bearer');
+    assert.ok(enrolled.payload.deviceAccessToken);
+
+    const replay = await post('/api/v1/devices/enrollment/verify', {
+      challengeId: challenge.challengeId,
+      signature
+    });
+    assert.equal(replay.response.status, 409);
+    assert.equal(replay.payload.error.code, 'CHALLENGE_REPLAYED');
+
+    console.log('[TEST] Invalid ECDSA signature and expired challenge rejection');
+    const wrongPair = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const wrongPublicKey = wrongPair.publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
+    const wrongChallenge = await post('/api/v1/devices/enrollment/challenges', {
+      deviceId: 'MAHI-WRONG-SIGNATURE',
+      deviceName: 'Invalid proof test',
+      publicKey: {
+        format: 'spki-der-base64',
+        algorithm: 'EC',
+        curve: 'P-256',
+        value: wrongPublicKey
+      }
+    });
+    assert.equal(wrongChallenge.response.status, 201);
+    const badProof = await post('/api/v1/devices/enrollment/verify', {
+      challengeId: wrongChallenge.payload.challengeId,
+      signature: signChallenge(wrongChallenge.payload, firstPair.privateKey, 'MAHI-WRONG-SIGNATURE')
+    });
+    assert.equal(badProof.response.status, 400);
+    assert.equal(badProof.payload.error.code, 'INVALID_SIGNATURE');
+    const goodProof = await post('/api/v1/devices/enrollment/verify', {
+      challengeId: wrongChallenge.payload.challengeId,
+      signature: signChallenge(wrongChallenge.payload, wrongPair.privateKey, 'MAHI-WRONG-SIGNATURE')
+    });
+    assert.equal(goodProof.response.status, 201);
+
+    const expiredChallenge = await post('/api/v1/devices/enrollment/challenges', {
+      deviceId: 'MAHI-EXPIRED-CHALLENGE',
+      deviceName: 'Expired challenge test',
+      publicKey: {
+        format: 'spki-der-base64',
+        algorithm: 'EC',
+        curve: 'P-256',
+        value: wrongPublicKey
+      }
+    });
+    assert.equal(expiredChallenge.response.status, 201);
+    await Database.query(
+      'UPDATE device_challenges SET expires_at = NOW() - INTERVAL \'1 second\' WHERE challenge_id = $1',
+      [expiredChallenge.payload.challengeId]
+    );
+    const expiredProof = await post('/api/v1/devices/enrollment/verify', {
+      challengeId: expiredChallenge.payload.challengeId,
+      signature: signChallenge(expiredChallenge.payload, wrongPair.privateKey, 'MAHI-EXPIRED-CHALLENGE')
+    });
+    assert.equal(expiredProof.response.status, 409);
+    assert.equal(expiredProof.payload.error.code, 'CHALLENGE_EXPIRED');
+
+    const authChallenge = await post('/api/v1/devices/auth/challenges', { deviceId });
+    assert.equal(authChallenge.response.status, 201);
+    const deviceAuth = await post('/api/v1/devices/auth/verify', {
+      challengeId: authChallenge.payload.challengeId,
+      signature: signChallenge(authChallenge.payload, firstPair.privateKey, deviceId)
+    });
+    assert.equal(deviceAuth.response.status, 200);
+    assert.equal(deviceAuth.payload.fingerprint, challenge.fingerprint);
+    assert.ok(deviceAuth.payload.deviceAccessToken);
+
+    const invalidPublicKey = await post('/api/v1/devices/enrollment/challenges', {
+      deviceId: 'MAHI-BAD-KEY-DEVICE',
+      deviceName: 'Invalid',
+      publicKey: {
+        format: 'spki-der-base64',
+        algorithm: 'EC',
+        curve: 'P-256',
+        value: Buffer.from('not-a-key').toString('base64')
+      }
+    });
+    assert.equal(invalidPublicKey.response.status, 400);
+
+    console.log('[TEST] Database-backed distributed rate limits');
+    const limitKey = 'test-rate-' + crypto.randomUUID();
+    let rateLimited = false;
+    for (let i = 0; i < 8; i++) {
+      const allowed = await AuthService.checkRateLimit(limitKey, 5, 10_000);
+      if (!allowed) rateLimited = true;
     }
-    assert(blocked, 'Rate limiter failed to block excessive requests');
-    console.log('✓ Rate Limiter Threshold Enforcement PASSED');
+    assert.equal(rateLimited, true);
 
-    // 7. Verify code request -> receiver approval -> signed session -> protected SDP relay.
-    console.log('[TEST] Testing approved WebSocket pairing and authorized SDP relay...');
-    const wsDevice = new WebSocket('ws://localhost:8099/ws', {
+    console.log('[TEST] Authenticated receiver WebSocket and rejected unauthenticated device identity');
+    const forgedReceiver = makeSocket(WS_URL + '?protocolVersion=1', {
       headers: {
-        'x-device-id': 'MAHI-WS-DEVICE',
-        'x-device-fingerprint': 'DEV-FP-1234',
-        'x-device-name': 'Receiver Test Device',
-        'x-client-role': 'RECEIVER'
+        'X-Mahi-Protocol-Version': '1',
+        'X-Device-Id': deviceId,
+        'X-Device-Fingerprint': challenge.fingerprint,
+        'X-Client-Role': 'RECEIVER'
       }
     });
-    const wsOperator = new WebSocket('ws://localhost:8099/ws', {
+    const forgedClose = new Promise(resolve => forgedReceiver.once('close', (code) => resolve(code)));
+    await waitOpen(forgedReceiver).catch(() => undefined);
+    const forgedCode = await forgedClose;
+    assert.equal(forgedCode, 1008);
+
+    receiver = makeSocket(WS_URL + '?protocolVersion=1', {
       headers: {
-        'x-operator-fingerprint': 'OP-FP-5678',
-        'x-operator-name': 'Test Browser Operator'
+        'Authorization': 'Bearer ' + enrolled.payload.deviceAccessToken,
+        'X-Mahi-Protocol-Version': '1',
+        'X-Client-Role': 'RECEIVER',
+        'X-Device-Name': 'Integration Android'
       }
     });
+    await waitOpen(receiver);
+    const registered = await receiver.next('REGISTER_ACK');
+    assert.equal(registered.deviceId, deviceId);
 
-    await Promise.all([
-      new Promise(res => wsDevice.once('open', res)),
-      new Promise(res => wsOperator.once('open', res))
-    ]);
-
-    const nextMessage = (ws, predicate, description) => new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Timeout waiting for ' + description)), 3000);
-      const listener = raw => {
-        const msg = JSON.parse(raw.toString());
-        if (!predicate(msg)) return;
-        clearTimeout(timeout);
-        ws.off('message', listener);
-        resolve(msg);
-      };
-      ws.on('message', listener);
+    const pairingCode = '654321';
+    receiver.sendJson({
+      type: 'REGISTER_PAIRING_CODE',
+      code: pairingCode,
+      expiresAtMs: Date.now() + 5 * 60 * 1000
     });
+    const codeAck = await receiver.next('CODE_REGISTERED_ACK');
+    assert.equal(codeAck.status, 'OK');
 
-    const testCode = '654321';
-    DeviceService.storePairingCode('MAHI-WS-DEVICE', testCode, Date.now() + 300000);
-    const requestToReceiver = nextMessage(wsDevice, msg => msg.type === 'PAIR_REQUEST', 'receiver approval prompt');
-    const pendingToController = nextMessage(wsOperator, msg => msg.type === 'PAIR_PENDING', 'pair pending acknowledgement');
-    wsOperator.send(JSON.stringify({
+    console.log('[TEST] Start second backend process with a separate socket registry');
+    const secondaryPort = await findFreePort();
+    secondaryBackend = spawn(process.execPath, [path.resolve(__dirname, '../dist/index.js')], {
+      cwd: path.resolve(__dirname, '..'),
+      env: {
+        ...process.env,
+        PORT: String(secondaryPort),
+        HOST: '127.0.0.1',
+        INSTANCE_ID: 'integration-instance-2'
+      },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    secondaryBackend.stdout.on('data', chunk => { secondaryOutput += chunk.toString(); });
+    secondaryBackend.stderr.on('data', chunk => { secondaryOutput += chunk.toString(); });
+    const secondaryHttpUrl = 'http://127.0.0.1:' + secondaryPort;
+    const secondaryWsUrl = 'ws://127.0.0.1:' + secondaryPort + '/ws';
+    await waitForReady(secondaryHttpUrl, secondaryBackend, () => secondaryOutput);
+
+    console.log('[TEST] Concurrent browser pairing requests and single owner approval across backend instances');
+    const controllerFingerprintA = 'WEB-' + crypto.randomBytes(16).toString('hex').toUpperCase();
+    const controllerFingerprintB = 'WEB-' + crypto.randomBytes(16).toString('hex').toUpperCase();
+    controller = makeSocket(
+      secondaryWsUrl + '?protocolVersion=1&controllerFingerprint=' + encodeURIComponent(controllerFingerprintA)
+    );
+    controller2 = makeSocket(
+      secondaryWsUrl + '?protocolVersion=1&controllerFingerprint=' + encodeURIComponent(controllerFingerprintB)
+    );
+    await Promise.all([waitOpen(controller), waitOpen(controller2)]);
+    await Promise.all([controller.next('REGISTER_ACK'), controller2.next('REGISTER_ACK')]);
+
+    controller.sendJson({
       type: 'PAIR_BY_CODE',
-      code: testCode,
-      fingerprint: 'OP-FP-5678',
-      operatorName: 'Integration Test Browser',
-      requestedScopes: ['Screen Mirroring', 'Remote Interaction']
-    }));
-    const [incomingRequest, pendingAck] = await Promise.all([requestToReceiver, pendingToController]);
-    assert(incomingRequest.requestId);
-    assert.strictEqual(incomingRequest.requestId, pendingAck.requestId);
-    assert(DeviceService.getPairingCode(testCode), 'Code must not be consumed before owner approval');
-
-    const approvalToController = nextMessage(wsOperator, msg => msg.type === 'PAIR_ACCEPT', 'controller session authorization');
-    const authorizationToReceiver = nextMessage(wsDevice, msg => msg.type === 'PAIR_SESSION_AUTHORIZED', 'receiver session authorization');
-    wsDevice.send(JSON.stringify({
-      type: 'PAIR_ACCEPT',
-      payload: {
-        requestId: incomingRequest.requestId,
-        status: 'APPROVED'
-      }
-    }));
-    const [controllerApproval, receiverAuthorization] = await Promise.all([approvalToController, authorizationToReceiver]);
-    assert.strictEqual(controllerApproval.sessionId, receiverAuthorization.sessionId);
-    assert(controllerApproval.sessionToken, 'Controller token missing');
-    assert(receiverAuthorization.sessionToken, 'Receiver token missing');
-    assert.strictEqual(DeviceService.getPairingCode(testCode), null, 'Approved code must be consumed exactly once');
-    assert(DeviceService.hasActiveSessionForDevice('MAHI-WS-DEVICE'), 'Receiver must have one active session');
-
-    const authorizedTurnRes = await fetch('http://localhost:8099/api/v1/turn-credentials', {
-      headers: { Authorization: 'Bearer ' + controllerApproval.sessionToken }
+      code: pairingCode,
+      operatorName: 'Integration Browser A',
+      requestedScopes: ['SCREEN_VIEW', 'REMOTE_INPUT', 'FILES', 'DIAGNOSTICS']
     });
-    assert.strictEqual(authorizedTurnRes.status, 200);
-    const turnPayload = await authorizedTurnRes.json();
-    assert(turnPayload.iceServers.some(server => server.urls === process.env.TURN_SERVER_URL));
-    assert(turnPayload.iceServers.some(server => typeof server.credential === 'string' && server.credential.length > 10));
-    assert(!JSON.stringify(turnPayload).includes('integration-only-turn-secret'));
-    console.log('✓ Approved session receives expiring TURN credentials');
-
-    // With TURN disabled, the approved session should still get a STUN-only config.
-    const savedTurnUrl = process.env.TURN_SERVER_URL;
-    const savedTurnSecret = process.env.TURN_SHARED_SECRET;
-    delete process.env.TURN_SERVER_URL;
-    delete process.env.TURN_SHARED_SECRET;
-    const stunOnlyRes = await fetch('http://localhost:8099/api/v1/turn-credentials', {
-      headers: { Authorization: 'Bearer ' + controllerApproval.sessionToken }
+    controller2.sendJson({
+      type: 'PAIR_BY_CODE',
+      code: pairingCode,
+      operatorName: 'Integration Browser B',
+      requestedScopes: ['SCREEN_VIEW', 'REMOTE_INPUT', 'FILES', 'DIAGNOSTICS']
     });
-    assert.strictEqual(stunOnlyRes.status, 200, 'TURN absence must not block STUN fallback');
-    const stunOnlyPayload = await stunOnlyRes.json();
-    assert.strictEqual(stunOnlyPayload.turnConfigured, false);
-    assert(stunOnlyPayload.iceServers.some(server => String(server.urls).startsWith('stun:')));
-    assert.strictEqual(stunOnlyPayload.iceServers.some(server => String(server.urls).startsWith('turn:')), false);
-    process.env.TURN_SERVER_URL = savedTurnUrl;
-    process.env.TURN_SHARED_SECRET = savedTurnSecret;
-    console.log('✓ STUN-only fallback remains available when TURN is not deployed');
 
-    console.log('✓ Pairing request is pending until explicit receiver approval');
-    console.log('✓ Both participants receive separate signed tokens for one session');
+    const [attemptA, attemptB] = await Promise.all([
+      controller.next(['PAIR_PENDING', 'PAIR_ERROR']),
+      controller2.next(['PAIR_PENDING', 'PAIR_ERROR'])
+    ]);
+    assert.equal([attemptA, attemptB].filter(item => item.type === 'PAIR_PENDING').length, 1);
+    assert.equal([attemptA, attemptB].filter(item => item.type === 'PAIR_ERROR').length, 1);
+    const pendingController = attemptA.type === 'PAIR_PENDING' ? controller : controller2;
+    const losingController = attemptA.type === 'PAIR_ERROR' ? controller : controller2;
+    const pending = attemptA.type === 'PAIR_PENDING' ? attemptA : attemptB;
+    assert.equal((attemptA.type === 'PAIR_ERROR' ? attemptA : attemptB).errorCode, 'PAIRING_ALREADY_PENDING');
 
-    const sdpOfferPromise = nextMessage(wsDevice, msg => msg.type === 'SDP_OFFER', 'authorized SDP offer relay');
-    wsOperator.send(JSON.stringify({
+    const incoming = await receiver.next('PAIR_REQUEST');
+    assert.equal(incoming.requestId, pending.requestId);
+    assert.equal(incoming.expiresAt > Date.now(), true);
+
+    console.log('[TEST] Approval is atomic; a duplicate simultaneous approval cannot create a second session');
+    receiver.sendJson({ type: 'PAIR_ACCEPT', requestId: incoming.requestId });
+    receiver.sendJson({ type: 'PAIR_ACCEPT', requestId: incoming.requestId });
+    const [browserApproval, receiverApproval, duplicateApprovalError] = await Promise.all([
+      pendingController.next('PAIR_ACCEPT'),
+      receiver.next('PAIR_SESSION_AUTHORIZED'),
+      receiver.next('PAIR_ERROR')
+    ]);
+    assert.equal(browserApproval.sessionId, receiverApproval.sessionId);
+    assert.ok(browserApproval.sessionToken);
+    assert.ok(receiverApproval.sessionToken);
+    assert.equal(duplicateApprovalError.errorCode, 'PAIRING_REQUEST_EXPIRED');
+    assert.equal(
+      await Database.query('SELECT 1 FROM support_sessions WHERE session_id = $1 AND status = \'ACTIVE\'', [browserApproval.sessionId])
+        .then(result => Boolean(result.rowCount)),
+      true
+    );
+    assert.equal(
+      await Database.query('SELECT COUNT(*)::int AS count FROM support_sessions WHERE device_id = $1 AND status = \'ACTIVE\'', [deviceId])
+        .then(result => result.rows[0].count),
+      1
+    );
+
+    // Use the winning browser connection for the remaining authorized-session tests.
+    controller = pendingController;
+    controller2 = losingController;
+
+    console.log('[TEST] TURN credentials are session-scoped and short-lived');
+    const turnResponse = await fetch(BASE_URL + '/api/v1/turn-credentials', {
+      headers: { Authorization: 'Bearer ' + browserApproval.sessionToken }
+    });
+    assert.equal(turnResponse.status, 200);
+    const turn = await turnResponse.json();
+    assert.equal(turn.protocolVersion, 1);
+    assert.equal(turn.turnConfigured, true);
+    assert.equal(turn.expiresInSeconds, 600);
+    const turnEntry = turn.iceServers.find(entry => String(entry.urls).startsWith('turn:'));
+    assert.ok(turnEntry && turnEntry.credential);
+    assert(!JSON.stringify(turn).includes(process.env.TURN_SHARED_SECRET));
+
+    console.log('[TEST] Session membership, scopes and SDP/input relay');
+    const receivedOffer = receiver.next('SDP_OFFER');
+    controller.sendJson({
       type: 'SDP_OFFER',
-      targetDeviceId: 'MAHI-WS-DEVICE',
-      sessionToken: controllerApproval.sessionToken,
-      payload: { sdp: 'v=0\\r\\no=- 1234 2 IN IP4 0.0.0.0...' }
-    }));
-    const receivedOffer = await sdpOfferPromise;
-    assert.strictEqual(receivedOffer.type, 'SDP_OFFER');
-    assert.strictEqual(receivedOffer.sessionId, controllerApproval.sessionId);
-    assert(receivedOffer.payload.sdp.includes('v=0'), 'SDP payload corrupted');
-    console.log('✓ Authorized WebSocket SDP offer relay PASSED');
+      targetDeviceId: deviceId,
+      sessionToken: browserApproval.sessionToken,
+      payload: { sdp: 'v=0\r\no=- integration-offer' }
+    });
+    const offer = await receivedOffer;
+    assert.equal(offer.sessionId, browserApproval.sessionId);
+    assert.ok(offer.payload.sdp.includes('integration-offer'));
 
-    const sdpAnswerPromise = nextMessage(wsOperator, msg => msg.type === 'SDP_ANSWER', 'authorized SDP answer relay');
-    wsDevice.send(JSON.stringify({
+    const receivedAnswer = controller.next('SDP_ANSWER');
+    receiver.sendJson({
       type: 'SDP_ANSWER',
-      recipient: receiverAuthorization.sender,
-      sessionToken: receiverAuthorization.sessionToken,
-      payload: { sdp: 'v=0\\r\\no=- 5678 2 IN IP4 0.0.0.0...' }
-    }));
-    const receivedAnswer = await sdpAnswerPromise;
-    assert.strictEqual(receivedAnswer.type, 'SDP_ANSWER');
-    assert.strictEqual(receivedAnswer.sessionId, controllerApproval.sessionId);
-    console.log('✓ Authorized WebSocket SDP answer relay PASSED');
+      sessionToken: receiverApproval.sessionToken,
+      payload: { sdp: 'v=0\r\no=- integration-answer' }
+    });
+    const answer = await receivedAnswer;
+    assert.equal(answer.sessionId, browserApproval.sessionId);
 
-    // Missing/invalid session credentials must not be relayed.
-    const unauthorizedPromise = nextMessage(wsOperator, msg => msg.type === 'SESSION_ERROR', 'unauthorized command rejection');
-    wsOperator.send(JSON.stringify({
+    const receivedInput = receiver.next('INPUT_EVENT');
+    controller.sendJson({
       type: 'INPUT_EVENT',
-      targetDeviceId: 'MAHI-WS-DEVICE',
-      payload: { command: { type: 'TAP', x: 100, y: 100 } }
-    }));
-    await unauthorizedPromise;
-    console.log('✓ Unauthenticated input command rejected');
-    wsDevice.close();
-    wsOperator.close();
+      targetDeviceId: deviceId,
+      sessionToken: browserApproval.sessionToken,
+      payload: { command: { type: 'TAP', x: 120, y: 340 } }
+    });
+    assert.equal((await receivedInput).type, 'INPUT_EVENT');
 
-    console.log('====================================================');
-    console.log(' BACKEND & APPROVED-SESSION INTEGRATION TESTS PASSED ');
-    console.log('====================================================');
+    const invalidTargetWait = controller.next('SESSION_ERROR');
+    controller.sendJson({
+      type: 'INPUT_EVENT',
+      targetDeviceId: 'someone-else-device',
+      sessionToken: browserApproval.sessionToken,
+      payload: { command: { type: 'TAP', x: 1, y: 1 } }
+    });
+    assert.equal((await invalidTargetWait).errorCode, 'NOT_SESSION_PARTICIPANT');
 
+    const invalidFileChunk = controller.next('SESSION_ERROR');
+    controller.sendJson({
+      type: 'FILE_COMMAND',
+      action: 'WRITE_CHUNK',
+      path: '/storage/emulated/0/test.bin',
+      data: 'x'.repeat(100_000),
+      targetDeviceId: deviceId,
+      sessionToken: browserApproval.sessionToken
+    });
+    assert.equal((await invalidFileChunk).errorCode, 'INVALID_REQUEST');
+
+    const forbiddenAppAction = controller.next('SESSION_ERROR');
+    controller.sendJson({
+      type: 'APP_COMMAND',
+      action: 'SHELL',
+      targetDeviceId: deviceId,
+      sessionToken: browserApproval.sessionToken
+    });
+    assert.equal((await forbiddenAppAction).errorCode, 'INVALID_REQUEST');
+
+    console.log('[TEST] PostgreSQL reconnect preserves enrolled devices, consumed codes and active sessions');
+    await Database.close();
+    await Database.initialize();
+    await Database.startSignalListener();
+    const persistedDevice = await Database.query(
+      'SELECT device_id, fingerprint FROM devices WHERE device_id = $1',
+      [deviceId]
+    );
+    assert.equal(persistedDevice.rows[0].device_id, deviceId);
+    assert.equal(persistedDevice.rows[0].fingerprint, challenge.fingerprint);
+    const persistedSession = await Database.query(
+      'SELECT session_id FROM support_sessions WHERE session_id = $1 AND status = \'ACTIVE\'',
+      [browserApproval.sessionId]
+    );
+    assert.equal(persistedSession.rowCount, 1);
+    const consumedCode = await Database.query(
+      'SELECT consumed_at FROM pairing_codes WHERE device_id = $1 ORDER BY created_at DESC LIMIT 1',
+      [deviceId]
+    );
+    assert.ok(consumedCode.rows[0].consumed_at);
+
+    console.log('[TEST] Session termination revokes participant access');
+    const terminate = await fetch(BASE_URL + '/api/v1/sessions/' + browserApproval.sessionId + '/terminate', {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + browserApproval.sessionToken }
+    });
+    assert.equal(terminate.status, 200);
+    const terminated = await terminate.json();
+    assert.equal(terminated.success, true);
+
+    const revokedSession = await fetch(BASE_URL + '/api/v1/turn-credentials', {
+      headers: { Authorization: 'Bearer ' + browserApproval.sessionToken }
+    });
+    assert.equal(revokedSession.status, 401);
+
+
+    // Drain the previous browser session's end event before opening a second session.
+    const browserSessionEnded = await receiver.next('SESSION_ENDED');
+    assert.equal(browserSessionEnded.sessionId, browserApproval.sessionId);
+
+    console.log('[TEST] Android controller pairing receives DEVICE role and can self-revoke');
+    const androidControllerId = 'MAHI-ANDROID-CONTROLLER';
+    const androidControllerPair = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const androidControllerPublicKey = androidControllerPair.publicKey
+      .export({ format: 'der', type: 'spki' }).toString('base64');
+    const androidControllerChallenge = await post('/api/v1/devices/enrollment/challenges', {
+      deviceId: androidControllerId,
+      deviceName: 'Android Controller',
+      publicKey: {
+        format: 'spki-der-base64',
+        algorithm: 'EC',
+        curve: 'P-256',
+        value: androidControllerPublicKey
+      }
+    });
+    assert.equal(androidControllerChallenge.response.status, 201);
+    const androidControllerEnrollment = await post('/api/v1/devices/enrollment/verify', {
+      challengeId: androidControllerChallenge.payload.challengeId,
+      signature: signChallenge(androidControllerChallenge.payload, androidControllerPair.privateKey, androidControllerId)
+    });
+    assert.equal(androidControllerEnrollment.response.status, 201);
+
+    androidController = makeSocket(WS_URL + '?protocolVersion=1', {
+      headers: {
+        'Authorization': 'Bearer ' + androidControllerEnrollment.payload.deviceAccessToken,
+        'X-Mahi-Protocol-Version': '1',
+        'X-Client-Role': 'CONTROLLER',
+        'X-Device-Name': 'Android Controller'
+      }
+    });
+    await waitOpen(androidController);
+    const androidControllerAck = await androidController.next('REGISTER_ACK');
+    assert.equal(androidControllerAck.deviceId, androidControllerId);
+
+    const androidControllerPairingCode = '778899';
+    receiver.sendJson({
+      type: 'REGISTER_PAIRING_CODE',
+      code: androidControllerPairingCode,
+      expiresAtMs: Date.now() + 5 * 60 * 1000
+    });
+    await receiver.next('CODE_REGISTERED_ACK');
+
+    androidController.sendJson({
+      type: 'PAIR_BY_CODE',
+      code: androidControllerPairingCode,
+      operatorName: 'Android Controller',
+      requestedScopes: ['SCREEN_VIEW', 'REMOTE_INPUT', 'FILES', 'DIAGNOSTICS']
+    });
+    const [androidPairRequest, androidPairPending] = await Promise.all([
+      receiver.next('PAIR_REQUEST'),
+      androidController.next('PAIR_PENDING')
+    ]);
+    assert.equal(androidPairRequest.requestId, androidPairPending.requestId);
+
+    receiver.sendJson({ type: 'PAIR_ACCEPT', requestId: androidPairRequest.requestId });
+    const [androidControllerApproval, androidReceiverApproval] = await Promise.all([
+      androidController.next('PAIR_ACCEPT'),
+      receiver.next('PAIR_SESSION_AUTHORIZED')
+    ]);
+    assert.equal(androidControllerApproval.sessionId, androidReceiverApproval.sessionId);
+    const decodedAndroidSessionToken = AuthService.verifySessionToken(androidControllerApproval.sessionToken);
+    assert.equal(decodedAndroidSessionToken.entityType, 'DEVICE');
+
+    const participantRole = await Database.query(
+      'SELECT participant_type FROM session_participants WHERE session_id = $1 AND participant_id = $2',
+      [androidControllerApproval.sessionId, androidControllerId]
+    );
+    assert.equal(participantRole.rows[0].participant_type, 'DEVICE');
+
+    const wrongRoleToken = AuthService.generateSessionToken({
+      entityId: androidControllerId,
+      entityType: 'OPERATOR',
+      fingerprint: decodedAndroidSessionToken.fingerprint,
+      sessionId: androidControllerApproval.sessionId
+    }, '30m');
+    const wrongRoleTurn = await fetch(BASE_URL + '/api/v1/turn-credentials', {
+      headers: { Authorization: 'Bearer ' + wrongRoleToken }
+    });
+    assert.equal(wrongRoleTurn.status, 401);
+
+    const androidOffer = receiver.next('SDP_OFFER');
+    androidController.sendJson({
+      type: 'SDP_OFFER',
+      sessionToken: androidControllerApproval.sessionToken,
+      targetDeviceId: deviceId,
+      payload: { sdp: 'v=0\\r\\no=- android-controller-offer' }
+    });
+    assert.ok((await androidOffer).payload.sdp.includes('android-controller-offer'));
+
+    const androidRevocationNotice = receiver.next('SESSION_ENDED');
+    const androidSelfRevoke = await post(
+      '/api/v1/devices/' + androidControllerId + '/revoke',
+      {},
+      androidControllerEnrollment.payload.deviceAccessToken
+    );
+    assert.equal(androidSelfRevoke.response.status, 200);
+    assert.equal(androidSelfRevoke.payload.endedSessionCount, 1);
+    assert.equal((await androidRevocationNotice).sessionId, androidControllerApproval.sessionId);
+
+    const androidControllerAfterRevoke = await Database.query(
+      'SELECT is_revoked FROM devices WHERE device_id = $1',
+      [androidControllerId]
+    );
+    assert.equal(androidControllerAfterRevoke.rows[0].is_revoked, true);
+    await closeSocket(androidController);
+    androidController = null;
+
+    console.log('[TEST] Device key rotation requires both old and new key signatures');
+    const newPair = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const newPublicKey = newPair.publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
+    const rotationChallenge = await post('/api/v1/devices/key-rotation/challenges', {
+      newPublicKey: {
+        format: 'spki-der-base64',
+        algorithm: 'EC',
+        curve: 'P-256',
+        value: newPublicKey
+      }
+    }, enrolled.payload.deviceAccessToken);
+    assert.equal(rotationChallenge.response.status, 201);
+    const rotation = rotationChallenge.payload;
+    const oldRotationSignature = signChallenge(rotation, firstPair.privateKey, deviceId);
+    const newRotationSignature = signChallenge(rotation, newPair.privateKey, deviceId);
+    const rotationResult = await post('/api/v1/devices/key-rotation/verify', {
+      challengeId: rotation.challengeId,
+      oldKeySignature: oldRotationSignature,
+      newKeySignature: newRotationSignature
+    }, enrolled.payload.deviceAccessToken);
+    assert.equal(rotationResult.response.status, 200);
+    assert.equal(rotationResult.payload.fingerprint, rotation.fingerprint);
+    assert.notEqual(rotationResult.payload.deviceAccessToken, enrolled.payload.deviceAccessToken);
+
+    const activeTokenWs = makeSocket(WS_URL + '?protocolVersion=1', {
+      headers: {
+        'Authorization': 'Bearer ' + rotationResult.payload.deviceAccessToken,
+        'X-Mahi-Protocol-Version': '1'
+      }
+    });
+    await waitOpen(activeTokenWs);
+    const activeTokenAck = await activeTokenWs.next('REGISTER_ACK');
+    assert.equal(activeTokenAck.deviceId, deviceId);
+    await closeSocket(activeTokenWs);
+
+    console.log('[TEST] Authenticated device self-revocation invalidates the current rotated token and sessions');
+    const selfRevoke = await post('/api/v1/devices/' + deviceId + '/revoke', {}, rotationResult.payload.deviceAccessToken);
+    assert.equal(selfRevoke.response.status, 200);
+    assert.equal(selfRevoke.payload.success, true);
+    assert.equal(selfRevoke.payload.revokedDeviceId, deviceId);
+    const deviceRevoked = await Database.query(
+      'SELECT is_revoked FROM devices WHERE device_id = $1',
+      [deviceId]
+    );
+    assert.equal(deviceRevoked.rows[0].is_revoked, true);
+
+    const revokedTokenWs = makeSocket(WS_URL + '?protocolVersion=1', {
+      headers: {
+        'Authorization': 'Bearer ' + rotationResult.payload.deviceAccessToken,
+        'X-Mahi-Protocol-Version': '1'
+      }
+    });
+    const revokedTokenClose = new Promise(resolve => revokedTokenWs.once('close', code => resolve(code)));
+    await waitOpen(revokedTokenWs).catch(() => undefined);
+    assert.equal(await revokedTokenClose, 1008);
+    await closeSocket(revokedTokenWs);
+
+
+    console.log('[TEST] Cross-instance pairing approvals and SDP/control events were delivered through the PostgreSQL outbox.');
+    console.log('[TEST] Passed: protocol, PostgreSQL persistence, multi-instance signaling, pairing, approval, session auth, TURN, scope checks, limits and key rotation.');
   } finally {
-    server.close();
+    await closeSocket(androidController);
+    await closeSocket(controller2);
+    await closeSocket(controller);
+    await closeSocket(receiver);
+    if (hub) await hub.close();
+    if (wss) await new Promise(resolve => wss.close(() => resolve()));
+    if (server && server.listening) {
+      await new Promise(resolve => server.close(() => resolve()));
+    }
+    await stopChild(secondaryBackend);
+    await Database.close();
   }
 }
 
-runTests().catch(err => {
-  console.error('INTEGRATION TEST FAILURE:', err);
-  process.exit(1);
+runTests().catch(error => {
+  console.error('BACKEND INTEGRATION TEST FAILURE:', error);
+  process.exitCode = 1;
 });
