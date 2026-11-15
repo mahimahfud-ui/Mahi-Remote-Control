@@ -26,7 +26,7 @@ Previous Android workflow: [run 43737218111](https://github.com/mahimahfud-ui/Ma
 2. **Signature verification:** malformed keys/signatures and verification exceptions now fail closed. A signature's length is never accepted as cryptographic proof.
 3. **File path validation:** validation resolves canonical paths and uses path-component-aware containment. Sibling-prefix paths and traversal segments are rejected.
 4. **Chunk limits:** file reads reject negative offsets and chunks outside 1..32 KiB; writes reject chunks larger than 32 KiB.
-5. **Regression tests:** valid/tampered/malformed ECDSA signature handling; traversal and sibling-prefix file paths; oversized/negative file chunks; rejected pairing cannot later activate a session.
+5. **Input/pairing/file regression tests:** valid and tampered ECDSA signatures; canonical challenge format, expiry and replay; request-ID-bound owner approval and rejection; NaN/out-of-range tap/swipe coordinates; unsupported global actions and oversized text; traversal/sibling-prefix file paths; oversized/negative file chunks.
 
 ## Android workflow inspection
 
