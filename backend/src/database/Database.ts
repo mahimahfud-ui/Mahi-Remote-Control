@@ -143,6 +143,16 @@ export class Database {
     this.signalHandler = handler;
   }
 
+  private static scheduleSignalListenerReconnect(): void {
+    if (!this.pool || !this.migrationsReady || this.listenerStarting) return;
+    const retry = setTimeout(() => {
+      void this.startSignalListener().catch((error) => {
+        console.error('[database] signaling listener reconnect failed', error);
+      });
+    }, 3000);
+    retry.unref?.();
+  }
+
   public static async startSignalListener(): Promise<void> {
     if (this.listener || this.listenerStarting) return;
     this.listenerStarting = true;
@@ -162,15 +172,11 @@ export class Database {
         console.error('[database] signaling listener error', error.message);
         if (this.listener === client) this.listener = null;
         try { client.release(true); } catch { /* already released */ }
-        const retry = setTimeout(() => {
-          void this.startSignalListener().catch((reconnectError) => {
-            console.error('[database] signaling listener reconnect failed', reconnectError);
-          });
-        }, 3000);
-        retry.unref?.();
+        this.scheduleSignalListenerReconnect();
       });
       client.on('end', () => {
         if (this.listener === client) this.listener = null;
+        this.scheduleSignalListenerReconnect();
       });
       console.log('[database] cross-instance signaling listener ready');
     } finally {
