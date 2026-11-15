@@ -12,6 +12,7 @@ on:
   pull_request:
     branches:
       - main
+      - fix/full-remote-workflow
     paths:
       - "backend/**"
       - ".github/workflows/backend-verification.yml"
