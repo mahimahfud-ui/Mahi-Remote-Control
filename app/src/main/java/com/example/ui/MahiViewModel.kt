@@ -160,7 +160,9 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 when (msg.type) {
-                    "REGISTER_ACK" -> registerCurrentPairingCode()
+                    "REGISTER_ACK" -> {
+                        if (_appRole.value == AppRole.RECEIVER) registerCurrentPairingCode()
+                    }
                     "PAIR_PENDING" -> {
                         _isControllerConnecting.value = true
                         _controllerErrorMessage.value = "Waiting for the receiver owner to approve."
