@@ -542,7 +542,7 @@
     ctx.clearRect(0, 0, r.width, r.height);
   }
 
-  addEventListener('resize'  addEventListener('resize', () => {
+  addEventListener('resize', () => {
     if (!$('#app').hidden) drawScreen();
   });
 
