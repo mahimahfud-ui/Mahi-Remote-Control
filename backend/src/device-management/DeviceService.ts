@@ -633,7 +633,7 @@ export class DeviceService {
       `INSERT INTO signaling_connections
        (entity_id, instance_id, entity_type, fingerprint, expires_at)
        VALUES ($1, $2, $3, $4, NOW() + INTERVAL '60 seconds')
-       ON CONFLICT (entity_id, instance_id) DO UPDATE SET
+       ON CONFLICT (entity_id) DO UPDATE SET
          entity_type = EXCLUDED.entity_type,
          fingerprint = EXCLUDED.fingerprint,
          last_seen_at = NOW(),
@@ -656,6 +656,15 @@ export class DeviceService {
       'DELETE FROM signaling_connections WHERE entity_id = $1 AND instance_id = $2',
       [entityId, instanceId]
     );
+  }
+
+  public static async isConnectionOwnedByInstance(entityId: string, instanceId: string): Promise<boolean> {
+    const result = await Database.query(
+      `SELECT 1 FROM signaling_connections
+       WHERE entity_id = $1 AND instance_id = $2 AND expires_at > NOW()`,
+      [entityId, instanceId]
+    );
+    return Boolean(result.rowCount);
   }
 
   public static async isEntityOnline(entityId: string): Promise<boolean> {
