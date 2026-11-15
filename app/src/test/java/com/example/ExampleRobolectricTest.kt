@@ -402,6 +402,7 @@ class ExampleRobolectricTest {
         assertEquals(1, RemoteFileTransferRules.chunkLength(100_000L, 99_999L))
         assertEquals(0, RemoteFileTransferRules.chunkLength(0L, 0L))
         assertFalse(RemoteFileTransferRules.isValidTransferId("not-a-uuid"))
+        assertFalse(RemoteFileTransferRules.isValidTransferId("------------------------------------"))
         assertTrue(RemoteFileTransferRules.isValidTransferId("123e4567-e89b-12d3-a456-426614174000"))
         assertEquals(
             "/permitted/downloads/report.txt.mahi-upload-123e4567-e89b-12d3-a456-426614174000.part",
