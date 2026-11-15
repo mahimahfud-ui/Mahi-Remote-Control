@@ -85,11 +85,13 @@ function makeSocket(url, options = {}) {
     }
   });
   ws.next = (type, timeoutMs = 4000) => {
-    const index = queue.findIndex(message => message.type === type);
+    const acceptedTypes = Array.isArray(type) ? type : [type];
+    const matches = message => acceptedTypes.includes(message.type);
+    const index = queue.findIndex(matches);
     if (index >= 0) return Promise.resolve(queue.splice(index, 1)[0]);
     return new Promise((resolve, reject) => {
       const waiter = {
-        predicate: message => message.type === type,
+        predicate: matches,
         resolve,
         timer: setTimeout(() => {
           const at = waiters.indexOf(waiter);
