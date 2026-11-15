@@ -25,6 +25,10 @@
     runtimeConfig: null,
     operatorFingerprint: 'WEB-' + Array.from(crypto.getRandomValues(new Uint8Array(16))).map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase(),
     pendingIceCandidates: [],
+    pendingDownload: null,
+    currentPath: '/storage/emulated/0/Documents',
+    pingTimer: null,
+    lastPingTimestamp: 0,
     isStreaming: false,
     dragStart: null,
     dragStartTime: 0,
@@ -111,13 +115,19 @@
       state.ws = new WebSocket(wsUrl.toString());
       state.ws.onopen = () => {
         console.info('[Signaling] Connected to configured WSS endpoint.');
+        sendPing();
+        if (state.pingTimer) clearInterval(state.pingTimer);
+        state.pingTimer = setInterval(sendPing, 15000);
       };
       state.ws.onmessage = event => {
         try { handleSignalingMessage(JSON.parse(event.data)); }
         catch (error) { console.warn('[Signaling] Invalid server message', error); }
       };
       state.ws.onclose = () => {
+        if (state.pingTimer) clearInterval(state.pingTimer);
+        state.pingTimer = null;
         if (state.sessionToken) {
+          state.isStreaming = false;
           setState('error');
           toast('Signaling disconnected. Reconnecting…');
         }
@@ -141,6 +151,12 @@
     return true;
   }
 
+  function sendPing() {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+    state.lastPingTimestamp = Date.now();
+    sendWs({ type: 'PING', timestamp: state.lastPingTimestamp });
+  }
+
   function parsePayload(payload) {
     if (payload && typeof payload === 'object') return payload;
     if (typeof payload === 'string') {
@@ -151,6 +167,20 @@
 
   function handleSignalingMessage(msg) {
     switch (msg.type) {
+      case 'PONG': {
+        const latency = $('#latency-text');
+        if (latency && state.lastPingTimestamp) {
+          latency.textContent = 'RTT · ' + Math.max(0, Date.now() - state.lastPingTimestamp) + ' ms';
+        }
+        const diagnosticLatency = $('#diag-latency');
+        if (diagnosticLatency && state.lastPingTimestamp) {
+          diagnosticLatency.textContent = Math.max(0, Date.now() - state.lastPingTimestamp) + ' ms';
+        }
+        break;
+      }
+      case 'FILE_CHUNK_RESPONSE':
+        handleFileChunkResponse(parsePayload(msg.payload));
+        break;
       case 'PAIR_PENDING':
         state.pairingRequestId = msg.requestId || null;
         setStatus('Request sent. Waiting for the phone owner to approve…');
@@ -278,12 +308,15 @@
 
     state.sessionId = msg.sessionId;
     state.sessionToken = msg.sessionToken;
+    state.pendingDownload = null;
     state.targetDeviceId = msg.sender;
     state.targetDeviceName = msg.receiverName || 'Android phone';
     state.isStreaming = false;
     state.pairingRequestId = null;
     const name = $('#device-model-text');
     if (name) name.textContent = state.targetDeviceName;
+    const deviceStatus = $('#device-status-text');
+    if (deviceStatus) deviceStatus.textContent = 'Owner approved · Connecting secure video';
 
     $('#pair').hidden = true;
     $('#app').hidden = false;
@@ -349,6 +382,8 @@
       const markLive = () => {
         if (state.peerConnection !== peer || !state.sessionToken) return;
         state.isStreaming = true;
+        const deviceStatus = $('#device-status-text');
+        if (deviceStatus) deviceStatus.textContent = 'Secure WebRTC · Live';
         setState('live');
         toast('Live video connected');
       };
@@ -418,6 +453,7 @@
     state.sessionToken = null;
     state.sessionId = null;
     state.pendingIceCandidates = [];
+    state.pendingDownload = null;
     state.targetDeviceId = null;
     state.isStreaming = false;
     state.pairingRequestId = null;
@@ -426,6 +462,10 @@
     boxes.forEach(box => box.value = '');
     $('#app').hidden = true;
     $('#pair').hidden = false;
+    const deviceStatus = $('#device-status-text');
+    if (deviceStatus) deviceStatus.textContent = 'Waiting for approved session';
+    const latency = $('#latency-text');
+    if (latency) latency.textContent = 'Latency unavailable';
     setStatus(reason || 'Session ended. Enter a new code when the phone is ready.');
     setState('empty');
     drawScreen();
@@ -634,7 +674,7 @@
     } else if (name === 'apps') {
       sendWs({ type: 'APP_COMMAND', action: 'LIST', targetDeviceId: state.targetDeviceId });
     } else if (name === 'files') {
-      sendWs({ type: 'FILE_COMMAND', action: 'LIST', path: '/storage/emulated/0/Documents', targetDeviceId: state.targetDeviceId });
+      sendWs({ type: 'FILE_COMMAND', action: 'LIST', path: state.currentPath, targetDeviceId: state.targetDeviceId });
     }
 
     setTimeout(drawScreen, 320);
@@ -666,7 +706,8 @@
     toast(`Opening ${pkg} on phone`);
   };
 
-  function renderAppList(apps) {
+  /* -------------------------------------------------------------
+   * 7. Emergency Stop Modal
     const list = $('#app-list');
     if (!list) return;
     list.innerHTML = '';
