@@ -226,18 +226,23 @@ export class DeviceService {
     const code = this.normalizePairingCode(rawCode);
     if (!/^\d{6}$/.test(code)) return null;
     const targetDeviceId = deviceId || '';
-    const codeHash = this.pairingCodeHash('', code);
-    const result = await Database.query(
-      `SELECT id::text AS code_id, device_id,
+    const candidates = await Database.query(
+      `SELECT id::text AS code_id, device_id, code_hash,
               (EXTRACT(EPOCH FROM expires_at) * 1000)::bigint AS expires_at_ms
        FROM pairing_codes
-       WHERE code_hash = $1 AND ($2 = '' OR device_id = $2)
-         AND consumed_at IS NULL AND expires_at > NOW()
-       ORDER BY created_at DESC LIMIT 2`,
-      [codeHash, targetDeviceId]
+       WHERE consumed_at IS NULL AND expires_at > NOW()
+         AND ($1 = '' OR device_id = $1)`,
+      [targetDeviceId]
     );
-    if (result.rows.length !== 1) return null;
-    const row = result.rows[0];
+
+    const matches = candidates.rows.filter((row) => {
+      const candidateHash = this.pairingCodeHash(row.device_id, code);
+      return typeof row.code_hash === 'string' &&
+        Buffer.byteLength(row.code_hash) === Buffer.byteLength(candidateHash) &&
+        crypto.timingSafeEqual(Buffer.from(row.code_hash), Buffer.from(candidateHash));
+    });
+    if (matches.length !== 1) return null;
+    const row = matches[0];
     return {
       codeId: row.code_id,
       deviceId: row.device_id,
