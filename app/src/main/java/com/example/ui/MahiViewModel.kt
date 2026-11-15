@@ -207,7 +207,8 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         responseType: String,
         transferId: String,
         offset: Long,
-        payload: JSONObject
+        payload: JSONObject,
+        commandType: String = "FILE_COMMAND"
     ): JSONObject {
         val key = remoteFileResponseKey(responseType, transferId, offset)
         val deferred = CompletableDeferred<JSONObject>()
@@ -218,7 +219,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
             if (_activeControllerSession.value?.sessionId != session.sessionId) {
                 throw CancellationException("The approved controller session changed.")
             }
-            if (!signalingClient.send("FILE_COMMAND", payload.toString(), session.targetDeviceId)) {
+            if (!signalingClient.send(commandType, payload.toString(), session.targetDeviceId)) {
                 throw IllegalStateException("The remote file command could not be sent.")
             }
             return withTimeout(20_000L) { deferred.await() }
@@ -482,7 +483,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                     "APP_COMMAND" -> {
                         handleAppCommand(msg)
                     }
-                    "FILE_COMMAND" -> {
+                    "FILE_COMMAND", "FILE_TRANSFER" -> {
                         handleFileCommand(msg)
                     }
                     "DIAGNOSTICS_RUN" -> {
@@ -1040,7 +1041,8 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         .put("action", "FINALIZE_UPLOAD")
                         .put("transferId", transferId)
                         .put("temporaryPath", temporaryPath)
-                        .put("destinationPath", destinationPath)
+                        .put("destinationPath", destinationPath),
+                    commandType = "FILE_TRANSFER"
                 )
                 if (!finalized.optBoolean("success")) {
                     throw IllegalStateException("Receiver could not finalize the upload. A file with that name may already exist.")
@@ -1050,7 +1052,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: Exception) {
                 if (temporaryPath.isNotBlank()) {
                     signalingClient.send(
-                        "FILE_COMMAND",
+                        "FILE_TRANSFER",
                         JSONObject()
                             .put("action", "ABORT_UPLOAD")
                             .put("transferId", transferId)
