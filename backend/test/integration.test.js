@@ -261,7 +261,7 @@ async function runTests() {
 
     const replay = await postJson(baseUrl, '/api/v1/devices/enrollment/verify', {
       challengeId: enrollment.json.challengeId,
-      signature: signProof(enrollment.json, keys.privateKey),
+      signature: signProof(enrollment.json, deviceId, keys.privateKey),
     });
     assert.equal(replay.response.status, 409);
     assert.equal(replay.json.error.code, 'CHALLENGE_REPLAYED');
