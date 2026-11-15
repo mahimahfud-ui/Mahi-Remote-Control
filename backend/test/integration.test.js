@@ -181,6 +181,7 @@ async function runTests() {
   let receiver;
   let controller;
   let controller2;
+  let androidController;
   let secondaryBackend;
   let secondaryOutput = '';
 
@@ -589,6 +590,117 @@ async function runTests() {
     assert.equal(revokedSession.status, 401);
 
 
+    // Drain the previous browser session's end event before opening a second session.
+    const browserSessionEnded = await receiver.next('SESSION_ENDED');
+    assert.equal(browserSessionEnded.sessionId, browserApproval.sessionId);
+
+    console.log('[TEST] Android controller pairing receives DEVICE role and can self-revoke');
+    const androidControllerId = 'MAHI-ANDROID-CONTROLLER';
+    const androidControllerPair = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const androidControllerPublicKey = androidControllerPair.publicKey
+      .export({ format: 'der', type: 'spki' }).toString('base64');
+    const androidControllerChallenge = await post('/api/v1/devices/enrollment/challenges', {
+      deviceId: androidControllerId,
+      deviceName: 'Android Controller',
+      publicKey: {
+        format: 'spki-der-base64',
+        algorithm: 'EC',
+        curve: 'P-256',
+        value: androidControllerPublicKey
+      }
+    });
+    assert.equal(androidControllerChallenge.response.status, 201);
+    const androidControllerEnrollment = await post('/api/v1/devices/enrollment/verify', {
+      challengeId: androidControllerChallenge.payload.challengeId,
+      signature: signChallenge(androidControllerChallenge.payload, androidControllerPair.privateKey, androidControllerId)
+    });
+    assert.equal(androidControllerEnrollment.response.status, 201);
+
+    androidController = makeSocket(WS_URL + '?protocolVersion=1', {
+      headers: {
+        'Authorization': 'Bearer ' + androidControllerEnrollment.payload.deviceAccessToken,
+        'X-Mahi-Protocol-Version': '1',
+        'X-Client-Role': 'CONTROLLER',
+        'X-Device-Name': 'Android Controller'
+      }
+    });
+    await waitOpen(androidController);
+    const androidControllerAck = await androidController.next('REGISTER_ACK');
+    assert.equal(androidControllerAck.deviceId, androidControllerId);
+
+    const androidControllerPairingCode = '778899';
+    receiver.sendJson({
+      type: 'REGISTER_PAIRING_CODE',
+      code: androidControllerPairingCode,
+      expiresAtMs: Date.now() + 5 * 60 * 1000
+    });
+    await receiver.next('CODE_REGISTERED_ACK');
+
+    androidController.sendJson({
+      type: 'PAIR_BY_CODE',
+      code: androidControllerPairingCode,
+      operatorName: 'Android Controller',
+      requestedScopes: ['SCREEN_VIEW', 'REMOTE_INPUT', 'FILES', 'DIAGNOSTICS']
+    });
+    const [androidPairRequest, androidPairPending] = await Promise.all([
+      receiver.next('PAIR_REQUEST'),
+      androidController.next('PAIR_PENDING')
+    ]);
+    assert.equal(androidPairRequest.requestId, androidPairPending.requestId);
+
+    receiver.sendJson({ type: 'PAIR_ACCEPT', requestId: androidPairRequest.requestId });
+    const [androidControllerApproval, androidReceiverApproval] = await Promise.all([
+      androidController.next('PAIR_ACCEPT'),
+      receiver.next('PAIR_SESSION_AUTHORIZED')
+    ]);
+    assert.equal(androidControllerApproval.sessionId, androidReceiverApproval.sessionId);
+    const decodedAndroidSessionToken = AuthService.verifySessionToken(androidControllerApproval.sessionToken);
+    assert.equal(decodedAndroidSessionToken.entityType, 'DEVICE');
+
+    const participantRole = await Database.query(
+      'SELECT participant_type FROM session_participants WHERE session_id = $1 AND participant_id = $2',
+      [androidControllerApproval.sessionId, androidControllerId]
+    );
+    assert.equal(participantRole.rows[0].participant_type, 'DEVICE');
+
+    const wrongRoleToken = AuthService.generateSessionToken({
+      entityId: androidControllerId,
+      entityType: 'OPERATOR',
+      fingerprint: decodedAndroidSessionToken.fingerprint,
+      sessionId: androidControllerApproval.sessionId
+    }, '30m');
+    const wrongRoleTurn = await fetch(BASE_URL + '/api/v1/turn-credentials', {
+      headers: { Authorization: 'Bearer ' + wrongRoleToken }
+    });
+    assert.equal(wrongRoleTurn.status, 401);
+
+    const androidOffer = receiver.next('SDP_OFFER');
+    androidController.sendJson({
+      type: 'SDP_OFFER',
+      sessionToken: androidControllerApproval.sessionToken,
+      targetDeviceId: deviceId,
+      payload: { sdp: 'v=0\\r\\no=- android-controller-offer' }
+    });
+    assert.ok((await androidOffer).payload.sdp.includes('android-controller-offer'));
+
+    const androidRevocationNotice = receiver.next('SESSION_ENDED');
+    const androidSelfRevoke = await post(
+      '/devices/' + androidControllerId + '/revoke',
+      {},
+      androidControllerEnrollment.payload.deviceAccessToken
+    );
+    assert.equal(androidSelfRevoke.response.status, 200);
+    assert.equal(androidSelfRevoke.payload.endedSessionCount, 1);
+    assert.equal((await androidRevocationNotice).sessionId, androidControllerApproval.sessionId);
+
+    const androidControllerAfterRevoke = await Database.query(
+      'SELECT is_revoked FROM devices WHERE device_id = $1',
+      [androidControllerId]
+    );
+    assert.equal(androidControllerAfterRevoke.rows[0].is_revoked, true);
+    await closeSocket(androidController);
+    androidController = null;
+
     console.log('[TEST] Device key rotation requires both old and new key signatures');
     const newPair = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
     const newPublicKey = newPair.publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
@@ -650,6 +762,7 @@ async function runTests() {
     console.log('[TEST] Cross-instance pairing approvals and SDP/control events were delivered through the PostgreSQL outbox.');
     console.log('[TEST] Passed: protocol, PostgreSQL persistence, multi-instance signaling, pairing, approval, session auth, TURN, scope checks, limits and key rotation.');
   } finally {
+    await closeSocket(androidController);
     await closeSocket(controller2);
     await closeSocket(controller);
     await closeSocket(receiver);
