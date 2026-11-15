@@ -389,6 +389,33 @@ class ExampleRobolectricTest {
     }
 
 
+
+    @Test
+    fun testStagedUploadFinalizesToExactDestinationWithoutOverwrite() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val manager = FileManager(context)
+        val directory = File(context.filesDir, "remote-upload-test").apply { mkdirs() }
+        val staged = File(directory, "report.txt.mahi-upload-123e4567-e89b-12d3-a456-426614174000.part")
+        val destination = File(directory, "report.txt")
+        staged.delete()
+        destination.delete()
+
+        assertTrue(staged.writeText("verified upload content").let { staged.exists() })
+        assertTrue(manager.moveFileToPath(staged.absolutePath, destination.absolutePath))
+        assertTrue(destination.exists())
+        assertFalse(staged.exists())
+        assertEquals("verified upload content", destination.readText())
+
+        val secondStaged = File(directory, "report.txt.mahi-upload-123e4567-e89b-12d3-a456-426614174000.part")
+        secondStaged.writeText("must not overwrite")
+        assertFalse(manager.moveFileToPath(secondStaged.absolutePath, destination.absolutePath))
+        assertEquals("verified upload content", destination.readText())
+
+        secondStaged.delete()
+        destination.delete()
+        directory.delete()
+    }
+
     @Test
     fun testRemoteFileTransferRulesRejectUnsafeNamesAndBoundChunks() {
         assertEquals("report.txt", RemoteFileTransferRules.safeFileName("report.txt"))
