@@ -3,7 +3,6 @@ package com.example
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.example.filetransfer.FileManager
-import com.example.pairing.OperatorRequest
 import com.example.pairing.PairingManager
 import com.example.security.AllowlistValidator
 import com.example.security.DeviceIdentity
@@ -71,19 +70,27 @@ class ExampleRobolectricTest {
         assertEquals(7, codeData.code.length) // "XXX-XXX"
         assertTrue(codeData.expiresAtMillis > System.currentTimeMillis())
 
-        val request = OperatorRequest(
-            requestId = "req-1",
-            operatorName = "Sylhet NOC Operator",
-            operatorLocation = "Sylhet, Bangladesh",
-            controllerFingerprint = "8E:4A:91:D2:11:F9:6C:55:A3:40:99:BC:14:8A:EF:29",
-            requestedScopes = listOf("Screen Mirroring", "Remote Interaction"),
-            timestamp = System.currentTimeMillis()
+        manager.recordIncomingOperatorRequest(
+            controllerId = "browser-controller-1",
+            operatorName = "Remote Support Operator",
+            location = "Remote",
+            fingerprint = "8E:4A:91:D2:11:F9:6C:55:A3:40:99:BC:14:8A:EF:29",
+            scopes = listOf("Screen Mirroring", "Remote Interaction"),
+            requestId = "req-1"
         )
 
-        manager.approveRequest(request)
+        val pending = manager.pendingRequest.value
+        assertNotNull(pending)
+        manager.approveRequest(pending!!)
+        assertTrue(manager.approvalInProgress.value)
+
+        // Owner approval is not a session until the backend issues authorization.
+        assertEquals(null, manager.activeSession.value)
+        assertTrue(manager.markSessionAuthorized("test-session-1"))
+
         val active = manager.activeSession.value
         assertNotNull(active)
-        assertEquals("Sylhet NOC Operator", active?.operatorName)
+        assertEquals("Remote Support Operator", active?.operatorName)
 
         manager.emergencyDisconnect("Test disconnect")
         assertEquals(null, manager.activeSession.value)
@@ -145,13 +152,26 @@ class ExampleRobolectricTest {
         assertEquals("MAHI-PHONE-A-CONTROLLER", pending?.controllerId)
         assertEquals("Phone A (Pixel 8 Pro)", pending?.operatorName)
 
-        // Approve
+        // Approve, but do not activate until the backend confirms the session.
         manager.approveRequest(pending!!)
+        assertTrue(manager.approvalInProgress.value)
+        assertEquals(null, manager.activeSession.value)
+        assertTrue(manager.markSessionAuthorized("android-session-1"))
         assertNotNull(manager.activeSession.value)
         assertEquals("Phone A (Pixel 8 Pro)", manager.activeSession.value?.operatorName)
 
         // Emergency disconnect terminates cleanly
         manager.emergencyDisconnect("Emergency Stop triggered")
         assertEquals(null, manager.activeSession.value)
+    }    
+    @Test
+    fun testSessionCannotBeActivatedWithoutApprovedRequest() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val manager = PairingManager(context)
+
+        assertFalse(manager.markSessionAuthorized("forged-session-id"))
+        assertEquals(null, manager.activeSession.value)
+        assertFalse(manager.approvalInProgress.value)
     }
+
 }
