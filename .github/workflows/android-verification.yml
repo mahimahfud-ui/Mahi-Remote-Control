@@ -77,5 +77,8 @@ jobs:
       - name: Compile debug APK
         run: gradle :app:assembleDebug -PPUBLIC_BASE_URL=https://remote.example.invalid
 
+      - name: Compile Android instrumentation tests
+        run: gradle :app:assembleDebugAndroidTest -PPUBLIC_BASE_URL=https://remote.example.invalid
+
       - name: Run Android unit and Robolectric tests
         run: gradle :app:testDebugUnitTest -PPUBLIC_BASE_URL=https://remote.example.invalid
