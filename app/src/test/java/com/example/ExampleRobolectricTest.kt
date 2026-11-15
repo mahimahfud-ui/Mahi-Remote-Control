@@ -181,7 +181,7 @@ class ExampleRobolectricTest {
         manager.approveRequest(pending!!)
         assertTrue(manager.approvalInProgress.value)
         assertEquals(null, manager.activeSession.value)
-        assertTrue(manager.markSessionAuthorized(pending.requestId, "android-session-1"))
+        assertTrue(manager.markSessionAuthorized(pending!!.requestId, "android-session-1"))
         assertNotNull(manager.activeSession.value)
         assertEquals("Phone A (Pixel 8 Pro)", manager.activeSession.value?.operatorName)
 
