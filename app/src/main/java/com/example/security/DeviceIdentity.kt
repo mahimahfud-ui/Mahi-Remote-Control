@@ -115,7 +115,9 @@ object DeviceIdentity {
 
     fun fingerprintForPublicKey(publicKeyDer: ByteArray): String {
         val digest = MessageDigest.getInstance("SHA-256").digest(publicKeyDer)
-        val hex = digest.joinToString("") { "%02x".format(it) }
+        val hex = digest.joinToString("") { byte ->
+            (byte.toInt() and 0xff).toString(16).padStart(2, '0')
+        }
         return "sha256:$hex"
     }
 
