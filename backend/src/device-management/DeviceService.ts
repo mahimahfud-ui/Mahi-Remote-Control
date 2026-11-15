@@ -598,12 +598,90 @@ export class DeviceService {
   public static async markExpiredPresenceOffline(): Promise<void> {
     await Database.transaction(async (client: PoolClient) => {
       await client.query('DELETE FROM device_presence WHERE expires_at <= NOW()');
+      await client.query('DELETE FROM signaling_connections WHERE expires_at <= NOW()');
       await client.query(
         `UPDATE devices d SET is_online = EXISTS (
            SELECT 1 FROM device_presence p
            WHERE p.device_id = d.device_id AND p.expires_at > NOW()
          )`
       );
+    });
+  }
+
+  public static async setConnectionOnline(
+    entityId: string,
+    instanceId: string,
+    entityType: 'DEVICE' | 'OPERATOR',
+    fingerprint: string
+  ): Promise<void> {
+    await Database.query(
+      `INSERT INTO signaling_connections
+       (entity_id, instance_id, entity_type, fingerprint, expires_at)
+       VALUES ($1, $2, $3, $4, NOW() + INTERVAL '60 seconds')
+       ON CONFLICT (entity_id, instance_id) DO UPDATE SET
+         entity_type = EXCLUDED.entity_type,
+         fingerprint = EXCLUDED.fingerprint,
+         last_seen_at = NOW(),
+         expires_at = NOW() + INTERVAL '60 seconds'`,
+      [entityId, instanceId, entityType, fingerprint]
+    );
+  }
+
+  public static async heartbeatConnection(entityId: string, instanceId: string): Promise<void> {
+    await Database.query(
+      `UPDATE signaling_connections
+       SET last_seen_at = NOW(), expires_at = NOW() + INTERVAL '60 seconds'
+       WHERE entity_id = $1 AND instance_id = $2`,
+      [entityId, instanceId]
+    );
+  }
+
+  public static async setConnectionOffline(entityId: string, instanceId: string): Promise<void> {
+    await Database.query(
+      'DELETE FROM signaling_connections WHERE entity_id = $1 AND instance_id = $2',
+      [entityId, instanceId]
+    );
+  }
+
+  public static async isEntityOnline(entityId: string): Promise<boolean> {
+    const result = await Database.query(
+      `SELECT 1 FROM signaling_connections
+       WHERE entity_id = $1 AND expires_at > NOW()
+       UNION ALL
+       SELECT 1 FROM device_presence
+       WHERE device_id = $1 AND expires_at > NOW()
+       LIMIT 1`,
+      [entityId]
+    );
+    return Boolean(result.rowCount);
+  }
+
+  public static async cancelPendingRequestsByController(controllerId: string): Promise<PairingRequestRecord[]> {
+    return Database.transaction(async (client) => {
+      const result = await client.query(
+        `UPDATE pairing_requests SET status = 'CANCELLED', decided_at = NOW()
+         WHERE controller_id = $1 AND status = 'PENDING'
+         RETURNING request_id::text, code_id::text, receiver_id, controller_id,
+                   controller_fingerprint, controller_name, requested_scopes,
+                   (EXTRACT(EPOCH FROM expires_at) * 1000)::bigint AS expires_at_ms`,
+        [controllerId]
+      );
+      const requests: PairingRequestRecord[] = [];
+      for (const row of result.rows) {
+        const device = await client.query('SELECT device_name FROM devices WHERE device_id = $1', [row.receiver_id]);
+        requests.push({
+          requestId: row.request_id,
+          codeId: row.code_id,
+          receiverId: row.receiver_id,
+          receiverName: device.rows[0]?.device_name || 'Receiver',
+          controllerId: row.controller_id,
+          controllerFingerprint: row.controller_fingerprint,
+          controllerName: row.controller_name,
+          requestedScopes: row.requested_scopes,
+          expiresAt: Number(row.expires_at_ms),
+        });
+      }
+      return requests;
     });
   }
 
