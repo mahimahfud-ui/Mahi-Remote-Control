@@ -220,7 +220,7 @@ Response:
 }
 ```
 
-The operation is atomic: mark the receiver revoked, increment its key version, consume active pairing codes, cancel pending requests, remove presence/connection leases, revoke active sessions and write an audit event. Session participants are notified through the cross-instance signaling outbox. The old device token and WebSocket are rejected immediately on the next authorization check. This endpoint only lets a device revoke itself; revoking a different device requires a separate owner/admin authorization system and is not exposed by this protocol.
+The operation is atomic: mark the device identity revoked, increment its key version, consume active pairing codes owned by that device, cancel pending requests where the device is receiver or controller, remove presence/connection leases, revoke active sessions where it is either participant, and write an audit event. Other session participants are notified through the cross-instance signaling outbox. The old device token and WebSocket are rejected on the next authorization check. This endpoint only lets a device revoke itself; revoking a different device requires a separate owner/admin authorization system and is not exposed by this protocol.
 
 ### 4.7 TURN credentials
 
@@ -266,7 +266,7 @@ The device JWT is separate from a session JWT. Required claims: `iss=mahi-remote
 
 ### Session bearer token
 
-Each participant receives a separate session JWT after receiver approval. Required claims: `iss=mahi-remote`, `aud=mahi-remote-session`, `sub=<participantId>`, `type=DEVICE|OPERATOR`, `fp=<participant fingerprint>`, `sid=<sessionId>`, `iat`, `exp`. Suggested lifetime: 30 minutes, never longer than the database session expiry. Every protected operation must also query/check current durable session status and participant membership; a valid JWT alone is insufficient after revocation.
+Each participant receives a separate session JWT after receiver approval. An enrolled Android device used as the controller receives `type=DEVICE`; a browser or legacy Windows controller receives `type=OPERATOR`. The persisted participant type must match the token type. Required claims: `iss=mahi-remote`, `aud=mahi-remote-session`, `sub=<participantId>`, `type=DEVICE|OPERATOR`, `fp=<participant fingerprint>`, `sid=<sessionId>`, `iat`, `exp`. Suggested lifetime: 30 minutes, never longer than the database session expiry. Every protected operation must also query/check current durable session status and participant membership; a valid JWT alone is insufficient after revocation.
 
 ### Common error body
 
