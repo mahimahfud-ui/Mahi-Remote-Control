@@ -333,14 +333,16 @@ Pairing requests expire after 2 minutes. A pairing code expires within 5 minutes
 
 Every event below requires the participant's `sessionToken`; the server verifies current DB session state and participant membership before forwarding. The recipient is derived from the durable session participant row; a client-supplied target cannot select a different peer.
 
-- WebRTC: `SDP_OFFER`, `SDP_ANSWER`, `ICE_CANDIDATE`.
-- Remote input: `INPUT_EVENT`.
-- Application operations: `APP_LIST_REQUEST`, `APP_LIST_RESPONSE`, `APP_LAUNCH`, `APP_STOP`.
-- File operations: `FILE_LIST_REQUEST`, `FILE_LIST_RESPONSE`, `FILE_READ_REQUEST`, `FILE_TRANSFER`, `FILE_UPLOAD_START`, `FILE_UPLOAD_CHUNK`, `FILE_UPLOAD_ACK`, `FILE_UPLOAD_COMPLETE`, `FILE_DELETE_REQUEST`.
-- Diagnostics: `DIAGNOSTICS_REQUEST`, `DIAGNOSTICS_RESPONSE`.
+- WebRTC: `SDP_OFFER`, `SDP_ANSWER`, `ICE_CANDIDATE`; receiver display metadata: `DISPLAY_INFO`.
+- Remote input: `INPUT_EVENT` with a bounded command object; the Android app remains responsible for applying its own action allowlist.
+- Applications: the current browser sends `APP_COMMAND` with `action: "LIST" | "LAUNCH" | "STOP"` and `packageName` for package-specific actions. The receiver responds with `APP_LIST_RESPONSE` and its real app data. The server also accepts the legacy granular aliases `APP_LIST_REQUEST`, `APP_LAUNCH`, and `APP_STOP`.
+- Files: the current browser sends `FILE_COMMAND` with `action: "LIST" | "DELETE" | "READ_CHUNK" | "WRITE_CHUNK"`. Common fields are `path`; reads also carry `offset` and `length`; writes carry Base64 `data` and `append`. The receiver responds with `FILE_CHUNK_RESPONSE`, `FILE_WRITE_ACK`, and/or `FILE_OPERATION_RESULT`. The server also accepts the legacy granular aliases `FILE_LIST_REQUEST`, `FILE_READ_REQUEST`, `FILE_TRANSFER`, `FILE_UPLOAD_START`, `FILE_UPLOAD_CHUNK`, `FILE_UPLOAD_ACK`, `FILE_UPLOAD_COMPLETE`, and `FILE_DELETE_REQUEST`.
+- Diagnostics: the current browser sends `DIAGNOSTICS_RUN`; the receiver responds with `DIAGNOSTICS_RESULT`. The server also accepts `DIAGNOSTICS_REQUEST` and `DIAGNOSTICS_RESPONSE` aliases.
 - Lifecycle: `EMERGENCY_DISCONNECT`, `SESSION_ENDED`, `SESSION_ERROR`, `SIGNALING_ERROR`.
 
-Payload-specific schemas must be kept aligned with the current browser and Android serializers. File operations must enforce server/client byte limits and chunk sequencing; a successful relay acknowledgement is not evidence that a device completed the operation.
+All these messages are session-token authorized and routed only to the other participant recorded in PostgreSQL. The server verifies the current session, participant fingerprint and scope before forwarding. The browser's app/file/diagnostics messages are not privileged merely because they are browser messages.
+
+File paths are limited to 1024 characters and traversal segments are rejected. Read offsets must be non-negative safe integers and each read length is 1–65536 bytes. Upload chunks must be valid Base64 and decode to at most 65536 bytes. The Android receiver must additionally validate canonical paths, file permissions, upload sequencing and per-session storage limits before performing filesystem operations. A server relay acknowledgement is not evidence that a device completed the operation.
 
 For multiple backend replicas, connected sockets remain process-local, but session/pairing state is durable. Cross-instance delivery must use shared coordination (PostgreSQL notification/outbox or an equivalent pub/sub) and must be tested with clients connected to different replicas. A single process-local socket map is not a production multi-replica design.
 
