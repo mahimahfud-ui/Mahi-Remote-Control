@@ -72,6 +72,27 @@ class ExampleRobolectricTest {
         // Invalid swipe duration
         val invalidDuration = AllowlistValidator.validateSwipe(100f, 200f, 300f, 800f, 10L, 1080, 2400)
         assertTrue(invalidDuration is AllowlistValidator.ValidationResult.Rejected)
+
+        // NaN and invalid display dimensions must never bypass coordinate checks.
+        assertTrue(
+            AllowlistValidator.validateTap(Float.NaN, 100f, 1080, 2400) is
+                AllowlistValidator.ValidationResult.Rejected
+        )
+        assertTrue(
+            AllowlistValidator.validateSwipe(100f, 200f, Float.NaN, 800f, 300L, 1080, 2400) is
+                AllowlistValidator.ValidationResult.Rejected
+        )
+        assertTrue(
+            AllowlistValidator.validateTap(0f, 0f, 0, 2400) is
+                AllowlistValidator.ValidationResult.Rejected
+        )
+
+        // Only explicitly allowed global actions and bounded text may execute.
+        assertTrue(AllowlistValidator.validateGlobalAction("BACK") is AllowlistValidator.ValidationResult.Valid)
+        assertTrue(AllowlistValidator.validateGlobalAction("FORMAT_DEVICE") is AllowlistValidator.ValidationResult.Rejected)
+        assertTrue(AllowlistValidator.validateTextInput("Hello") is AllowlistValidator.ValidationResult.Valid)
+        assertTrue(AllowlistValidator.validateTextInput("x".repeat(2001)) is AllowlistValidator.ValidationResult.Rejected)
+        assertTrue(AllowlistValidator.validateTextInput("bad\u0000input") is AllowlistValidator.ValidationResult.Rejected)
     }
 
     @Test
