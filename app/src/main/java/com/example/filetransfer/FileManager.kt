@@ -43,6 +43,10 @@ data class TransferProgress(
 
 class FileManager(private val context: Context) {
 
+    companion object {
+        const val MAX_CHUNK_BYTES = 32 * 1024
+    }
+
     private val timeFormat = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
 
     private val _activeTransfers = MutableStateFlow<List<TransferProgress>>(emptyList())
@@ -63,6 +67,21 @@ class FileManager(private val context: Context) {
         if (documents != null && documents.exists()) roots.add(documents)
 
         return roots.filter { it.canRead() }
+    }
+
+
+    fun listPermittedRootFolders(): List<FileEntry> {
+        return getPermittedRootFolders().map { root ->
+            FileEntry(
+                name = root.name.ifBlank { root.absolutePath },
+                path = root.absolutePath,
+                sizeBytes = 0L,
+                formattedSize = "--",
+                isDirectory = true,
+                lastModified = timeFormat.format(Date(root.lastModified())),
+                mimeType = "inode/directory"
+            )
+        }
     }
 
     fun listFiles(dirPath: String): List<FileEntry> {
@@ -145,7 +164,47 @@ class FileManager(private val context: Context) {
         return success
     }
 
+    /**
+     * Finalizes a staged upload by atomically renaming it to an exact destination path.
+     * Both files must be within an allowed root, in the same canonical directory, and
+     * the destination must not already exist. This method never overwrites.
+     */
+    fun moveFileToPath(sourcePath: String, destinationPath: String): Boolean {
+        if (sourcePath.isBlank() || destinationPath.isBlank()) return false
+        val roots = getPermittedRootFolders().map { it.absolutePath }
+        if (AllowlistValidator.validateFilePath(sourcePath, roots) !is AllowlistValidator.ValidationResult.Valid ||
+            AllowlistValidator.validateFilePath(destinationPath, roots) !is AllowlistValidator.ValidationResult.Valid) {
+            return false
+        }
+
+        return try {
+            val source = File(sourcePath).canonicalFile
+            val destination = File(destinationPath).canonicalFile
+            val sourceParent = source.parentFile ?: return false
+            val destinationParent = destination.parentFile ?: return false
+
+            if (!source.isFile || destination.exists() || !destinationParent.isDirectory ||
+                sourceParent.canonicalPath != destinationParent.canonicalPath) {
+                return false
+            }
+
+            val renamed = source.renameTo(destination)
+            if (renamed) {
+                AuditLogger.log(
+                    "FILE",
+                    "UPLOAD_FINALIZED",
+                    "Finalized staged upload as ${destination.name}.",
+                    AuditSeverity.SECURITY
+                )
+            }
+            renamed
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     fun readFileChunk(path: String, offset: Long, length: Int): ByteArray? {
+        if (offset < 0L || length !in 1..MAX_CHUNK_BYTES) return null
         val roots = getPermittedRootFolders().map { it.absolutePath }
         if (AllowlistValidator.validateFilePath(path, roots) !is AllowlistValidator.ValidationResult.Valid) {
             return null
@@ -167,6 +226,7 @@ class FileManager(private val context: Context) {
     }
 
     fun writeFileChunk(path: String, data: ByteArray, append: Boolean): Boolean {
+        if (data.size > MAX_CHUNK_BYTES) return false
         val roots = getPermittedRootFolders().map { it.absolutePath }
         if (AllowlistValidator.validateFilePath(path, roots) !is AllowlistValidator.ValidationResult.Valid) {
             return false
@@ -209,14 +269,21 @@ class FileManager(private val context: Context) {
         isUpload: Boolean,
         status: String
     ): TransferProgress {
-        val percent = if (totalBytes > 0) ((transferredBytes.toDouble() / totalBytes) * 100).toInt() else 100
+        val safeTotal = totalBytes.coerceAtLeast(0L)
+        val safeTransferred = transferredBytes.coerceAtLeast(0L)
+        val percent = when {
+            status == "COMPLETED" -> 100
+            safeTotal <= 0L -> 0
+            else -> ((safeTransferred.toDouble() / safeTotal) * 100).toInt().coerceIn(0, 100)
+        }
         val progress = TransferProgress(
             transferId = id,
             fileName = fileName,
-            totalBytes = totalBytes,
-            transferredBytes = transferredBytes,
+            totalBytes = safeTotal,
+            transferredBytes = safeTransferred,
             percent = percent,
-            speedKbps = 1024,
+            // Speed is unknown until actual elapsed-time measurements are supplied.
+            speedKbps = 0,
             isUpload = isUpload,
             status = status
         )

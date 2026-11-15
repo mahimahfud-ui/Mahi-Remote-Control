@@ -12,10 +12,12 @@ import org.json.JSONObject
 import java.security.SecureRandom
 import java.util.UUID
 
-class PairingManager(private val context: Context) {
+class PairingManager(
+    private val context: Context,
+    private val identity: DeviceIdentity.Identity = DeviceIdentity.getOrCreateIdentity(context)
+) {
 
     private val secureRandom = SecureRandom()
-    private val identity = DeviceIdentity.getOrCreateIdentity(context)
     @Volatile private var browserAccessUrl: String? = null
 
     private val _currentPairingCode = MutableStateFlow<PairingCodeData?>(null)
@@ -52,7 +54,8 @@ class PairingManager(private val context: Context) {
             qrPayloadJson = qrPayload
         )
         _currentPairingCode.value = data
-        AuditLogger.log("PAIRING", "CODE_GENERATED", "Generated 6-digit code: $formattedCode (expires in 5m)", AuditSeverity.INFO)
+        // Pairing codes are temporary bearer-like secrets; never write their value to logs.
+        AuditLogger.log("PAIRING", "CODE_GENERATED", "Generated a six-digit pairing code (expires in 5m).", AuditSeverity.INFO)
         return data
     }
 
@@ -86,7 +89,6 @@ class PairingManager(private val context: Context) {
         return JSONObject()
             .put("deviceId", identity.deviceId)
             .put("deviceName", identity.deviceName)
-            .put("fingerprint", identity.fingerprint)
             .put("pairingCode", code)
             .put("expiresAt", expiresAt)
             .put("v", 1)
@@ -126,9 +128,9 @@ class PairingManager(private val context: Context) {
         )
     }
 
-    fun markSessionAuthorized(sessionId: String): Boolean {
+    fun markSessionAuthorized(requestId: String, sessionId: String): Boolean {
         val request = approvalRequest ?: return false
-        if (sessionId.isBlank()) return false
+        if (requestId.isBlank() || requestId != request.requestId || sessionId.isBlank()) return false
 
         val session = ActiveSession(
             sessionId = sessionId,

@@ -1,5 +1,7 @@
 package com.example.security
 
+import java.io.File
+
 object AllowlistValidator {
 
     sealed class ValidationResult {
@@ -13,11 +15,14 @@ object AllowlistValidator {
         "RECENTS",
         "NOTIFICATIONS",
         "QUICK_SETTINGS",
+        "POWER_DIALOG",
         "LOCK_SCREEN"
     )
 
     fun validateTap(x: Float, y: Float, screenWidth: Int, screenHeight: Int): ValidationResult {
-        if (x < 0 || x > screenWidth || y < 0 || y > screenHeight) {
+        if (screenWidth <= 0 || screenHeight <= 0 ||
+            !x.isFinite() || !y.isFinite() ||
+            x < 0 || x > screenWidth || y < 0 || y > screenHeight) {
             val reason = "Tap coordinate ($x, $y) out of display bounds ($screenWidth x $screenHeight)"
             AuditLogger.log("INPUT", "TAP_REJECTED", reason, AuditSeverity.WARNING)
             return ValidationResult.Rejected(reason)
@@ -32,7 +37,9 @@ object AllowlistValidator {
         screenWidth: Int,
         screenHeight: Int
     ): ValidationResult {
-        if (x1 < 0 || x1 > screenWidth || y1 < 0 || y1 > screenHeight ||
+        if (screenWidth <= 0 || screenHeight <= 0 ||
+            !x1.isFinite() || !y1.isFinite() || !x2.isFinite() || !y2.isFinite() ||
+            x1 < 0 || x1 > screenWidth || y1 < 0 || y1 > screenHeight ||
             x2 < 0 || x2 > screenWidth || y2 < 0 || y2 > screenHeight) {
             val reason = "Swipe trajectory out of screen bounds"
             AuditLogger.log("INPUT", "SWIPE_REJECTED", reason, AuditSeverity.WARNING)
@@ -56,7 +63,7 @@ object AllowlistValidator {
     }
 
     fun validateTextInput(text: String): ValidationResult {
-        if (text.length > 2000) {
+        if (text.length > 2000 || text.contains('\u0000')) {
             val reason = "Text input payload exceeds 2000 chars limit"
             AuditLogger.log("INPUT", "TEXT_REJECTED", reason, AuditSeverity.WARNING)
             return ValidationResult.Rejected(reason)
@@ -65,16 +72,30 @@ object AllowlistValidator {
     }
 
     fun validateFilePath(path: String, allowedRoots: List<String>): ValidationResult {
-        if (path.contains("..")) {
-            val reason = "Directory traversal pattern '..' detected in path: $path"
+        fun reject(reason: String): ValidationResult.Rejected {
             AuditLogger.log("FILE", "ACCESS_DENIED", reason, AuditSeverity.CRITICAL)
             return ValidationResult.Rejected(reason)
         }
-        val isAllowed = allowedRoots.any { root -> path.startsWith(root) }
+
+        if (path.isBlank()) return reject("Empty file path is not permitted.")
+        if (path.split('/', '\\').any { it == ".." }) {
+            return reject("Directory traversal segment '..' detected in path: $path")
+        }
+
+        val canonicalPath = try {
+            File(path).canonicalFile.toPath().normalize()
+        } catch (_: Exception) {
+            return reject("Could not canonicalize requested file path: $path")
+        }
+
+        val canonicalRoots = allowedRoots.mapNotNull { root ->
+            runCatching { File(root).canonicalFile.toPath().normalize() }.getOrNull()
+        }
+        val isAllowed = canonicalRoots.any { root ->
+            canonicalPath == root || canonicalPath.startsWith(root)
+        }
         if (!isAllowed) {
-            val reason = "Attempted access outside permitted scoped directory: $path"
-            AuditLogger.log("FILE", "ACCESS_DENIED", reason, AuditSeverity.CRITICAL)
-            return ValidationResult.Rejected(reason)
+            return reject("Attempted access outside permitted scoped directory: $path")
         }
         return ValidationResult.Valid
     }

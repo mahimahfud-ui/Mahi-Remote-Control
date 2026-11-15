@@ -1,5 +1,7 @@
 package com.example.ui.screens
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -45,6 +47,7 @@ import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Tab
 import androidx.compose.material.icons.filled.VolumeDown
 import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -63,6 +66,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.TabRowDefaults
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -512,6 +516,25 @@ private fun NavActionItem(
 @Composable
 private fun RemoteFilesPane(viewModel: MahiViewModel) {
     val remoteFiles by viewModel.remoteFileList.collectAsState()
+    val remotePath by viewModel.remoteBrowsingPath.collectAsState()
+    val transfer by viewModel.remoteTransferProgress.collectAsState()
+    var pendingDelete by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var pendingDownload by remember { mutableStateOf<com.example.filetransfer.FileEntry?>(null) }
+
+    val uploadLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let(viewModel::uploadRemoteFile)
+    }
+    val downloadLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("*/*")
+    ) { uri ->
+        val selectedFile = pendingDownload
+        if (uri != null && selectedFile != null) {
+            viewModel.downloadRemoteFile(selectedFile, uri)
+        }
+        pendingDownload = null
+    }
 
     Column(
         modifier = Modifier
@@ -530,7 +553,6 @@ private fun RemoteFilesPane(viewModel: MahiViewModel) {
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold
             )
-
             IconButton(
                 onClick = { viewModel.fetchRemoteFiles() },
                 modifier = Modifier.size(32.dp)
@@ -539,10 +561,88 @@ private fun RemoteFilesPane(viewModel: MahiViewModel) {
             }
         }
 
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            IconButton(
+                enabled = remotePath.isNotBlank(),
+                onClick = { viewModel.navigateRemoteParent() }
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Parent folder",
+                    tint = if (remotePath.isNotBlank()) CyanAccent else TextMuted
+                )
+            }
+            Text(
+                text = remotePath.ifBlank { "Permitted storage roots" },
+                color = TextSecondary,
+                fontSize = 11.sp,
+                maxLines = 1,
+                modifier = Modifier.weight(1f)
+            )
+            Button(
+                enabled = remotePath.isNotBlank() && transfer?.status != "IN_PROGRESS",
+                onClick = { uploadLauncher.launch(arrayOf("*/*")) },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = CyanAccent,
+                    contentColor = DarkCharcoalBg,
+                    disabledContainerColor = DarkSurfaceElevated,
+                    disabledContentColor = TextMuted
+                ),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text("Upload file", fontSize = 11.sp)
+            }
+        }
+
+        transfer?.let { progress ->
+            if (progress.status == "IN_PROGRESS" || progress.status == "FAILED" || progress.status == "COMPLETED") {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(DarkSurface)
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(5.dp)
+                ) {
+                    Text(
+                        text = "${if (progress.isUpload) "Uploading" else "Downloading"} ${progress.fileName} • ${progress.status}",
+                        color = when (progress.status) {
+                            "FAILED" -> ErrorCoral
+                            "COMPLETED" -> MintAccent
+                            else -> TextSecondary
+                        },
+                        fontSize = 11.sp,
+                        maxLines = 2
+                    )
+                    if (progress.status == "IN_PROGRESS") {
+                        if (progress.totalBytes > 0L) {
+                            LinearProgressIndicator(
+                                progress = { progress.percent / 100f },
+                                modifier = Modifier.fillMaxWidth().height(5.dp),
+                                color = CyanAccent,
+                                trackColor = DarkSurfaceElevated
+                            )
+                        } else {
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxWidth().height(5.dp),
+                                color = CyanAccent,
+                                trackColor = DarkSurfaceElevated
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         if (remoteFiles.isEmpty()) {
             Box(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .weight(1f)
+                    .fillMaxWidth()
                     .padding(32.dp),
                 contentAlignment = Alignment.Center
             ) {
@@ -561,7 +661,7 @@ private fun RemoteFilesPane(viewModel: MahiViewModel) {
             }
         } else {
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.weight(1f).fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 items(remoteFiles) { file ->
@@ -572,7 +672,12 @@ private fun RemoteFilesPane(viewModel: MahiViewModel) {
                         shape = RoundedCornerShape(12.dp)
                     ) {
                         Row(
-                            modifier = Modifier.padding(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = file.isDirectory) {
+                                    viewModel.navigateRemoteFolder(file.path)
+                                }
+                                .padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
@@ -595,16 +700,64 @@ private fun RemoteFilesPane(viewModel: MahiViewModel) {
                                     fontSize = 11.sp
                                 )
                             }
-                            IconButton(
-                                onClick = { viewModel.deleteRemoteFile(file.path) }
-                            ) {
-                                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = ErrorCoral.copy(alpha = 0.8f))
+                            if (!file.isDirectory) {
+                                TextButton(
+                                    enabled = transfer?.status != "IN_PROGRESS",
+                                    onClick = {
+                                        pendingDownload = file
+                                        downloadLauncher.launch(file.name)
+                                    }
+                                ) {
+                                    Text("Download", fontSize = 10.sp)
+                                }
+                                IconButton(
+                                    enabled = transfer?.status != "IN_PROGRESS",
+                                    onClick = { pendingDelete = file.path to file.name }
+                                ) {
+                                    Icon(Icons.Default.Delete, contentDescription = "Delete", tint = ErrorCoral.copy(alpha = 0.8f))
+                                }
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    pendingDelete?.let { (path, name) ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            containerColor = DarkSurface,
+            title = {
+                Text("Confirm remote deletion", color = TextPrimary, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Text(
+                    "Permanently delete '$name' from the receiver phone? This cannot be undone.",
+                    color = TextSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deleteRemoteFile(path)
+                        pendingDelete = null
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = ErrorCoral,
+                        contentColor = DarkCharcoalBg
+                    ),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) {
+                    Text("Cancel", color = TextSecondary)
+                }
+            }
+        )
     }
 }
 

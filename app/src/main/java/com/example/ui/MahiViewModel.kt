@@ -3,6 +3,9 @@ package com.example.ui
 import android.app.Application
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.appmanager.AppItem
@@ -16,6 +19,8 @@ import com.example.diagnostics.DiagnosticItem
 import com.example.diagnostics.DiagnosticsManager
 import com.example.filetransfer.FileEntry
 import com.example.filetransfer.FileManager
+import com.example.filetransfer.RemoteFileTransferRules
+import com.example.filetransfer.TransferProgress
 import com.example.pairing.OperatorRequest
 import com.example.pairing.PairingManager
 import com.example.remoteinput.MahiAccessibilityService
@@ -32,14 +37,20 @@ import com.example.signaling.SignalingClient
 import com.example.signaling.SignalingMessage
 import com.example.webrtc.WebRtcSessionManager
 import org.webrtc.SurfaceViewRenderer
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 enum class MainTab(val title: String) {
     DASHBOARD("Dashboard"),
@@ -54,7 +65,7 @@ enum class MainTab(val title: String) {
 class MahiViewModel(application: Application) : AndroidViewModel(application) {
 
     val identity = DeviceIdentity.getOrCreateIdentity(application)
-    val pairingManager = PairingManager(application)
+    val pairingManager = PairingManager(application, identity)
     val diagnosticsManager = DiagnosticsManager(application)
     val fileManager = FileManager(application)
     val appManager = AppManager(application)
@@ -113,6 +124,12 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _remoteFileList = MutableStateFlow<List<FileEntry>>(emptyList())
     val remoteFileList: StateFlow<List<FileEntry>> = _remoteFileList.asStateFlow()
+    private val remoteBrowsingHistory = mutableListOf<String>()
+    private val _remoteBrowsingPath = MutableStateFlow("")
+    val remoteBrowsingPath: StateFlow<String> = _remoteBrowsingPath.asStateFlow()
+    private val _remoteTransferProgress = MutableStateFlow<TransferProgress?>(null)
+    val remoteTransferProgress: StateFlow<TransferProgress?> = _remoteTransferProgress.asStateFlow()
+    private val pendingRemoteFileResponses = ConcurrentHashMap<String, CompletableDeferred<JSONObject>>()
 
     private val _remoteAppList = MutableStateFlow<List<AppItem>>(emptyList())
     val remoteAppList: StateFlow<List<AppItem>> = _remoteAppList.asStateFlow()
@@ -130,7 +147,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     val remoteVideoHasFrames: StateFlow<Boolean> = _remoteVideoHasFrames.asStateFlow()
 
     init {
-        signalingClient = SignalingClient(identity) { msg ->
+        signalingClient = SignalingClient(application, identity) { msg ->
             handleIncomingSignalingMessage(msg)
         }
         ScreenCaptureService.signalingSender = { type, payload, recipient ->
@@ -156,11 +173,101 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun messagePayloadObject(rawMessage: String): JSONObject {
+        val envelope = JSONObject(rawMessage)
+        return when (val payload = envelope.opt("payload")) {
+            is JSONObject -> payload
+            is String -> runCatching { JSONObject(payload) }.getOrDefault(envelope)
+            else -> envelope
+        }
+    }
+
+    private fun remoteFileResponseKey(type: String, transferId: String, offset: Long): String =
+        "$type:$transferId:$offset"
+
+    private fun completeRemoteFileResponse(msg: SignalingMessage) {
+        val session = _activeControllerSession.value ?: return
+        if (msg.sender != session.targetDeviceId) return
+        val payload = runCatching { messagePayloadObject(msg.payload) }.getOrNull() ?: return
+        val transferId = payload.optString("transferId")
+        if (!RemoteFileTransferRules.isValidTransferId(transferId)) return
+        val offset = if (msg.type == "FILE_OPERATION_RESULT") -1L else payload.optLong("offset", Long.MIN_VALUE)
+        if (offset == Long.MIN_VALUE) return
+        pendingRemoteFileResponses[remoteFileResponseKey(msg.type, transferId, offset)]?.complete(payload)
+    }
+
+    private fun failPendingRemoteFileResponses(reason: String) {
+        val cancellation = CancellationException(reason)
+        pendingRemoteFileResponses.values.forEach { it.completeExceptionally(cancellation) }
+        pendingRemoteFileResponses.clear()
+    }
+
+    private suspend fun sendRemoteFileCommandAndAwait(
+        session: ControllerSession,
+        responseType: String,
+        transferId: String,
+        offset: Long,
+        payload: JSONObject,
+        commandType: String = "FILE_COMMAND"
+    ): JSONObject {
+        val key = remoteFileResponseKey(responseType, transferId, offset)
+        val deferred = CompletableDeferred<JSONObject>()
+        if (pendingRemoteFileResponses.putIfAbsent(key, deferred) != null) {
+            throw IllegalStateException("A file-transfer response with this identifier is already pending.")
+        }
+        try {
+            if (_activeControllerSession.value?.sessionId != session.sessionId) {
+                throw CancellationException("The approved controller session changed.")
+            }
+            if (!signalingClient.send(commandType, payload.toString(), session.targetDeviceId)) {
+                throw IllegalStateException("The remote file command could not be sent.")
+            }
+            return withTimeout(20_000L) { deferred.await() }
+        } finally {
+            pendingRemoteFileResponses.remove(key, deferred)
+        }
+    }
+
+    private fun trackRemoteTransfer(
+        transferId: String,
+        fileName: String,
+        totalBytes: Long,
+        transferredBytes: Long,
+        isUpload: Boolean,
+        status: String
+    ) {
+        _remoteTransferProgress.value = fileManager.trackTransfer(
+            id = transferId,
+            fileName = fileName,
+            totalBytes = totalBytes,
+            transferredBytes = transferredBytes,
+            isUpload = isUpload,
+            status = status
+        )
+    }
+
+    private fun readLocalFileMetadata(uri: Uri): Pair<String, Long> {
+        val resolver = getApplication<Application>().contentResolver
+        var name = uri.lastPathSegment?.substringAfterLast('/') ?: "upload.bin"
+        var size = -1L
+        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (nameIndex >= 0) name = cursor.getString(nameIndex) ?: name
+                val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (sizeIndex >= 0 && !cursor.isNull(sizeIndex)) size = cursor.getLong(sizeIndex)
+            }
+        }
+        return name to size
+    }
+
     private fun handleIncomingSignalingMessage(msg: SignalingMessage) {
         viewModelScope.launch {
             try {
                 when (msg.type) {
-                    "REGISTER_ACK" -> registerCurrentPairingCode()
+                    "REGISTER_ACK" -> {
+                        if (_appRole.value == AppRole.RECEIVER) registerCurrentPairingCode()
+                    }
                     "PAIR_PENDING" -> {
                         _isControllerConnecting.value = true
                         _controllerErrorMessage.value = "Waiting for the receiver owner to approve."
@@ -226,9 +333,10 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         val root = JSONObject(msg.payload)
                         val issuedToken = root.optString("sessionToken")
                         val sessionId = root.optString("sessionId")
-                        if (issuedToken.isNotBlank() && sessionId.isNotBlank()) {
+                        val authorizedRequestId = root.optString("requestId")
+                        if (issuedToken.isNotBlank() && sessionId.isNotBlank() && authorizedRequestId.isNotBlank()) {
                             signalingClient.setSessionToken(issuedToken)
-                            val activated = pairingManager.markSessionAuthorized(sessionId)
+                            val activated = pairingManager.markSessionAuthorized(authorizedRequestId, sessionId)
                             if (!activated) {
                                 signalingClient.send(
                                     "EMERGENCY_DISCONNECT",
@@ -275,6 +383,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                     "SESSION_ENDED" -> {
+                        failPendingRemoteFileResponses("The remote session ended during file transfer.")
                         signalingClient.setSessionToken(null)
                         controllerWebRtcSession?.close()
                         controllerWebRtcSession = null
@@ -321,6 +430,9 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                             )
                         }
                         _remoteAppList.value = list
+                    }
+                    "FILE_CHUNK_RESPONSE", "FILE_WRITE_ACK", "FILE_OPERATION_RESULT" -> {
+                        completeRemoteFileResponse(msg)
                     }
                     "FILE_LIST_RESPONSE" -> {
                         val root = JSONObject(msg.payload)
@@ -371,7 +483,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                     "APP_COMMAND" -> {
                         handleAppCommand(msg)
                     }
-                    "FILE_COMMAND" -> {
+                    "FILE_COMMAND", "FILE_TRANSFER" -> {
                         handleFileCommand(msg)
                     }
                     "DIAGNOSTICS_RUN" -> {
@@ -398,7 +510,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun handleInputEvent(msg: SignalingMessage) {
-        val root = JSONObject(msg.payload)
+        val root = messagePayloadObject(msg.payload)
         val cmd = if (root.has("command")) root.getJSONObject("command") else root
         val type = cmd.optString("type", "")
 
@@ -459,7 +571,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun handleAppCommand(msg: SignalingMessage) {
-        val root = JSONObject(msg.payload)
+        val root = messagePayloadObject(msg.payload)
         val action = root.optString("action", "LIST")
         val pkg = root.optString("packageName", "")
 
@@ -484,13 +596,13 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun handleFileCommand(msg: SignalingMessage) {
-        val root = JSONObject(msg.payload)
+        val root = messagePayloadObject(msg.payload)
         val action = root.optString("action", "LIST").uppercase()
-        val path = root.optString("path", getApplication<Application>().filesDir.absolutePath)
+        val path = root.optString("path", "")
 
         when (action) {
             "LIST" -> {
-                val files = fileManager.listFiles(path)
+                val files = if (path.isBlank()) fileManager.listPermittedRootFolders() else fileManager.listFiles(path)
                 val result = JSONArray()
                 files.forEach { file ->
                     result.put(
@@ -523,54 +635,92 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                 refreshFiles()
             }
             "READ_CHUNK" -> {
-                val offset = root.optLong("offset", 0L)
-                val length = root.optInt("length", 32768)
-                if (offset < 0L || length !in 1..32768) {
-                    signalingClient.send(
-                        "FILE_CHUNK_RESPONSE",
-                        JSONObject().put("path", path).put("offset", offset).put("ok", false)
-                            .put("error", "Invalid file chunk range").toString(),
-                        msg.sender
-                    )
-                    return
-                }
-                val bytes = fileManager.readFileChunk(path, offset, length)
+                val transferId = root.optString("transferId")
+                val offset = root.optLong("offset", -1L)
+                val length = root.optInt("length", RemoteFileTransferRules.CHUNK_BYTES)
+                val valid = RemoteFileTransferRules.isValidTransferId(transferId) &&
+                    offset >= 0L && length in 1..RemoteFileTransferRules.CHUNK_BYTES
+                val bytes = if (valid) fileManager.readFileChunk(path, offset, length) else null
                 val response = JSONObject()
                     .put("path", path)
+                    .put("transferId", transferId)
                     .put("offset", offset)
-                    .put("ok", bytes != null)
+                    .put("ok", bytes != null && bytes.size == length)
                     .put("data", if (bytes != null) android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP) else "")
+                    // Do not disclose metadata for invalid or out-of-scope file requests.
+                    .put("fileSize", if (bytes != null) File(path).takeIf { it.isFile }?.length() ?: -1L else -1L)
+                if (!valid) response.put("error", "Invalid file chunk request.")
                 signalingClient.send("FILE_CHUNK_RESPONSE", response.toString(), msg.sender)
             }
             "WRITE_CHUNK" -> {
-                val base64 = root.optString("data", "")
-                val append = root.optBoolean("append", true)
+                val transferId = root.optString("transferId")
+                val offset = root.optLong("offset", -1L)
+                val append = root.optBoolean("append", offset > 0L)
                 try {
-                    val bytes = android.util.Base64.decode(base64, android.util.Base64.DEFAULT)
-                    if (bytes.size > 32768) {
-                        signalingClient.send(
-                            "FILE_WRITE_ACK",
-                            JSONObject().put("path", path).put("success", false)
-                                .put("bytesWritten", 0).put("error", "Chunk exceeds 32 KB").toString(),
-                            msg.sender
-                        )
-                        return
-                    }
-                    val success = fileManager.writeFileChunk(path, bytes, append)
+                    val bytes = android.util.Base64.decode(root.optString("data", ""), android.util.Base64.DEFAULT)
+                    val file = File(path)
+                    val existingLength = if (file.isFile) file.length() else 0L
+                    val valid = RemoteFileTransferRules.isValidTransferId(transferId) &&
+                        offset >= 0L && offset == existingLength && append == (offset > 0L) &&
+                        bytes.size <= RemoteFileTransferRules.CHUNK_BYTES &&
+                        path.endsWith(".mahi-upload-$transferId.part") &&
+                        (append || !file.exists())
+                    val success = valid && fileManager.writeFileChunk(path, bytes, append)
                     signalingClient.send(
                         "FILE_WRITE_ACK",
-                        JSONObject().put("path", path).put("success", success)
-                            .put("bytesWritten", if (success) bytes.size else 0).toString(),
+                        JSONObject()
+                            .put("path", path)
+                            .put("transferId", transferId)
+                            .put("offset", offset)
+                            .put("success", success)
+                            .put("bytesWritten", if (success) bytes.size else 0)
+                            .put("error", if (valid) "" else "Invalid or out-of-sequence upload chunk")
+                            .toString(),
                         msg.sender
                     )
-                    if (success) refreshFiles()
                 } catch (error: Exception) {
                     signalingClient.send(
                         "FILE_WRITE_ACK",
-                        JSONObject().put("path", path).put("success", false)
-                            .put("bytesWritten", 0).put("error", error.message ?: "Invalid upload chunk").toString(),
+                        JSONObject()
+                            .put("path", path)
+                            .put("transferId", transferId)
+                            .put("offset", offset)
+                            .put("success", false)
+                            .put("bytesWritten", 0)
+                            .put("error", error.message ?: "Invalid upload chunk")
+                            .toString(),
                         msg.sender
                     )
+                }
+            }
+            "FINALIZE_UPLOAD" -> {
+                val transferId = root.optString("transferId")
+                val temporaryPath = root.optString("temporaryPath")
+                val destinationPath = root.optString("destinationPath")
+                val destination = File(destinationPath)
+                val expectedTemporaryPath = "$destinationPath.mahi-upload-$transferId.part"
+                val success = RemoteFileTransferRules.isValidTransferId(transferId) &&
+                    destinationPath.isNotBlank() && temporaryPath == expectedTemporaryPath &&
+                    !destination.exists() && fileManager.moveFileToPath(temporaryPath, destinationPath)
+                signalingClient.send(
+                    "FILE_OPERATION_RESULT",
+                    JSONObject()
+                        .put("action", "FINALIZE_UPLOAD")
+                        .put("transferId", transferId)
+                        .put("success", success)
+                        .put("path", destinationPath)
+                        .toString(),
+                    msg.sender
+                )
+                if (success) refreshFiles()
+            }
+            "ABORT_UPLOAD" -> {
+                val transferId = root.optString("transferId")
+                val temporaryPath = root.optString("temporaryPath")
+                if (RemoteFileTransferRules.isValidTransferId(transferId) &&
+                    temporaryPath.endsWith(".mahi-upload-$transferId.part")) {
+                    fileManager.deleteFile(temporaryPath, confirmed = true)
+                    refreshFiles()
                 }
             }
         }
@@ -588,17 +738,21 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         _isControllerConnecting.value = true
         _controllerErrorMessage.value = null
 
-        val formatted = code.trim().uppercase()
-        val payload = """
-            {
-              "type": "PAIR_BY_CODE",
-              "code": "$formatted",
-              "controllerName": "${identity.deviceName}",
-              "controllerModel": "${android.os.Build.MODEL}",
-              "fingerprint": "${identity.fingerprint}",
-              "requestedScopes": ["Screen Mirroring", "Remote Interaction", "File Transfer", "Diagnostics"]
-            }
-        """.trimIndent()
+        val formattedCode = code.filter(Char::isDigit)
+        if (formattedCode.length != 6) {
+            _isControllerConnecting.value = false
+            _controllerErrorMessage.value = "Enter the six-digit pairing code."
+            return
+        }
+
+        val payload = JSONObject()
+            .put("code", formattedCode)
+            .put("operatorName", identity.deviceName)
+            .put(
+                "requestedScopes",
+                JSONArray(listOf("Screen Mirroring", "Remote Interaction", "File Transfer", "Diagnostics"))
+            )
+            .toString()
 
         val sent = signalingClient.send("PAIR_BY_CODE", payload)
         if (!sent) {
@@ -642,6 +796,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun disconnectControllerSession() {
+        failPendingRemoteFileResponses("The controller disconnected during file transfer.")
         val session = _activeControllerSession.value
         if (session != null) {
             signalingClient.send("EMERGENCY_DISCONNECT", """{"reason":"Controller disconnected"}""", session.targetDeviceId)
@@ -771,17 +926,223 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         signalingClient.send("INPUT_EVENT", payload, session.targetDeviceId)
     }
 
-    fun fetchRemoteFiles(path: String = "") {
+    fun fetchRemoteFiles(path: String = _remoteBrowsingPath.value) {
         val session = _activeControllerSession.value ?: return
-        val payload = """{"action":"LIST","path":"$path"}"""
+        val payload = JSONObject().put("action", "LIST").put("path", path).toString()
         signalingClient.send("FILE_COMMAND", payload, session.targetDeviceId)
+    }
+
+    fun navigateRemoteFolder(path: String) {
+        if (path.isBlank() || path == _remoteBrowsingPath.value) return
+        remoteBrowsingHistory.add(_remoteBrowsingPath.value)
+        _remoteBrowsingPath.value = path
+        fetchRemoteFiles(path)
+    }
+
+    fun navigateRemoteParent() {
+        if (remoteBrowsingHistory.isEmpty()) return
+        _remoteBrowsingPath.value = remoteBrowsingHistory.removeAt(remoteBrowsingHistory.lastIndex)
+        fetchRemoteFiles(_remoteBrowsingPath.value)
+    }
+
+    private fun resetRemoteNavigation() {
+        remoteBrowsingHistory.clear()
+        _remoteBrowsingPath.value = ""
     }
 
     fun deleteRemoteFile(path: String) {
         val session = _activeControllerSession.value ?: return
-        val payload = """{"action":"DELETE","path":"$path"}"""
+        val payload = JSONObject().put("action", "DELETE").put("path", path).toString()
         signalingClient.send("FILE_COMMAND", payload, session.targetDeviceId)
         fetchRemoteFiles()
+    }
+
+    fun uploadRemoteFile(uri: Uri) {
+        val session = _activeControllerSession.value ?: return
+        val remoteDirectory = _remoteBrowsingPath.value
+        if (remoteDirectory.isBlank()) {
+            _controllerErrorMessage.value = "Open a permitted receiver folder before uploading."
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val transferId = UUID.randomUUID().toString()
+            var temporaryPath = ""
+            var fileName = "upload.bin"
+            var totalBytes = 0L
+            var transferredBytes = 0L
+            try {
+                val metadata = readLocalFileMetadata(uri)
+                fileName = RemoteFileTransferRules.safeFileName(metadata.first)
+                    ?: throw IllegalArgumentException("The selected file name is invalid.")
+                if (metadata.second > RemoteFileTransferRules.MAX_FILE_BYTES) {
+                    throw IllegalArgumentException("Files larger than 1 GiB are not supported.")
+                }
+                val declaredSize = metadata.second
+                totalBytes = declaredSize.coerceAtLeast(0L)
+                val destinationPath = File(remoteDirectory, fileName).absolutePath
+                temporaryPath = RemoteFileTransferRules.temporaryUploadPath(destinationPath, transferId)
+                val input = getApplication<Application>().contentResolver.openInputStream(uri)
+                    ?: throw IllegalStateException("The selected local file could not be opened.")
+
+                input.use { stream ->
+                    val buffer = ByteArray(RemoteFileTransferRules.CHUNK_BYTES)
+                    var firstChunk = true
+                    while (true) {
+                        val count = stream.read(buffer)
+                        if (count < 0) {
+                            if (firstChunk) {
+                                val ack = sendRemoteFileCommandAndAwait(
+                                    session, "FILE_WRITE_ACK", transferId, 0L,
+                                    JSONObject()
+                                        .put("action", "WRITE_CHUNK")
+                                        .put("path", temporaryPath)
+                                        .put("transferId", transferId)
+                                        .put("offset", 0L)
+                                        .put("append", false)
+                                        .put("data", "")
+                                )
+                                if (!ack.optBoolean("success") || ack.optInt("bytesWritten", -1) != 0) {
+                                    throw IllegalStateException(ack.optString("error", "Receiver rejected the empty-file chunk."))
+                                }
+                            }
+                            break
+                        }
+                        if (count == 0) continue
+                        val nextOffset = transferredBytes + count
+                        if (nextOffset > RemoteFileTransferRules.MAX_FILE_BYTES ||
+                            (declaredSize >= 0L && nextOffset > declaredSize)) {
+                            throw IllegalStateException("The local file changed or exceeded the 1 GiB transfer limit.")
+                        }
+                        val chunkOffset = transferredBytes
+                        val encoded = android.util.Base64.encodeToString(buffer.copyOf(count), android.util.Base64.NO_WRAP)
+                        val ack = sendRemoteFileCommandAndAwait(
+                            session, "FILE_WRITE_ACK", transferId, chunkOffset,
+                            JSONObject()
+                                .put("action", "WRITE_CHUNK")
+                                .put("path", temporaryPath)
+                                .put("transferId", transferId)
+                                .put("offset", chunkOffset)
+                                .put("append", chunkOffset > 0L)
+                                .put("data", encoded)
+                        )
+                        if (!ack.optBoolean("success") ||
+                            ack.optInt("bytesWritten", -1) != count ||
+                            ack.optLong("offset", -1L) != chunkOffset) {
+                            throw IllegalStateException(ack.optString("error", "Receiver did not acknowledge the complete upload chunk."))
+                        }
+                        transferredBytes = nextOffset
+                        firstChunk = false
+                        trackRemoteTransfer(transferId, fileName, totalBytes, transferredBytes, true, "IN_PROGRESS")
+                    }
+                }
+
+                if (declaredSize >= 0L && transferredBytes != declaredSize) {
+                    throw IllegalStateException("The local file size changed during upload.")
+                }
+                val finalized = sendRemoteFileCommandAndAwait(
+                    session, "FILE_OPERATION_RESULT", transferId, -1L,
+                    JSONObject()
+                        .put("action", "FINALIZE_UPLOAD")
+                        .put("transferId", transferId)
+                        .put("temporaryPath", temporaryPath)
+                        .put("destinationPath", destinationPath),
+                    commandType = "FILE_TRANSFER"
+                )
+                if (!finalized.optBoolean("success")) {
+                    throw IllegalStateException("Receiver could not finalize the upload. A file with that name may already exist.")
+                }
+                trackRemoteTransfer(transferId, fileName, totalBytes, transferredBytes, true, "COMPLETED")
+                fetchRemoteFiles(remoteDirectory)
+            } catch (error: Exception) {
+                if (temporaryPath.isNotBlank()) {
+                    signalingClient.send(
+                        "FILE_TRANSFER",
+                        JSONObject()
+                            .put("action", "ABORT_UPLOAD")
+                            .put("transferId", transferId)
+                            .put("temporaryPath", temporaryPath)
+                            .toString(),
+                        session.targetDeviceId
+                    )
+                }
+                trackRemoteTransfer(transferId, fileName, totalBytes, transferredBytes, true, "FAILED")
+                _controllerErrorMessage.value = "Upload failed: ${error.message ?: "unknown transfer error"}"
+                AuditLogger.log("FILE", "REMOTE_UPLOAD_FAILED", "Remote upload failed for $fileName: ${error.message}", AuditSeverity.WARNING)
+            }
+        }
+    }
+
+    fun downloadRemoteFile(remoteFile: FileEntry, destinationUri: Uri) {
+        val session = _activeControllerSession.value ?: return
+        if (remoteFile.isDirectory) {
+            _controllerErrorMessage.value = "Select a file, not a folder, to download."
+            return
+        }
+        if (remoteFile.sizeBytes !in 0..RemoteFileTransferRules.MAX_FILE_BYTES) {
+            _controllerErrorMessage.value = "The remote file size is invalid or exceeds 1 GiB."
+            return
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val transferId = UUID.randomUUID().toString()
+            var transferredBytes = 0L
+            try {
+                val output = getApplication<Application>().contentResolver.openOutputStream(destinationUri, "wt")
+                    ?: throw IllegalStateException("The selected download destination could not be opened.")
+                output.use { stream ->
+                    while (transferredBytes < remoteFile.sizeBytes) {
+                        val length = RemoteFileTransferRules.chunkLength(remoteFile.sizeBytes, transferredBytes)
+                        val response = sendRemoteFileCommandAndAwait(
+                            session, "FILE_CHUNK_RESPONSE", transferId, transferredBytes,
+                            JSONObject()
+                                .put("action", "READ_CHUNK")
+                                .put("path", remoteFile.path)
+                                .put("transferId", transferId)
+                                .put("offset", transferredBytes)
+                                .put("length", length)
+                        )
+                        if (!response.optBoolean("ok")) {
+                            throw IllegalStateException(response.optString("error", "Receiver could not read the requested file chunk."))
+                        }
+                        val chunk = try {
+                            android.util.Base64.decode(response.optString("data", ""), android.util.Base64.DEFAULT)
+                        } catch (_: Exception) {
+                            throw IllegalStateException("Receiver returned invalid chunk encoding.")
+                        }
+                        val reportedSize = response.optLong("fileSize", remoteFile.sizeBytes)
+                        if (chunk.size != length ||
+                            response.optLong("offset", -1L) != transferredBytes ||
+                            (reportedSize >= 0L && reportedSize != remoteFile.sizeBytes)) {
+                            throw IllegalStateException("The remote file changed or a chunk was incomplete.")
+                        }
+                        stream.write(chunk)
+                        transferredBytes += chunk.size
+                        trackRemoteTransfer(
+                            transferId, remoteFile.name, remoteFile.sizeBytes,
+                            transferredBytes, false, "IN_PROGRESS"
+                        )
+                    }
+                }
+                trackRemoteTransfer(
+                    transferId, remoteFile.name, remoteFile.sizeBytes,
+                    transferredBytes, false, "COMPLETED"
+                )
+            } catch (error: Exception) {
+                runCatching {
+                    DocumentsContract.deleteDocument(
+                        getApplication<Application>().contentResolver,
+                        destinationUri
+                    )
+                }
+                trackRemoteTransfer(
+                    transferId, remoteFile.name, remoteFile.sizeBytes,
+                    transferredBytes, false, "FAILED"
+                )
+                _controllerErrorMessage.value = "Download failed: ${error.message ?: "unknown transfer error"}"
+                AuditLogger.log("FILE", "REMOTE_DOWNLOAD_FAILED", "Remote download failed for ${remoteFile.name}: ${error.message}", AuditSeverity.WARNING)
+            }
+        }
     }
 
     fun fetchRemoteApps() {
@@ -900,8 +1261,10 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         pairingManager.approveRequest(req)
         val sent = signalingClient.send(
             "PAIR_ACCEPT",
-            """{"requestId":"${req.requestId}","receiverName":"${identity.deviceName}","status":"APPROVED","fingerprint":"${identity.fingerprint}"}""",
-            req.controllerId
+            JSONObject()
+                .put("requestId", req.requestId)
+                .put("status", "APPROVED")
+                .toString()
         )
         if (!sent) {
             pairingManager.failApproval("The approval could not be sent to the signaling server.")
@@ -914,8 +1277,11 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         if (req.controllerId.isNotBlank()) {
             signalingClient.send(
                 "PAIR_REJECT",
-                """{"requestId":"${req.requestId}","status":"DENIED","reason":"User declined connection request"}""",
-                req.controllerId
+                JSONObject()
+                    .put("requestId", req.requestId)
+                    .put("status", "DENIED")
+                    .put("reason", "User declined connection request")
+                    .toString()
             )
         }
     }
@@ -1003,7 +1369,10 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         pairingManager.currentPairingCode.value?.let { code ->
             signalingClient.send(
                 "REGISTER_PAIRING_CODE",
-                """{"code":"${code.code}","expiresAt":${code.expiresAtMillis}}"""
+                JSONObject()
+                    .put("code", code.code.filter(Char::isDigit))
+                    .put("expiresAtMs", code.expiresAtMillis)
+                    .toString()
             )
         }
     }
@@ -1014,6 +1383,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
+        failPendingRemoteFileResponses("The controller screen was closed.")
         signalingClient.disconnect()
         super.onCleared()
     }

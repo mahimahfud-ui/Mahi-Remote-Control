@@ -3,12 +3,17 @@ package com.example
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import com.example.filetransfer.FileManager
+import com.example.filetransfer.RemoteFileTransferRules
 import com.example.pairing.PairingManager
 import com.example.security.AllowlistValidator
 import com.example.security.DeviceIdentity
+import com.example.security.DeviceChallenge
+import com.example.security.DeviceChallengeProof
+import com.example.security.DeviceChallengeReplayGuard
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -20,6 +25,15 @@ import java.io.File
 @Config(sdk = [36])
 class ExampleRobolectricTest {
 
+
+    private fun testIdentity() = DeviceIdentity.Identity(
+        deviceId = "MAHI-TST-12345678",
+        deviceName = "Mahi Remote Test Device",
+        fingerprint = "sha256:" + "a".repeat(64),
+        publicKeyBase64 = "AA=="
+    )
+
+
     @Test
     fun testAppNameResource() {
         val context = ApplicationProvider.getApplicationContext<Context>()
@@ -28,13 +42,14 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun testDeviceIdentityGeneration() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val identity = DeviceIdentity.getOrCreateIdentity(context)
-        assertNotNull(identity.deviceId)
-        assertTrue(identity.deviceId.startsWith("MAHI-"))
-        assertNotNull(identity.fingerprint)
-        assertTrue(identity.fingerprint.contains(":"))
+    fun testPublicKeyFingerprintUsesProtocolV1Format() {
+        val generator = java.security.KeyPairGenerator.getInstance("EC")
+        generator.initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
+        val publicKeyDer = generator.generateKeyPair().public.encoded
+
+        val fingerprint = DeviceIdentity.fingerprintForPublicKey(publicKeyDer)
+        assertTrue(fingerprint.matches(Regex("sha256:[0-9a-f]{64}")))
+        assertEquals(fingerprint, DeviceIdentity.fingerprintForPublicKey(publicKeyDer))
     }
 
     @Test
@@ -58,12 +73,33 @@ class ExampleRobolectricTest {
         // Invalid swipe duration
         val invalidDuration = AllowlistValidator.validateSwipe(100f, 200f, 300f, 800f, 10L, 1080, 2400)
         assertTrue(invalidDuration is AllowlistValidator.ValidationResult.Rejected)
+
+        // NaN and invalid display dimensions must never bypass coordinate checks.
+        assertTrue(
+            AllowlistValidator.validateTap(Float.NaN, 100f, 1080, 2400) is
+                AllowlistValidator.ValidationResult.Rejected
+        )
+        assertTrue(
+            AllowlistValidator.validateSwipe(100f, 200f, Float.NaN, 800f, 300L, 1080, 2400) is
+                AllowlistValidator.ValidationResult.Rejected
+        )
+        assertTrue(
+            AllowlistValidator.validateTap(0f, 0f, 0, 2400) is
+                AllowlistValidator.ValidationResult.Rejected
+        )
+
+        // Only explicitly allowed global actions and bounded text may execute.
+        assertTrue(AllowlistValidator.validateGlobalAction("BACK") is AllowlistValidator.ValidationResult.Valid)
+        assertTrue(AllowlistValidator.validateGlobalAction("FORMAT_DEVICE") is AllowlistValidator.ValidationResult.Rejected)
+        assertTrue(AllowlistValidator.validateTextInput("Hello") is AllowlistValidator.ValidationResult.Valid)
+        assertTrue(AllowlistValidator.validateTextInput("x".repeat(2001)) is AllowlistValidator.ValidationResult.Rejected)
+        assertTrue(AllowlistValidator.validateTextInput("bad\u0000input") is AllowlistValidator.ValidationResult.Rejected)
     }
 
     @Test
     fun testPairingCodeAndSessionLifecycle() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val manager = PairingManager(context)
+        val manager = PairingManager(context, testIdentity())
         val codeData = manager.generateNewPairingCode()
 
         assertNotNull(codeData.code)
@@ -86,7 +122,7 @@ class ExampleRobolectricTest {
 
         // Owner approval is not a session until the backend issues authorization.
         assertEquals(null, manager.activeSession.value)
-        assertTrue(manager.markSessionAuthorized("test-session-1"))
+        assertTrue(manager.markSessionAuthorized("req-1", "test-session-1"))
 
         val active = manager.activeSession.value
         assertNotNull(active)
@@ -94,6 +130,53 @@ class ExampleRobolectricTest {
 
         manager.emergencyDisconnect("Test disconnect")
         assertEquals(null, manager.activeSession.value)
+    }
+
+
+
+    @Test
+    fun testPermittedRootFoldersAreBrowsableDirectories() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val fileManager = FileManager(context)
+
+        val roots = fileManager.listPermittedRootFolders()
+        assertTrue(roots.isNotEmpty())
+        assertTrue(roots.all { it.isDirectory && it.path.isNotBlank() && it.mimeType == "inode/directory" })
+    }
+
+    @Test
+    fun testTransferProgressDoesNotFabricateSpeedOrCompletion() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val fileManager = FileManager(context)
+
+        val unknownSize = fileManager.trackTransfer(
+            fileName = "unknown.bin",
+            totalBytes = 0,
+            transferredBytes = 0,
+            isUpload = true,
+            status = "IN_PROGRESS"
+        )
+        assertEquals(0, unknownSize.percent)
+        assertEquals(0, unknownSize.speedKbps)
+
+        val overReported = fileManager.trackTransfer(
+            fileName = "bounded.bin",
+            totalBytes = 100,
+            transferredBytes = 150,
+            isUpload = false,
+            status = "IN_PROGRESS"
+        )
+        assertEquals(100, overReported.percent)
+        assertEquals(0, overReported.speedKbps)
+
+        val completed = fileManager.trackTransfer(
+            fileName = "done.bin",
+            totalBytes = 100,
+            transferredBytes = 100,
+            isUpload = false,
+            status = "COMPLETED"
+        )
+        assertEquals(100, completed.percent)
     }
 
     @Test
@@ -127,6 +210,17 @@ class ExampleRobolectricTest {
         val createdFolder = File(testDir, "TestLogs")
         assertTrue(createdFolder.isDirectory)
 
+        // Chunk offsets and sizes must be bounded before allocating or writing buffers.
+        assertNull(fileManager.readFileChunk(testFile.absolutePath, -1L, 1))
+        assertNull(fileManager.readFileChunk(testFile.absolutePath, 0L, FileManager.MAX_CHUNK_BYTES + 1))
+        assertFalse(
+            fileManager.writeFileChunk(
+                testFile.absolutePath,
+                ByteArray(FileManager.MAX_CHUNK_BYTES + 1),
+                append = true
+            )
+        )
+
         // 5. Delete file
         val deleteOk = fileManager.deleteFile(testFile.absolutePath, confirmed = true)
         assertTrue("File deletion failed", deleteOk)
@@ -136,7 +230,7 @@ class ExampleRobolectricTest {
     @Test
     fun testAndroidToAndroidRoleAndControllerSession() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val manager = PairingManager(context)
+        val manager = PairingManager(context, testIdentity())
 
         // Simulate incoming pairing request from an Android Phone controller
         manager.recordIncomingOperatorRequest(
@@ -156,7 +250,7 @@ class ExampleRobolectricTest {
         manager.approveRequest(pending!!)
         assertTrue(manager.approvalInProgress.value)
         assertEquals(null, manager.activeSession.value)
-        assertTrue(manager.markSessionAuthorized("android-session-1"))
+        assertTrue(manager.markSessionAuthorized(pending!!.requestId, "android-session-1"))
         assertNotNull(manager.activeSession.value)
         assertEquals("Phone A (Pixel 8 Pro)", manager.activeSession.value?.operatorName)
 
@@ -167,11 +261,244 @@ class ExampleRobolectricTest {
     @Test
     fun testSessionCannotBeActivatedWithoutApprovedRequest() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val manager = PairingManager(context)
+        val manager = PairingManager(context, testIdentity())
 
-        assertFalse(manager.markSessionAuthorized("forged-session-id"))
+        assertFalse(manager.markSessionAuthorized("forged-request-id", "forged-session-id"))
         assertEquals(null, manager.activeSession.value)
         assertFalse(manager.approvalInProgress.value)
+    }
+
+
+
+    @Test
+    fun testChallengeCanonicalMessageAndReplayProtection() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val nonce = java.util.Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(ByteArray(32) { it.toByte() })
+        val challenge = DeviceChallenge(
+            challengeId = java.util.UUID.randomUUID().toString(),
+            purpose = "AUTHENTICATE",
+            nonce = nonce,
+            fingerprint = "sha256:" + "a".repeat(64),
+            signatureAlgorithm = "SHA256withECDSA",
+            expiresAtMs = 121_000L
+        )
+
+        assertTrue(
+            DeviceChallengeProof.isValid(
+                "MAHI-TST-12345678",
+                "sha256:" + "a".repeat(64),
+                "AUTHENTICATE",
+                challenge,
+                nowMillis = 1_000L
+            )
+        )
+        val canonical = String(
+            DeviceChallengeProof.canonicalMessage("MAHI-TST-12345678", challenge),
+            Charsets.UTF_8
+        )
+        assertEquals(
+            "MAHI-REMOTE-DEVICE-PROOF\n1\nAUTHENTICATE\n" + challenge.challengeId + "\nMAHI-TST-12345678\nsha256:" + "a".repeat(64) + "\n" + nonce + "\n121000",
+            canonical
+        )
+
+        val replayGuard = DeviceChallengeReplayGuard(context)
+        assertTrue(replayGuard.consume(challenge.challengeId))
+        assertFalse(replayGuard.consume(challenge.challengeId))
+
+        val expired = challenge.copy(expiresAtMs = 999L)
+        assertFalse(
+            DeviceChallengeProof.isValid(
+                "MAHI-TST-12345678",
+                challenge.fingerprint,
+                "AUTHENTICATE",
+                expired,
+                nowMillis = 1_000L
+            )
+        )
+        assertFalse(
+            DeviceChallengeProof.isValid(
+                "MAHI-TST-12345678",
+                challenge.fingerprint,
+                "AUTHENTICATE",
+                challenge.copy(nonce = challenge.nonce + "="),
+                nowMillis = 1_000L
+            )
+        )
+        assertFalse(
+            DeviceChallengeProof.isValid(
+                "MAHI-TST-12345678",
+                challenge.fingerprint,
+                "ENROLL",
+                challenge,
+                nowMillis = 1_000L
+            )
+        )
+    }
+
+
+
+    @Test
+    fun testSessionAuthorizationMustMatchApprovedRequestId() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val manager = PairingManager(context, testIdentity())
+        manager.recordIncomingOperatorRequest(
+            controllerId = "controller-request-bound",
+            operatorName = "Request-bound controller",
+            location = "Remote",
+            fingerprint = "AA:BB:CC:DD",
+            scopes = listOf("Screen Mirroring"),
+            requestId = "approved-request-1"
+        )
+
+        val pending = manager.pendingRequest.value
+        assertNotNull(pending)
+        manager.approveRequest(pending!!)
+
+        assertFalse(manager.markSessionAuthorized("different-request", "session-wrong-request"))
+        assertNull(manager.activeSession.value)
+        assertTrue(manager.approvalInProgress.value)
+
+        assertTrue(manager.markSessionAuthorized("approved-request-1", "session-approved-request"))
+        assertEquals("session-approved-request", manager.activeSession.value?.sessionId)
+    }
+
+
+    @Test
+    fun testRejectedPairingCannotEstablishSession() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val manager = PairingManager(context, testIdentity())
+        manager.recordIncomingOperatorRequest(
+            controllerId = "controller-rejected",
+            operatorName = "Rejected Controller",
+            location = "Remote",
+            fingerprint = "AA:BB:CC:DD",
+            scopes = listOf("Screen Mirroring"),
+            requestId = "rejected-request"
+        )
+
+        val pending = manager.pendingRequest.value
+        assertNotNull(pending)
+        manager.rejectRequest(pending!!)
+
+        assertNull(manager.pendingRequest.value)
+        assertNull(manager.activeSession.value)
+        assertFalse(manager.approvalInProgress.value)
+        assertFalse(manager.markSessionAuthorized("rejected-request", "late-backend-session"))
+        assertNull(manager.activeSession.value)
+    }
+
+
+
+    @Test
+    fun testStagedUploadFinalizesToExactDestinationWithoutOverwrite() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val manager = FileManager(context)
+        val directory = File(context.filesDir, "remote-upload-test").apply { mkdirs() }
+        val staged = File(directory, "report.txt.mahi-upload-123e4567-e89b-12d3-a456-426614174000.part")
+        val destination = File(directory, "report.txt")
+        staged.delete()
+        destination.delete()
+
+        assertTrue(staged.writeText("verified upload content").let { staged.exists() })
+        assertTrue(manager.moveFileToPath(staged.absolutePath, destination.absolutePath))
+        assertTrue(destination.exists())
+        assertFalse(staged.exists())
+        assertEquals("verified upload content", destination.readText())
+
+        val secondStaged = File(directory, "report.txt.mahi-upload-123e4567-e89b-12d3-a456-426614174000.part")
+        secondStaged.writeText("must not overwrite")
+        assertFalse(manager.moveFileToPath(secondStaged.absolutePath, destination.absolutePath))
+        assertEquals("verified upload content", destination.readText())
+
+        secondStaged.delete()
+        destination.delete()
+        directory.delete()
+    }
+
+    @Test
+    fun testRemoteFileTransferRulesRejectUnsafeNamesAndBoundChunks() {
+        assertEquals("report.txt", RemoteFileTransferRules.safeFileName("report.txt"))
+        assertEquals("quarterly_report.txt", RemoteFileTransferRules.safeFileName("quarterly:report.txt"))
+        assertNull(RemoteFileTransferRules.safeFileName("../private.txt"))
+        assertNull(RemoteFileTransferRules.safeFileName("folder/file.txt"))
+        assertNull(RemoteFileTransferRules.safeFileName("folder\\\\file.txt"))
+        assertNull(RemoteFileTransferRules.safeFileName(".."))
+
+        assertEquals(RemoteFileTransferRules.CHUNK_BYTES, RemoteFileTransferRules.chunkLength(100_000L, 0L))
+        assertEquals(1, RemoteFileTransferRules.chunkLength(100_000L, 99_999L))
+        assertEquals(0, RemoteFileTransferRules.chunkLength(0L, 0L))
+        assertFalse(RemoteFileTransferRules.isValidTransferId("not-a-uuid"))
+        assertFalse(RemoteFileTransferRules.isValidTransferId("------------------------------------"))
+        assertTrue(RemoteFileTransferRules.isValidTransferId("123e4567-e89b-12d3-a456-426614174000"))
+        assertEquals(
+            "/permitted/downloads/report.txt.mahi-upload-123e4567-e89b-12d3-a456-426614174000.part",
+            RemoteFileTransferRules.temporaryUploadPath(
+                "/permitted/downloads/report.txt",
+                "123e4567-e89b-12d3-a456-426614174000"
+            )
+        )
+    }
+
+
+    @Test
+    fun testDeviceSignatureVerificationFailsClosed() {
+        val generator = java.security.KeyPairGenerator.getInstance("EC")
+        generator.initialize(java.security.spec.ECGenParameterSpec("secp256r1"))
+        val keyPair = generator.generateKeyPair()
+        val challenge = "one-time-backend-challenge".toByteArray()
+        val signer = java.security.Signature.getInstance("SHA256withECDSA").apply {
+            initSign(keyPair.private)
+            update(challenge)
+        }
+        val validSignature = java.util.Base64.getEncoder().encodeToString(signer.sign())
+        val validPublicKey = java.util.Base64.getEncoder().encodeToString(keyPair.public.encoded)
+
+        assertTrue(DeviceIdentity.verifyMessageSignature(challenge, validSignature, validPublicKey))
+        assertFalse(
+            DeviceIdentity.verifyMessageSignature(
+                "different-challenge".toByteArray(),
+                validSignature,
+                validPublicKey
+            )
+        )
+
+        // A long malformed signature previously passed the exception fallback.
+        assertFalse(
+            DeviceIdentity.verifyMessageSignature(
+                challenge,
+                "A".repeat(128),
+                java.util.Base64.getEncoder().encodeToString(byteArrayOf(1, 2, 3))
+            )
+        )
+    }
+
+    @Test
+    fun testFilePathValidationRejectsTraversalAndSiblingPrefix() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val allowedRoot = File(context.cacheDir, "allowed-root").apply { mkdirs() }
+        val allowedFile = File(allowedRoot, "nested/document.txt")
+        val siblingPrefix = File(context.cacheDir, "allowed-root-escape/secret.txt")
+        val traversal = File(allowedRoot, "../allowed-root-escape/secret.txt")
+
+        assertTrue(
+            AllowlistValidator.validateFilePath(
+                allowedFile.absolutePath,
+                listOf(allowedRoot.absolutePath)
+            ) is AllowlistValidator.ValidationResult.Valid
+        )
+        assertTrue(
+            AllowlistValidator.validateFilePath(
+                siblingPrefix.absolutePath,
+                listOf(allowedRoot.absolutePath)
+            ) is AllowlistValidator.ValidationResult.Rejected
+        )
+        assertTrue(
+            AllowlistValidator.validateFilePath(
+                traversal.path,
+                listOf(allowedRoot.absolutePath)
+            ) is AllowlistValidator.ValidationResult.Rejected
+        )
     }
 
 }
