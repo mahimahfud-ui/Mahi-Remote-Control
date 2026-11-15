@@ -26,6 +26,7 @@
     operatorFingerprint: 'WEB-' + Array.from(crypto.getRandomValues(new Uint8Array(16))).map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase(),
     pendingIceCandidates: [],
     pendingDownload: null,
+    pendingUpload: null,
     currentPath: '/storage/emulated/0/Documents',
     pingTimer: null,
     lastPingTimestamp: 0,
@@ -181,6 +182,15 @@
       case 'FILE_CHUNK_RESPONSE':
         handleFileChunkResponse(parsePayload(msg.payload));
         break;
+      case 'FILE_WRITE_ACK':
+        handleFileWriteAck(parsePayload(msg.payload));
+        break;
+      case 'FILE_OPERATION_RESULT': {
+        const result = parsePayload(msg.payload);
+        if (result.success === false) toast('Phone could not complete ' + (result.action || 'file operation') + '.');
+        else if (result.action === 'DELETE') toast('Remote file deleted.');
+        break;
+      }
       case 'PAIR_PENDING':
         state.pairingRequestId = msg.requestId || null;
         setStatus('Request sent. Waiting for the phone owner to approve…');
@@ -454,6 +464,7 @@
     state.sessionId = null;
     state.pendingIceCandidates = [];
     state.pendingDownload = null;
+    if (state.pendingUpload) failUpload('The remote session ended.');
     state.targetDeviceId = null;
     state.isStreaming = false;
     state.pairingRequestId = null;
@@ -851,6 +862,11 @@
   function handleFileChunkResponse(payload) {
     const transfer = state.pendingDownload;
     if (!transfer || payload.path !== transfer.path || Number(payload.offset) !== transfer.offset) return;
+    if (payload.ok === false) {
+      state.pendingDownload = null;
+      toast(payload.error || 'The phone could not read this file.');
+      return;
+    }
     let bytes;
     try {
       const binary = atob(String(payload.data || ''));
@@ -881,50 +897,120 @@
     state.pendingDownload = null;
   }
 
-  async function uploadRemoteFile(file) {
-    if (!file || !state.sessionToken || !state.targetDeviceId) {
-      toast('Connect to an approved phone before uploading.');
-      return;
-    }
-    const safeName = file.name.replace(/[\\/]/g, '_').replace(/[\u0000-\u001f]/g, '_');
-    const targetPath = state.currentPath.replace(/\/$/, '') + '/' + safeName;
-    const chunkSize = 24576;
+  function failUpload(message) {
+    const transfer = state.pendingUpload;
+    if (!transfer) return;
+    state.pendingUpload = null;
     const progress = $('#file-transfer-status');
+    if (progress) progress.textContent = 'Upload failed: ' + message;
+    transfer.reject(new Error(message));
+  }
+
+  function finishUpload() {
+    const transfer = state.pendingUpload;
+    if (!transfer) return;
+    state.pendingUpload = null;
+    const progress = $('#file-transfer-status');
+    if (progress) progress.textContent = 'Uploaded ' + transfer.safeName + '. Refreshing phone folder…';
+    transfer.resolve(true);
+    toast('Uploaded ' + transfer.safeName);
+    setTimeout(() => requestRemoteFileList(), 400);
+    setTimeout(() => { if (progress) progress.textContent = ''; }, 4000);
+  }
+
+  async function sendNextUploadChunk() {
+    const transfer = state.pendingUpload;
+    if (!transfer) return;
     try {
-      for (let offset = 0; offset < file.size; offset += chunkSize) {
-        const chunk = new Uint8Array(await file.slice(offset, Math.min(file.size, offset + chunkSize)).arrayBuffer());
-        let binary = '';
-        for (let i = 0; i < chunk.length; i += 8192) {
-          binary += String.fromCharCode(...chunk.subarray(i, Math.min(i + 8192, chunk.length)));
+      let chunk;
+      let isEmptyFile = transfer.file.size === 0;
+      if (isEmptyFile) {
+        if (transfer.emptyChunkSent) {
+          finishUpload();
+          return;
         }
-        if (!sendWs({
-          type: 'FILE_COMMAND', action: 'WRITE_CHUNK', path: targetPath,
-          data: btoa(binary), append: offset > 0, targetDeviceId: state.targetDeviceId
-        })) throw new Error('Signaling connection closed during upload.');
-        if (progress) progress.textContent = 'Uploading ' + safeName + ' · ' + Math.round(Math.min(file.size, offset + chunk.length) / Math.max(file.size, 1) * 100) + '%';
-        await new Promise(resolve => setTimeout(resolve, 25));
-      }
-      if (file.size === 0) {
-        if (!sendWs({ type: 'FILE_COMMAND', action: 'WRITE_CHUNK', path: targetPath, data: '', append: false, targetDeviceId: state.targetDeviceId })) {
-          throw new Error('Signaling connection closed during upload.');
+        transfer.emptyChunkSent = true;
+        chunk = new Uint8Array(0);
+      } else {
+        if (transfer.offset >= transfer.file.size) {
+          finishUpload();
+          return;
         }
+        const end = Math.min(transfer.file.size, transfer.offset + transfer.chunkSize);
+        chunk = new Uint8Array(await transfer.file.slice(transfer.offset, end).arrayBuffer());
       }
-      if (progress) progress.textContent = 'Upload sent. Refreshing phone folder…';
-      setTimeout(() => requestRemoteFileList(), 700);
-      setTimeout(() => { if (progress) progress.textContent = ''; }, 4000);
+
+      let binary = '';
+      for (let i = 0; i < chunk.length; i += 8192) {
+        binary += String.fromCharCode(...chunk.subarray(i, Math.min(i + 8192, chunk.length)));
+      }
+      transfer.pendingBytes = chunk.length;
+      transfer.awaitingAck = true;
+      const sent = sendWs({
+        type: 'FILE_COMMAND',
+        action: 'WRITE_CHUNK',
+        path: transfer.targetPath,
+        data: btoa(binary),
+        append: transfer.offset > 0,
+        targetDeviceId: state.targetDeviceId
+      });
+      if (!sent) failUpload('Signaling connection closed during upload.');
     } catch (error) {
-      if (progress) progress.textContent = 'Upload failed: ' + error.message;
-      toast('Upload failed.');
+      failUpload(error.message || 'Could not read the selected file.');
     }
   }
 
-  const uploadButton = $('#file-upload-btn');
+  function handleFileWriteAck(payload) {
+    const transfer = state.pendingUpload;
+    if (!transfer || payload.path !== transfer.targetPath || !transfer.awaitingAck) return;
+    transfer.awaitingAck = false;
+    const written = Number(payload.bytesWritten || 0);
+    if (payload.success !== true || written !== transfer.pendingBytes) {
+      failUpload(payload.error || 'The phone did not confirm the uploaded chunk.');
+      return;
+    }
+    if (transfer.file.size === 0) {
+      finishUpload();
+      return;
+    }
+    transfer.offset += written;
+    const percent = Math.round(transfer.offset / Math.max(transfer.file.size, 1) * 100);
+    const progress = $('#file-transfer-status');
+    if (progress) progress.textContent = 'Uploading ' + transfer.safeName + ' · ' + percent + '%';
+    if (transfer.offset >= transfer.file.size) finishUpload();
+    else sendNextUploadChunk();
+  }
+
+  function uploadRemoteFile(file) {
+    if (!file || !state.sessionToken || !state.targetDeviceId) {
+      toast('Connect to an approved phone before uploading.');
+      return Promise.reject(new Error('No approved remote session.'));
+    }
+    if (state.pendingUpload) return Promise.reject(new Error('Another upload is already in progress.'));
+    const safeName = file.name.replace(/[\\/]/g, '_').replace(/[\u0000-\u001f]/g, '_');
+    const targetPath = state.currentPath.replace(/\/$/, '') + '/' + safeName;
+    return new Promise((resolve, reject) => {
+      state.pendingUpload = {
+        file, safeName, targetPath, offset: 0, chunkSize: 24576,
+        pendingBytes: 0, awaitingAck: false, emptyChunkSent: false, resolve, reject
+      };
+      const progress = $('#file-transfer-status');
+      if (progress) progress.textContent = 'Uploading ' + safeName + ' · 0%';
+      sendNextUploadChunk();
+    });
+  }
+
+  const uploadButton = $('#file-upload-btn');  const uploadButton = $('#file-upload-btn');
   const uploadInput = $('#file-upload-input');
   uploadButton?.addEventListener('click', () => uploadInput?.click());
   uploadInput?.addEventListener('change', async () => {
     const file = uploadInput.files?.[0];
     if (!file) return;
-    await uploadRemoteFile(file);
+    try {
+      await uploadRemoteFile(file);
+    } catch (error) {
+      console.warn('[Files] Upload aborted:', error.message);
+    }
     uploadInput.value = '';
   });
   $('#file-refresh')?.addEventListener('click', () => requestRemoteFileList());
