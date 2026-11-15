@@ -233,6 +233,64 @@ async function runTests() {
     assert.equal(replay.response.status, 409);
     assert.equal(replay.payload.error.code, 'CHALLENGE_REPLAYED');
 
+    console.log('[TEST] Invalid ECDSA signature and expired challenge rejection');
+    const wrongPair = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const wrongPublicKey = wrongPair.publicKey.export({ format: 'der', type: 'spki' }).toString('base64');
+    const wrongChallenge = await post('/api/v1/devices/enrollment/challenges', {
+      deviceId: 'MAHI-WRONG-SIGNATURE',
+      deviceName: 'Invalid proof test',
+      publicKey: {
+        format: 'spki-der-base64',
+        algorithm: 'EC',
+        curve: 'P-256',
+        value: wrongPublicKey
+      }
+    });
+    assert.equal(wrongChallenge.response.status, 201);
+    const badProof = await post('/api/v1/devices/enrollment/verify', {
+      challengeId: wrongChallenge.payload.challengeId,
+      signature: signChallenge(wrongChallenge.payload, firstPair.privateKey, 'MAHI-WRONG-SIGNATURE')
+    });
+    assert.equal(badProof.response.status, 400);
+    assert.equal(badProof.payload.error.code, 'INVALID_SIGNATURE');
+    const goodProof = await post('/api/v1/devices/enrollment/verify', {
+      challengeId: wrongChallenge.payload.challengeId,
+      signature: signChallenge(wrongChallenge.payload, wrongPair.privateKey, 'MAHI-WRONG-SIGNATURE')
+    });
+    assert.equal(goodProof.response.status, 201);
+
+    const expiredChallenge = await post('/api/v1/devices/enrollment/challenges', {
+      deviceId: 'MAHI-EXPIRED-CHALLENGE',
+      deviceName: 'Expired challenge test',
+      publicKey: {
+        format: 'spki-der-base64',
+        algorithm: 'EC',
+        curve: 'P-256',
+        value: wrongPublicKey
+      }
+    });
+    assert.equal(expiredChallenge.response.status, 201);
+    await Database.query(
+      'UPDATE device_challenges SET expires_at = NOW() - INTERVAL \'1 second\' WHERE challenge_id = $1',
+      [expiredChallenge.payload.challengeId]
+    );
+    const expiredProof = await post('/api/v1/devices/enrollment/verify', {
+      challengeId: expiredChallenge.payload.challengeId,
+      signature: signChallenge(expiredChallenge.payload, wrongPair.privateKey, 'MAHI-EXPIRED-CHALLENGE')
+    });
+    assert.equal(expiredProof.response.status, 409);
+    assert.equal(expiredProof.payload.error.code, 'CHALLENGE_EXPIRED');
+
+    const authChallenge = await post('/api/v1/devices/auth/challenges', { deviceId });
+    assert.equal(authChallenge.response.status, 201);
+    const deviceAuth = await post('/api/v1/devices/auth/verify', {
+      challengeId: authChallenge.payload.challengeId,
+      signature: signChallenge(authChallenge.payload, firstPair.privateKey, deviceId)
+    });
+    assert.equal(deviceAuth.response.status, 200);
+    assert.equal(deviceAuth.payload.fingerprint, challenge.fingerprint);
+    assert.ok(deviceAuth.payload.deviceAccessToken);
+
     const invalidPublicKey = await post('/api/v1/devices/enrollment/challenges', {
       deviceId: 'MAHI-BAD-KEY-DEVICE',
       deviceName: 'Invalid',
@@ -427,6 +485,27 @@ async function runTests() {
       sessionToken: browserApproval.sessionToken
     });
     assert.equal((await forbiddenAppAction).errorCode, 'INVALID_REQUEST');
+
+    console.log('[TEST] PostgreSQL reconnect preserves enrolled devices, consumed codes and active sessions');
+    await Database.close();
+    await Database.initialize();
+    await Database.startSignalListener();
+    const persistedDevice = await Database.query(
+      'SELECT device_id, fingerprint FROM devices WHERE device_id = $1',
+      [deviceId]
+    );
+    assert.equal(persistedDevice.rows[0].device_id, deviceId);
+    assert.equal(persistedDevice.rows[0].fingerprint, challenge.fingerprint);
+    const persistedSession = await Database.query(
+      'SELECT session_id FROM support_sessions WHERE session_id = $1 AND status = \'ACTIVE\'',
+      [browserApproval.sessionId]
+    );
+    assert.equal(persistedSession.rowCount, 1);
+    const consumedCode = await Database.query(
+      'SELECT consumed_at FROM pairing_codes WHERE device_id = $1 ORDER BY created_at DESC LIMIT 1',
+      [deviceId]
+    );
+    assert.ok(consumedCode.rows[0].consumed_at);
 
     console.log('[TEST] Session termination revokes participant access');
     const terminate = await fetch(BASE_URL + '/api/v1/sessions/' + browserApproval.sessionId + '/terminate', {
