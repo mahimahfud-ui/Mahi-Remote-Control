@@ -15,11 +15,14 @@ object AllowlistValidator {
         "RECENTS",
         "NOTIFICATIONS",
         "QUICK_SETTINGS",
+        "POWER_DIALOG",
         "LOCK_SCREEN"
     )
 
     fun validateTap(x: Float, y: Float, screenWidth: Int, screenHeight: Int): ValidationResult {
-        if (x < 0 || x > screenWidth || y < 0 || y > screenHeight) {
+        if (screenWidth <= 0 || screenHeight <= 0 ||
+            !x.isFinite() || !y.isFinite() ||
+            x < 0 || x > screenWidth || y < 0 || y > screenHeight) {
             val reason = "Tap coordinate ($x, $y) out of display bounds ($screenWidth x $screenHeight)"
             AuditLogger.log("INPUT", "TAP_REJECTED", reason, AuditSeverity.WARNING)
             return ValidationResult.Rejected(reason)
@@ -34,7 +37,9 @@ object AllowlistValidator {
         screenWidth: Int,
         screenHeight: Int
     ): ValidationResult {
-        if (x1 < 0 || x1 > screenWidth || y1 < 0 || y1 > screenHeight ||
+        if (screenWidth <= 0 || screenHeight <= 0 ||
+            !x1.isFinite() || !y1.isFinite() || !x2.isFinite() || !y2.isFinite() ||
+            x1 < 0 || x1 > screenWidth || y1 < 0 || y1 > screenHeight ||
             x2 < 0 || x2 > screenWidth || y2 < 0 || y2 > screenHeight) {
             val reason = "Swipe trajectory out of screen bounds"
             AuditLogger.log("INPUT", "SWIPE_REJECTED", reason, AuditSeverity.WARNING)
@@ -58,7 +63,7 @@ object AllowlistValidator {
     }
 
     fun validateTextInput(text: String): ValidationResult {
-        if (text.length > 2000) {
+        if (text.length > 2000 || text.contains('\u0000')) {
             val reason = "Text input payload exceeds 2000 chars limit"
             AuditLogger.log("INPUT", "TEXT_REJECTED", reason, AuditSeverity.WARNING)
             return ValidationResult.Rejected(reason)
