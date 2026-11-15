@@ -553,8 +553,8 @@ export class DeviceService {
 
       await client.query(
         `UPDATE support_sessions
-         SET status = 'REVOKED', ended_at = NOW(), end_reason = 'Receiver device self-revoked'
-         WHERE device_id = $1 AND status = 'ACTIVE'`,
+         SET status = 'REVOKED', ended_at = NOW(), end_reason = 'Device identity self-revoked'
+         WHERE (device_id = $1 OR controller_id = $1) AND status = 'ACTIVE'`,
         [deviceId]
       );
       await client.query(
