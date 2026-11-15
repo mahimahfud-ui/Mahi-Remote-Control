@@ -36,7 +36,7 @@ These are source inspections only. They do not establish that the complete workf
 
 ## Backend device-identity integration
 
-Agent 2 published `docs/BACKEND-ANDROID-CONTRACT.md` on branch `agent-backend/persistence-deployment`, latest inspected backend source head `9efa485fbe43ee874b91f3096a24b68742a55aa2`. Android client changes follow its protocol-v1 interface:
+Agent 2 published `docs/BACKEND-ANDROID-CONTRACT.md` on branch `agent-backend/persistence-deployment`, latest inspected backend source head `b62d2de53f48baa5ba8af9e82121695390e6d86d` (contract blob `ea49e58bb21acd3f6474a8b8d45992095d6e7eec`). Android client changes follow its protocol-v1 interface:
 
 - ECDSA P-256 / `secp256r1`, `SHA256withECDSA`, X.509 SPKI DER public key and ASN.1 DER signature, standard Base64.
 - Server-derived fingerprint format `sha256:<64 lowercase hex>`; private key remains exclusively in Android Keystore.
@@ -55,6 +55,7 @@ The latest inspected Agent 2 backend source contains the v1 enrollment/authentic
 | QA branch APK compile | PASS on commit `4c3e89f160861090622f59094207a34ee75603da`; later refinements need the latest run |
 | QA branch Robolectric/unit tests | PASS on commit `4c3e89f160861090622f59094207a34ee75603da`; later refinements need the latest run |
 | Protocol integration APK / instrumentation compile / unit & Robolectric checks | PASS on commit `4c3e89f160861090622f59094207a34ee75603da`; later refinements need the latest run |
+| Latest Android source refinements (remote-delete confirmation, server ACK registration) | IN PROGRESS on `a075b24cd85896d78cf40c6f223ba3710841a2ef`; runs [43742613123](https://github.com/mahimahfud-ui/Mahi-Remote-Control/actions/runs/43742613123) / [43742608584](https://github.com/mahimahfud-ui/Mahi-Remote-Control/actions/runs/43742608584) |
 | Physical execution of Android instrumentation tests | NOT RUN |
 | Physical Android device matrix | NOT RUN |
 | Android-to-Android owner approval / screen capture | NOT RUN |
@@ -82,4 +83,4 @@ The latest inspected Agent 2 backend source contains the v1 enrollment/authentic
 
 ## Release assessment
 
-**Not production-ready.** Successful compilation alone is insufficient. Backend contract integration, Android Keystore challenge-response, successful QA-branch Actions, and the physical-device checklist remain release gates.
+**Not production-ready.** A prior complete Android CI run passed, but the latest source refinements are still running through GitHub Actions. Agent 2's current backend branch contains the corresponding v1 endpoints and WSS authorization, but remains separate from the Android PR and has not been proven deployed. Merge/review/deployment coordination and the physical-device checklist remain release gates.
