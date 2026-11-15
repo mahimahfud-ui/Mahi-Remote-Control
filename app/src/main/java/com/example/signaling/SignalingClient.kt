@@ -289,7 +289,9 @@ class SignalingClient(
                     return
                 }
 
-                _connectionStatus.value = if (isReceiverRole() || !sessionToken.isNullOrBlank()) {
+                // A receiver is not authenticated until REGISTER_ACK echoes the
+                // Keystore-enrolled device ID. A successful 101 upgrade alone is insufficient.
+                _connectionStatus.value = if (!isReceiverRole() && !sessionToken.isNullOrBlank()) {
                     ConnectionStatus.AUTHENTICATED
                 } else {
                     ConnectionStatus.CONNECTED
@@ -301,7 +303,7 @@ class SignalingClient(
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
-                parseAndDispatch(text)
+                parseAndDispatch(ws, text)
             }
 
             override fun onClosing(ws: WebSocket, code: Int, reason: String) {
@@ -348,15 +350,27 @@ class SignalingClient(
         return sent
     }
 
-    private fun parseAndDispatch(text: String) {
+    private fun parseAndDispatch(socket: WebSocket, text: String) {
         try {
             val root = org.json.JSONObject(text)
             if (root.optInt("protocolVersion", -1) != 1) {
-                rejectProtocolVersion(webSocket, "Backend signaling event omitted protocolVersion: 1.")
+                rejectProtocolVersion(socket, "Backend signaling event omitted protocolVersion: 1.")
                 return
             }
 
             val type = root.optString("type", "UNKNOWN")
+            if (isReceiverRole() && type == "REGISTER_ACK") {
+                val acknowledgedDeviceId = root.optString("deviceId")
+                if (acknowledgedDeviceId != deviceIdentity.deviceId) {
+                    rejectDeviceAuthentication(
+                        socket,
+                        "Backend did not acknowledge the Android Keystore-enrolled device ID. Anonymous/browser downgrade is forbidden."
+                    )
+                    return
+                }
+                _connectionStatus.value = ConnectionStatus.AUTHENTICATED
+            }
+
             val sender = root.optString("sender", "UNKNOWN")
             val recipient = root.optString("recipient").takeIf { it.isNotBlank() && it != "null" }
             onMessageReceived(SignalingMessage(type, sender, recipient, text))
@@ -377,6 +391,16 @@ class SignalingClient(
         _connectionStatus.value = ConnectionStatus.ERROR
         socket?.close(1002, "Mahi Remote protocol v1 required")
         AuditLogger.log("SIGNALING", "PROTOCOL_VERSION_REJECTED", reason, AuditSeverity.CRITICAL)
+    }
+
+    private fun rejectDeviceAuthentication(socket: WebSocket, reason: String) {
+        // Never accept an anonymous/browser identity for a receiver device.
+        explicitDisconnect = true
+        deviceAccessToken = null
+        sessionToken = null
+        _connectionStatus.value = ConnectionStatus.ERROR
+        socket.close(1008, "Receiver device authentication failed")
+        AuditLogger.log("DEVICE_AUTH", "DEVICE_IDENTITY_MISMATCH", reason, AuditSeverity.CRITICAL)
     }
 
     fun fetchSessionIceConfig(
