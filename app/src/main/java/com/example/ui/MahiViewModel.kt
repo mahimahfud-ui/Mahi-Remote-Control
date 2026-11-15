@@ -54,7 +54,7 @@ enum class MainTab(val title: String) {
 class MahiViewModel(application: Application) : AndroidViewModel(application) {
 
     val identity = DeviceIdentity.getOrCreateIdentity(application)
-    val pairingManager = PairingManager(application)
+    val pairingManager = PairingManager(application, identity)
     val diagnosticsManager = DiagnosticsManager(application)
     val fileManager = FileManager(application)
     val appManager = AppManager(application)
@@ -130,7 +130,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
     val remoteVideoHasFrames: StateFlow<Boolean> = _remoteVideoHasFrames.asStateFlow()
 
     init {
-        signalingClient = SignalingClient(identity) { msg ->
+        signalingClient = SignalingClient(application, identity) { msg ->
             handleIncomingSignalingMessage(msg)
         }
         ScreenCaptureService.signalingSender = { type, payload, recipient ->
@@ -914,8 +914,11 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         if (req.controllerId.isNotBlank()) {
             signalingClient.send(
                 "PAIR_REJECT",
-                """{"requestId":"${req.requestId}","status":"DENIED","reason":"User declined connection request"}""",
-                req.controllerId
+                JSONObject()
+                    .put("requestId", req.requestId)
+                    .put("status", "DENIED")
+                    .put("reason", "User declined connection request")
+                    .toString()
             )
         }
     }
@@ -1003,7 +1006,10 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         pairingManager.currentPairingCode.value?.let { code ->
             signalingClient.send(
                 "REGISTER_PAIRING_CODE",
-                """{"code":"${code.code}","expiresAt":${code.expiresAtMillis}}"""
+                JSONObject()
+                    .put("code", code.code.filter(Char::isDigit))
+                    .put("expiresAtMs", code.expiresAtMillis)
+                    .toString()
             )
         }
     }

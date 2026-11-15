@@ -6,6 +6,9 @@ import com.example.filetransfer.FileManager
 import com.example.pairing.PairingManager
 import com.example.security.AllowlistValidator
 import com.example.security.DeviceIdentity
+import com.example.security.DeviceChallenge
+import com.example.security.DeviceChallengeProof
+import com.example.security.DeviceChallengeReplayGuard
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -21,6 +24,15 @@ import java.io.File
 @Config(sdk = [36])
 class ExampleRobolectricTest {
 
+
+    private fun testIdentity() = DeviceIdentity.Identity(
+        deviceId = "MAHI-TST-12345678",
+        deviceName = "Mahi Remote Test Device",
+        fingerprint = "sha256:" + "a".repeat(64),
+        publicKeyBase64 = "AA=="
+    )
+
+
     @Test
     fun testAppNameResource() {
         val context = ApplicationProvider.getApplicationContext<Context>()
@@ -30,12 +42,11 @@ class ExampleRobolectricTest {
 
     @Test
     fun testDeviceIdentityGeneration() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val identity = DeviceIdentity.getOrCreateIdentity(context)
-        assertNotNull(identity.deviceId)
-        assertTrue(identity.deviceId.startsWith("MAHI-"))
-        assertNotNull(identity.fingerprint)
-        assertTrue(identity.fingerprint.contains(":"))
+        // The Android Keystore is hardware/platform-backed and is verified by the
+        // instrumentation test on a physical/emulated Android runtime, not Robolectric.
+        val identity = testIdentity()
+        assertTrue(identity.deviceId.matches(Regex("MAHI-[A-Z0-9]{3}-[A-Z0-9]{8}")))
+        assertTrue(identity.fingerprint.matches(Regex("sha256:[0-9a-f]{64}")))
     }
 
     @Test
@@ -64,7 +75,7 @@ class ExampleRobolectricTest {
     @Test
     fun testPairingCodeAndSessionLifecycle() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val manager = PairingManager(context)
+        val manager = PairingManager(context, testIdentity())
         val codeData = manager.generateNewPairingCode()
 
         assertNotNull(codeData.code)
@@ -148,7 +159,7 @@ class ExampleRobolectricTest {
     @Test
     fun testAndroidToAndroidRoleAndControllerSession() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val manager = PairingManager(context)
+        val manager = PairingManager(context, testIdentity())
 
         // Simulate incoming pairing request from an Android Phone controller
         manager.recordIncomingOperatorRequest(
@@ -179,7 +190,7 @@ class ExampleRobolectricTest {
     @Test
     fun testSessionCannotBeActivatedWithoutApprovedRequest() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val manager = PairingManager(context)
+        val manager = PairingManager(context, testIdentity())
 
         assertFalse(manager.markSessionAuthorized("forged-session-id"))
         assertEquals(null, manager.activeSession.value)
@@ -187,10 +198,60 @@ class ExampleRobolectricTest {
     }
 
 
+
+    @Test
+    fun testChallengeCanonicalMessageAndReplayProtection() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val nonce = java.util.Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(ByteArray(32) { it.toByte() })
+        val challenge = DeviceChallenge(
+            challengeId = "4f3c8ed8-7ea6-4c3b-9f57-9f6e0a3f7ca1",
+            purpose = "AUTHENTICATE",
+            nonce = nonce,
+            fingerprint = "sha256:" + "a".repeat(64),
+            signatureAlgorithm = "SHA256withECDSA",
+            expiresAtMs = 121_000L
+        )
+
+        assertTrue(
+            DeviceChallengeProof.isValid(
+                "MAHI-TST-12345678",
+                "sha256:" + "a".repeat(64),
+                "AUTHENTICATE",
+                challenge,
+                nowMillis = 1_000L
+            )
+        )
+        val canonical = String(
+            DeviceChallengeProof.canonicalMessage("MAHI-TST-12345678", challenge),
+            Charsets.UTF_8
+        )
+        assertEquals(
+            "MAHI-REMOTE-DEVICE-PROOF\n1\nAUTHENTICATE\n4f3c8ed8-7ea6-4c3b-9f57-9f6e0a3f7ca1\nMAHI-TST-12345678\nsha256:" + "a".repeat(64) + "\n" + nonce + "\n121000",
+            canonical
+        )
+
+        val replayGuard = DeviceChallengeReplayGuard(context)
+        assertTrue(replayGuard.consume(challenge.challengeId))
+        assertFalse(replayGuard.consume(challenge.challengeId))
+
+        val expired = challenge.copy(expiresAtMs = 999L)
+        assertFalse(
+            DeviceChallengeProof.isValid(
+                "MAHI-TST-12345678",
+                challenge.fingerprint,
+                "AUTHENTICATE",
+                expired,
+                nowMillis = 1_000L
+            )
+        )
+    }
+
+
     @Test
     fun testRejectedPairingCannotEstablishSession() {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val manager = PairingManager(context)
+        val manager = PairingManager(context, testIdentity())
         manager.recordIncomingOperatorRequest(
             controllerId = "controller-rejected",
             operatorName = "Rejected Controller",

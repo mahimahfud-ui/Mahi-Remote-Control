@@ -12,10 +12,12 @@ import org.json.JSONObject
 import java.security.SecureRandom
 import java.util.UUID
 
-class PairingManager(private val context: Context) {
+class PairingManager(
+    private val context: Context,
+    private val identity: DeviceIdentity.Identity = DeviceIdentity.getOrCreateIdentity(context)
+) {
 
     private val secureRandom = SecureRandom()
-    private val identity = DeviceIdentity.getOrCreateIdentity(context)
     @Volatile private var browserAccessUrl: String? = null
 
     private val _currentPairingCode = MutableStateFlow<PairingCodeData?>(null)

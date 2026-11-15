@@ -4,6 +4,10 @@ import com.example.security.AuditLogger
 import com.example.security.AuditSeverity
 import com.example.BuildConfig
 import com.example.security.DeviceIdentity
+import android.content.Context
+import okhttp3.HttpUrl
+import java.security.SecureRandom
+import android.util.Base64
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -36,6 +40,7 @@ data class SignalingMessage(
 )
 
 class SignalingClient(
+    private val context: Context,
     private val deviceIdentity: DeviceIdentity.Identity,
     private val onMessageReceived: (SignalingMessage) -> Unit
 ) {
@@ -47,7 +52,11 @@ class SignalingClient(
         .build()
 
     private var webSocket: WebSocket? = null
+    private val deviceAuthenticationClient = DeviceAuthenticationClient(context, deviceIdentity, client)
+    @Volatile private var deviceAccessToken: String? = null
     @Volatile private var sessionToken: String? = null
+    @Volatile private var controllerFingerprint: String? = null
+    @Volatile private var deviceAuthInFlight = false
     private val scope = CoroutineScope(Dispatchers.IO + Job())
     private var reconnectJob: Job? = null
 
@@ -71,7 +80,11 @@ class SignalingClient(
         if (sessionToken != null) {
             _connectionStatus.value = ConnectionStatus.AUTHENTICATED
         } else if (_serverUrl.value.isNotBlank() && webSocket != null) {
-            _connectionStatus.value = ConnectionStatus.CONNECTED
+            _connectionStatus.value = if (isReceiverRole() && !deviceAccessToken.isNullOrBlank()) {
+                ConnectionStatus.AUTHENTICATED
+            } else {
+                ConnectionStatus.CONNECTED
+            }
         }
     }
 
@@ -80,8 +93,22 @@ class SignalingClient(
     fun setRole(role: String) {
         if (currentRole != role) {
             currentRole = role
+            deviceAccessToken = null
+            sessionToken = null
+            controllerFingerprint = null
             reconnect()
         }
+    }
+
+    private fun isReceiverRole(): Boolean = currentRole.equals("RECEIVER", ignoreCase = true)
+
+    private fun newControllerFingerprint(): String {
+        val bytes = ByteArray(24)
+        SecureRandom().nextBytes(bytes)
+        return Base64.encodeToString(
+            bytes,
+            Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP
+        )
     }
 
     fun connect() {
@@ -109,7 +136,12 @@ class SignalingClient(
         configRequestInFlight = true
         _connectionStatus.value = ConnectionStatus.CONNECTING
         val request = try {
-            Request.Builder().url("$baseUrl/api/v1/config").get().build()
+            Request.Builder()
+                .url("$baseUrl/api/v1/config")
+                .header("X-Mahi-Protocol-Version", "1")
+                .header("Accept", "application/json")
+                .get()
+                .build()
         } catch (e: Exception) {
             configRequestInFlight = false
             _connectionStatus.value = ConnectionStatus.ERROR
@@ -136,6 +168,10 @@ class SignalingClient(
                     }
                     try {
                         val config = org.json.JSONObject(responseText)
+                        if (it.header("X-Mahi-Protocol-Version") != "1" ||
+                            config.optInt("protocolVersion", -1) != 1) {
+                            throw IllegalStateException("Backend did not confirm Mahi Remote protocol version 1.")
+                        }
                         val url = config.optString("signalingUrl")
                         if (!url.startsWith("wss://")) {
                             _connectionStatus.value = ConnectionStatus.ERROR
@@ -168,32 +204,100 @@ class SignalingClient(
     private fun connectWebSocket() {
         if (_connectionStatus.value == ConnectionStatus.CONNECTING ||
             _connectionStatus.value == ConnectionStatus.CONNECTED ||
-            _connectionStatus.value == ConnectionStatus.AUTHENTICATED) {
+            _connectionStatus.value == ConnectionStatus.AUTHENTICATED ||
+            deviceAuthInFlight) {
             return
         }
 
         _connectionStatus.value = ConnectionStatus.CONNECTING
-        AuditLogger.log("SIGNALING", "CONNECTING", "Establishing signaling channel to ${_serverUrl.value} as $currentRole", AuditSeverity.INFO)
+        AuditLogger.log("SIGNALING", "CONNECTING", "Establishing protocol-v1 signaling channel as $currentRole", AuditSeverity.INFO)
 
+        if (isReceiverRole()) {
+            deviceAuthInFlight = true
+            scope.launch {
+                try {
+                    // Every receiver socket obtains a fresh server challenge proof and short-lived token.
+                    val access = deviceAuthenticationClient.authenticate()
+                    deviceAccessToken = access.value
+                    openWebSocket()
+                } catch (error: Exception) {
+                    deviceAccessToken = null
+                    _connectionStatus.value = ConnectionStatus.ERROR
+                    AuditLogger.log(
+                        "DEVICE_AUTH",
+                        "AUTHENTICATION_FAILED",
+                        error.message ?: "Device enrollment/authentication failed closed.",
+                        AuditSeverity.CRITICAL
+                    )
+                    scheduleReconnect()
+                } finally {
+                    deviceAuthInFlight = false
+                }
+            }
+        } else {
+            openWebSocket()
+        }
+    }
+
+    private fun openWebSocket() {
+        val baseUrl = _serverUrl.value
         val request = try {
-            Request.Builder()
-                .url(_serverUrl.value)
-                .addHeader("X-Device-Id", deviceIdentity.deviceId)
-                .addHeader("X-Device-Fingerprint", deviceIdentity.fingerprint)
-                .addHeader("X-Device-Name", deviceIdentity.deviceName)
-                .addHeader("X-Client-Role", currentRole)
-                .build()
-        } catch (e: Exception) {
-            _connectionStatus.value = ConnectionStatus.DISCONNECTED
-            AuditLogger.log("SIGNALING", "INVALID_URL", "Could not build request for ${_serverUrl.value}: ${e.message}", AuditSeverity.WARNING)
+            val parsedUrl = baseUrl.toHttpUrlOrNull()
+                ?: throw IllegalArgumentException("Invalid signaling URL.")
+            val requestUrl = if (isReceiverRole()) {
+                parsedUrl
+            } else {
+                val ephemeralFingerprint = newControllerFingerprint()
+                controllerFingerprint = ephemeralFingerprint
+                parsedUrl.newBuilder()
+                    .addQueryParameter("controllerFingerprint", ephemeralFingerprint)
+                    .build()
+            }
+
+            val builder = Request.Builder()
+                .url(requestUrl)
+                .header("X-Mahi-Protocol-Version", "1")
+
+            if (isReceiverRole()) {
+                val token = deviceAccessToken
+                    ?: throw IllegalStateException("Receiver device authentication is required before WSS.")
+                builder.header("Authorization", "Bearer $token")
+                builder.header("X-Device-Name", deviceIdentity.deviceName)
+            }
+            builder.build()
+        } catch (error: Exception) {
+            _connectionStatus.value = ConnectionStatus.ERROR
+            AuditLogger.log("SIGNALING", "INVALID_OR_UNAUTHORIZED_SOCKET", error.message ?: "Could not build authenticated WSS request.", AuditSeverity.CRITICAL)
+            scheduleReconnect()
             return
         }
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
-                _connectionStatus.value = ConnectionStatus.CONNECTED
-                AuditLogger.log("SIGNALING", "CONNECTED", "WebSocket transport connected. Session authorization is still required.", AuditSeverity.INFO)
-                send("REGISTER", """{"deviceId":"${deviceIdentity.deviceId}","model":"${deviceIdentity.deviceName}"}""")
+                if (response.header("X-Mahi-Protocol-Version") != "1") {
+                    _connectionStatus.value = ConnectionStatus.ERROR
+                    ws.close(1002, "Mahi Remote protocol version mismatch")
+                    AuditLogger.log("SIGNALING", "PROTOCOL_VERSION_REJECTED", "Backend did not confirm protocol version 1 on WSS.", AuditSeverity.CRITICAL)
+                    scheduleReconnect()
+                    return
+                }
+
+                _connectionStatus.value = if (isReceiverRole() || !sessionToken.isNullOrBlank()) {
+                    ConnectionStatus.AUTHENTICATED
+                } else {
+                    ConnectionStatus.CONNECTED
+                }
+                AuditLogger.log("SIGNALING", "CONNECTED", "Protocol-v1 WSS transport established.", AuditSeverity.INFO)
+
+                if (isReceiverRole()) {
+                    send(
+                        "REGISTER",
+                        org.json.JSONObject()
+                            .put("deviceId", deviceIdentity.deviceId)
+                            .put("model", deviceIdentity.deviceName)
+                            .toString()
+                    )
+                }
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
@@ -203,12 +307,22 @@ class SignalingClient(
             override fun onClosing(ws: WebSocket, code: Int, reason: String) {
                 ws.close(1000, null)
                 _connectionStatus.value = ConnectionStatus.DISCONNECTED
-                AuditLogger.log("SIGNALING", "CLOSING", "Signaling connection closing: $reason", AuditSeverity.INFO)
+                AuditLogger.log("SIGNALING", "CLOSING", "Signaling socket closing ($code): $reason", AuditSeverity.INFO)
+                scheduleReconnect()
+            }
+
+            override fun onClosed(ws: WebSocket, code: Int, reason: String) {
+                _connectionStatus.value = ConnectionStatus.DISCONNECTED
+                scheduleReconnect()
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                 _connectionStatus.value = ConnectionStatus.ERROR
-                AuditLogger.log("SIGNALING", "ERROR", "Signaling socket error: ${t.message}. Reconnection armed.", AuditSeverity.WARNING)
+                if (response?.code == 401 || response?.code == 403 || response?.code == 426) {
+                    deviceAccessToken = null
+                    sessionToken = null
+                }
+                AuditLogger.log("SIGNALING", "ERROR", "Protocol-v1 signaling socket failed: ${t.message}. Reauthentication/reconnect armed.", AuditSeverity.WARNING)
                 scheduleReconnect()
             }
         })
@@ -218,8 +332,9 @@ class SignalingClient(
         val tokenJson = sessionToken?.let { org.json.JSONObject.quote(it) } ?: "null"
         val json = """
             {
+              "protocolVersion": 1,
               "type": "$type",
-              "sender": "${deviceIdentity.deviceId}",
+              "sender": "${if (isReceiverRole()) deviceIdentity.deviceId else controllerFingerprint.orEmpty()}",
               "recipient": ${if (recipient != null) org.json.JSONObject.quote(recipient) else "null"},
               "sessionToken": $tokenJson,
               "payload": ${if (payload.startsWith("{") || payload.startsWith("[")) payload else org.json.JSONObject.quote(payload)},
@@ -262,6 +377,7 @@ class SignalingClient(
             Request.Builder()
                 .url("$baseUrl/api/v1/turn-credentials")
                 .header("Authorization", "Bearer $token")
+                .header("X-Mahi-Protocol-Version", "1")
                 .get()
                 .build()
         } catch (e: Exception) {
@@ -283,6 +399,11 @@ class SignalingClient(
                     }
                     try {
                         val root = org.json.JSONObject(body)
+                        if (it.header("X-Mahi-Protocol-Version") != "1" ||
+                            root.optInt("protocolVersion", -1) != 1) {
+                            onFailure("Backend did not confirm Mahi Remote protocol version 1 for TURN credentials.")
+                            return
+                        }
                         val servers = root.optJSONArray("iceServers")
                         if (servers == null || servers.length() == 0) {
                             onFailure("The backend returned no ICE servers.")
@@ -317,6 +438,7 @@ class SignalingClient(
         reconnectJob?.cancel()
         webSocket?.close(1000, "Device disconnecting")
         webSocket = null
+        deviceAccessToken = null
         _connectionStatus.value = ConnectionStatus.DISCONNECTED
     }
 }

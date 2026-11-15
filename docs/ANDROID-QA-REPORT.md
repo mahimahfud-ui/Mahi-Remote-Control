@@ -34,11 +34,17 @@ Source contains Android controller/receiver flows, six-digit pairing code and QR
 
 These are source inspections only. They do not establish that the complete workflows work on physical devices. No decoded video frame, real remote input, file transfer between phones, reconnect, or TURN relay was physically verified in this task.
 
-## Backend device-identity integration blocker
+## Backend device-identity integration
 
-The baseline repository tree does not contain `docs/BACKEND-ANDROID-CONTRACT.md`. Agent 2 owns that versioned contract. Android currently creates an EC keypair in Android Keystore on supported devices, but the registration/signaling flow does not yet perform the contract-defined public-key registration and one-time challenge-response. The current `DeviceIdentity` fallback when Android Keystore is unavailable is not cryptographic device proof. Do not treat a generated device ID or fingerprint as authentication.
+Agent 2 published `docs/BACKEND-ANDROID-CONTRACT.md` on branch `agent-backend/persistence-deployment`, source head `7c2b1387be4166da8895446aa93a4da3d14b74b1`. Android client changes follow its protocol-v1 interface:
 
-This branch deliberately does not invent a key algorithm, challenge payload, nonce format, signature encoding, or replay policy. Complete the Android protocol adapter only after Agent 2 publishes the contract, then add contract-vector and replay tests.
+- ECDSA P-256 / `secp256r1`, `SHA256withECDSA`, X.509 SPKI DER public key and ASN.1 DER signature, standard Base64.
+- Server-derived fingerprint format `sha256:<64 lowercase hex>`; private key remains exclusively in Android Keystore.
+- Exact LF-delimited `MAHI-REMOTE-DEVICE-PROOF` canonical challenge message, purpose / expiry / nonce / fingerprint validation, and local one-use challenge guard.
+- Enrollment/authentication REST calls use protocol-version headers and bodies. Receiver WSS uses the short-lived device bearer token; client-supplied device ID/fingerprint headers are no longer sent as proof. Android controller uses a random ephemeral `controllerFingerprint` query value.
+- Device access tokens remain in memory and are not persisted.
+
+The contract is published, but the Agent 2 backend source at the above revision does not yet contain the enrollment/authentication route handlers or authenticated receiver WSS handshake. Until those endpoints are implemented and deployed, the Android receiver intentionally fails closed rather than falling back to the legacy unverified registration flow. Key rotation is specified by the contract but is not implemented in this Android PR.
 
 ## Verification status
 
@@ -46,7 +52,7 @@ This branch deliberately does not invent a key algorithm, challenge payload, non
 |---|---|
 | Baseline APK compile (run 43737218111) | PASS |
 | Baseline Robolectric/unit tests (run 43737218111) | FAIL — JDK 17 with API 36 |
-| QA branch APK compile | Pending GitHub Actions |
+| QA branch APK compile | PASS on earlier QA commit; re-run required for protocol integration commit |
 | QA branch Robolectric/unit tests | Pending GitHub Actions |
 | Physical Android device matrix | NOT RUN |
 | Android-to-Android owner approval / screen capture | NOT RUN |
