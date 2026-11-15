@@ -131,6 +131,42 @@ class ExampleRobolectricTest {
         assertEquals(null, manager.activeSession.value)
     }
 
+
+    @Test
+    fun testTransferProgressDoesNotFabricateSpeedOrCompletion() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val fileManager = FileManager(context)
+
+        val unknownSize = fileManager.trackTransfer(
+            fileName = "unknown.bin",
+            totalBytes = 0,
+            transferredBytes = 0,
+            isUpload = true,
+            status = "IN_PROGRESS"
+        )
+        assertEquals(0, unknownSize.percent)
+        assertEquals(0, unknownSize.speedKbps)
+
+        val overReported = fileManager.trackTransfer(
+            fileName = "bounded.bin",
+            totalBytes = 100,
+            transferredBytes = 150,
+            isUpload = false,
+            status = "IN_PROGRESS"
+        )
+        assertEquals(100, overReported.percent)
+        assertEquals(0, overReported.speedKbps)
+
+        val completed = fileManager.trackTransfer(
+            fileName = "done.bin",
+            totalBytes = 100,
+            transferredBytes = 100,
+            isUpload = false,
+            status = "COMPLETED"
+        )
+        assertEquals(100, completed.percent)
+    }
+
     @Test
     fun testFileManagerTwoWayTransferAndSha256() {
         val context = ApplicationProvider.getApplicationContext<Context>()
