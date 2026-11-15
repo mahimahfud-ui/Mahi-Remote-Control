@@ -483,6 +483,67 @@ export class DeviceService {
     });
   }
 
+  public static async revokeDevice(
+    deviceId: string,
+    fingerprint: string,
+    keyVersion: number
+  ): Promise<Array<{ sessionId: string; participantId: string }>> {
+    return Database.transaction(async (client) => {
+      const deviceResult = await client.query(
+        `SELECT fingerprint, key_version, is_revoked
+         FROM devices WHERE device_id = $1 FOR UPDATE`,
+        [deviceId]
+      );
+      const device = deviceResult.rows[0];
+      if (!device || device.fingerprint !== fingerprint || Number(device.key_version) !== keyVersion) {
+        throw new DeviceServiceError('DEVICE_REVOKED', 'The current device identity is not authorized to revoke this record.');
+      }
+      if (device.is_revoked) return [];
+
+      const activeSessions = await client.query(
+        `SELECT s.session_id::text, p.participant_id
+         FROM support_sessions s
+         JOIN session_participants p ON p.session_id = s.session_id
+         WHERE s.device_id = $1 AND s.status = 'ACTIVE' AND s.expires_at > NOW()`,
+        [deviceId]
+      );
+
+      await client.query(
+        `UPDATE support_sessions
+         SET status = 'REVOKED', ended_at = NOW(), end_reason = 'Receiver device self-revoked'
+         WHERE device_id = $1 AND status = 'ACTIVE'`,
+        [deviceId]
+      );
+      await client.query(
+        `UPDATE pairing_requests
+         SET status = 'CANCELLED', decided_at = NOW()
+         WHERE receiver_id = $1 AND status = 'PENDING'`,
+        [deviceId]
+      );
+      await client.query(
+        'UPDATE pairing_codes SET consumed_at = COALESCE(consumed_at, NOW()) WHERE device_id = $1',
+        [deviceId]
+      );
+      await client.query('DELETE FROM device_presence WHERE device_id = $1', [deviceId]);
+      await client.query('DELETE FROM signaling_connections WHERE entity_id = $1', [deviceId]);
+      await client.query(
+        `UPDATE devices
+         SET is_revoked = TRUE, is_online = FALSE, key_version = key_version + 1, updated_at = NOW()
+         WHERE device_id = $1`,
+        [deviceId]
+      );
+      await client.query(
+        `INSERT INTO audit_events (actor_id, device_id, category, action, details)
+         VALUES ($1, $1, 'DEVICE', 'SELF_REVOKED', $2::jsonb)`,
+        [deviceId, JSON.stringify({ previousKeyVersion: keyVersion })]
+      );
+      return activeSessions.rows.map((row) => ({
+        sessionId: row.session_id,
+        participantId: row.participant_id,
+      }));
+    });
+  }
+
   public static async hasActiveSessionForDevice(deviceId: string): Promise<boolean> {
     const result = await Database.query(
       `SELECT 1 FROM support_sessions
