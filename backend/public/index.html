@@ -52,10 +52,10 @@
         </span>
         <div id="device-info-header">
           <span id="device-model-text">Android Phone</span>
-          <small id="device-status-text">Android · Connected</small>
+          <small id="device-status-text">Waiting for approved session</small>
         </div>
       </div>
-      <span class="chip" id="quality-chip"><i class="dot"></i><span id="latency-text">Excellent · 28 ms</span></span>
+      <span class="chip" id="quality-chip"><i class="dot"></i><span id="latency-text">Latency unavailable</span></span>
       <span class="chip hide-sm mono" title="Session duration" id="dur">00:00:00</span>
       <span class="chip hide-sm">
         <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -75,7 +75,7 @@
     </header>
 
     <div class="workspace">
-      <section class="stage" data-state="loading" aria-label="Live phone screen">
+      <section class="stage" data-state="empty" aria-label="Live phone screen">
         <div class="screen">
           <canvas id="screen" aria-label="Phone screen. Click to tap."></canvas>
           <video id="remote-video" playsinline autoplay muted style="display:none"></video>
@@ -167,37 +167,18 @@
 
           <!-- Files Panel -->
           <div class="panel" id="p-files">
-            <div class="crumbs" id="crumbs">
-              <b>Internal storage</b>/<b>Documents</b>
+            <div class="file-actions">
+              <div class="crumbs" id="crumbs">Internal storage / Documents</div>
+              <div class="file-action-buttons">
+                <button class="btn" id="file-up" type="button">Up</button>
+                <button class="btn" id="file-refresh" type="button">Refresh</button>
+                <button class="btn primary" id="file-upload-btn" type="button">Upload file</button>
+                <input id="file-upload-input" type="file" hidden>
+              </div>
             </div>
+            <p class="micro" id="file-transfer-status" role="status" aria-live="polite"></p>
             <ul class="list" id="file-list">
-              <li class="row">
-                <div class="ico">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
-                </div>
-                <div class="meta"><b>Camera</b><span>14 items · Today</span></div>
-                <button class="icon-btn" aria-label="Download Camera" data-toast="Download queued: Camera">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V5M7 10l5-5 5 5M5 20h14"/></svg>
-                </button>
-              </li>
-              <li class="row">
-                <div class="ico">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
-                </div>
-                <div class="meta"><b>Downloads</b><span>32 items · Yesterday</span></div>
-                <button class="icon-btn" aria-label="Download Downloads" data-toast="Download queued: Downloads">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V5M7 10l5-5 5 5M5 20h14"/></svg>
-                </button>
-              </li>
-              <li class="row">
-                <div class="ico">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l4 4v14H7z"/></svg>
-                </div>
-                <div class="meta"><b>report.pdf</b><span>1.4 MB · Today</span></div>
-                <button class="icon-btn" aria-label="Download report.pdf" data-toast="Download queued: report.pdf">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V5M7 10l5-5 5 5M5 20h14"/></svg>
-                </button>
-              </li>
+              <li class="row"><div class="meta"><b>Waiting for phone</b><span>Connect and open Files to browse its permitted folders.</span></div></li>
             </ul>
           </div>
 
@@ -206,42 +187,30 @@
             <div class="grid2">
               <div class="card stat">
                 <span>Battery</span>
-                <b id="diag-battery">85%</b>
-                <div class="bar"><i id="diag-battery-bar" style="width:85%"></i></div>
+                <b id="diag-battery">--</b>
+                <div class="bar"><i id="diag-battery-bar" style="width:0%"></i></div>
               </div>
               <div class="card stat">
                 <span>Storage</span>
-                <b id="diag-storage">64 GB free</b>
-                <div class="bar"><i style="width:50%"></i></div>
+                <b id="diag-storage">--</b>
+                <div class="bar"><i style="width:0%"></i></div>
               </div>
               <div class="card stat">
                 <span>Memory</span>
-                <b id="diag-memory">3.4 / 8 GB</b>
-                <div class="bar"><i style="width:42%"></i></div>
+                <b id="diag-memory">--</b>
+                <div class="bar"><i style="width:0%"></i></div>
               </div>
               <div class="card stat">
                 <span>Temperature</span>
-                <b id="diag-temp">33.5 °C</b>
-                <div class="bar"><i style="width:30%"></i></div>
+                <b id="diag-temp">--</b>
+                <div class="bar"><i style="width:0%"></i></div>
               </div>
             </div>
             <ul class="list">
-              <li class="row">
-                <div class="meta"><b>Latency</b><span>Round trip to phone</span></div>
-                <span class="mono" id="diag-latency">28 ms</span>
-              </li>
-              <li class="row">
-                <div class="meta"><b>Frame rate</b><span>Incoming video</span></div>
-                <span class="mono" id="diag-fps">60 fps</span>
-              </li>
-              <li class="row">
-                <div class="meta"><b>Bitrate</b><span>Adaptive</span></div>
-                <span class="mono" id="diag-bitrate">4.2 Mbps</span>
-              </li>
-              <li class="row">
-                <div class="meta"><b>Connection</b><span>Direct peer-to-peer</span></div>
-                <span class="chip"><i class="dot"></i>Secure</span>
-              </li>
+              <li class="row"><div class="meta"><b>Latency</b><span>Round trip to phone</span></div><span class="mono" id="diag-latency">--</span></li>
+              <li class="row"><div class="meta"><b>Frame rate</b><span>Incoming video</span></div><span class="mono" id="diag-fps">--</span></li>
+              <li class="row"><div class="meta"><b>Bitrate</b><span>Adaptive</span></div><span class="mono" id="diag-bitrate">--</span></li>
+              <li class="row"><div class="meta"><b>Connection</b><span>Reported by the active media session</span></div><span class="chip" id="diag-connection">--</span></li>
             </ul>
           </div>
 
@@ -249,34 +218,7 @@
           <div class="panel" id="p-apps" hidden>
             <input class="search" id="search" type="search" placeholder="Search installed apps" aria-label="Search installed apps">
             <ul class="list" id="app-list">
-              <li class="row">
-                <div class="ico">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/></svg>
-                </div>
-                <div class="meta"><b>Chrome</b><span>v128.0 · Google LLC</span></div>
-                <button class="btn" data-toast="Opening Chrome on phone" onclick="window.sendAppLaunch('com.android.chrome')">Open</button>
-              </li>
-              <li class="row">
-                <div class="ico">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/></svg>
-                </div>
-                <div class="meta"><b>Messages</b><span>v9.4 · Google LLC</span></div>
-                <button class="btn" data-toast="Opening Messages on phone" onclick="window.sendAppLaunch('com.google.android.apps.messaging')">Open</button>
-              </li>
-              <li class="row">
-                <div class="ico">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/></svg>
-                </div>
-                <div class="meta"><b>Maps</b><span>v11.2 · Navigation</span></div>
-                <button class="btn" data-toast="Opening Maps on phone" onclick="window.sendAppLaunch('com.google.android.apps.maps')">Open</button>
-              </li>
-              <li class="row">
-                <div class="ico">
-                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/></svg>
-                </div>
-                <div class="meta"><b>Mahi Companion</b><span>v1.0 · Active Agent</span></div>
-                <button class="btn" data-toast="Opening Mahi Companion on phone" onclick="window.sendAppLaunch('com.aistudio.mahiremote.rcvkm')">Open</button>
-              </li>
+              <li class="row"><div class="meta"><b>Waiting for phone</b><span>Open Apps after a session is connected.</span></div></li>
             </ul>
           </div>
 

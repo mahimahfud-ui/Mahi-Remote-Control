@@ -65,6 +65,7 @@ import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -77,13 +78,16 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.controller.RemoteViewerTab
 import com.example.ui.MahiViewModel
+import org.webrtc.SurfaceViewRenderer
 import com.example.ui.theme.CyanAccent
 import com.example.ui.theme.DarkCharcoalBg
 import com.example.ui.theme.DarkSurface
@@ -102,6 +106,7 @@ fun ControllerViewerScreen(viewModel: MahiViewModel) {
     val session = viewModel.activeControllerSession.collectAsState().value ?: return
     val selectedViewerTab by viewModel.remoteViewerTab.collectAsState()
     val remoteMetrics by viewModel.remoteMetrics.collectAsState()
+    val hasVideoFrames by viewModel.remoteVideoHasFrames.collectAsState()
     val remoteTelemetry by viewModel.remoteTelemetry.collectAsState()
 
     var keyboardInput by remember { mutableStateOf("") }
@@ -130,7 +135,11 @@ fun ControllerViewerScreen(viewModel: MahiViewModel) {
                             )
                         }
                         Text(
-                            text = "${remoteMetrics.roundTripTimeMs} ms • ${remoteMetrics.currentFps} FPS • ${remoteMetrics.bitrateKbps / 1000f} Mbps",
+                            text = if (hasVideoFrames) {
+                                "${remoteMetrics.roundTripTimeMs} ms • ${remoteMetrics.currentFps} FPS • ${remoteMetrics.bitrateKbps / 1000f} Mbps"
+                            } else {
+                                "Waiting for real video frames"
+                            },
                             color = CyanAccent,
                             fontSize = 10.sp,
                             fontFamily = FontFamily.Monospace
@@ -243,37 +252,40 @@ private fun RemoteScreenViewport(
     onKeyboardInputChanged: (String) -> Unit,
     onSendText: () -> Unit
 ) {
-    val displayMetrics by viewModel.remoteDisplayMetrics.collectAsState()
+    val context = LocalContext.current
+    val hasVideoFrames by viewModel.remoteVideoHasFrames.collectAsState()
+    val videoRenderer = remember { SurfaceViewRenderer(context) }
+    DisposableEffect(videoRenderer) {
+        viewModel.attachRemoteVideoRenderer(videoRenderer)
+        onDispose { viewModel.detachRemoteVideoRenderer(videoRenderer) }
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(4.dp),
+            .padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.SpaceBetween
     ) {
-        // True Fullscreen Live Screen Container with Receiver Aspect Ratio Preservation
+        // Live Screen Canvas Container with 9:16 aspect ratio
         BoxWithConstraints(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
             contentAlignment = Alignment.Center
         ) {
-            val receiverAspect = if (displayMetrics.width > 0 && displayMetrics.height > 0) {
-                displayMetrics.width.toFloat() / displayMetrics.height.toFloat()
-            } else {
-                9f / 19.5f
-            }
+            val canvasWidth = this.maxWidth
+            val canvasHeight = this.maxHeight
 
             Box(
                 modifier = Modifier
-                    .aspectRatio(receiverAspect)
+                    .aspectRatio(9f / 16f)
                     .fillMaxHeight()
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(16.dp))
                     .background(Color.Black)
-                    .border(1.dp, CyanAccent.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                    .border(2.dp, CyanAccent.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
                     .testTag("remote_screen_canvas")
-                    .pointerInput(displayMetrics) {
+                    .pointerInput(Unit) {
                         detectTapGestures(
                             onTap = { offset ->
                                 touchRipples.add(offset)
@@ -290,7 +302,7 @@ private fun RemoteScreenViewport(
                             }
                         )
                     }
-                    .pointerInput(displayMetrics) {
+                    .pointerInput(Unit) {
                         var startX = 0f
                         var startY = 0f
                         var startMillis = 0L
@@ -302,9 +314,9 @@ private fun RemoteScreenViewport(
                                 startMillis = System.currentTimeMillis()
                             },
                             onDragEnd = {
-                                // Gesture completed
+                                // Handled
                             },
-                            onDrag = { change, _ ->
+                            onDrag = { change, dragAmount ->
                                 change.consume()
                                 val currentX = change.position.x
                                 val currentY = change.position.y
@@ -316,63 +328,42 @@ private fun RemoteScreenViewport(
                         )
                     }
             ) {
-                // Actual WebRTC SurfaceViewRenderer frame display
-                androidx.compose.ui.viewinterop.AndroidView(
-                    factory = { ctx ->
-                        org.webrtc.SurfaceViewRenderer(ctx).apply {
-                            setEnableHardwareScaler(true)
-                            setMirror(false)
-                        }
-                    },
+                AndroidView(
+                    factory = { videoRenderer },
                     modifier = Modifier.fillMaxSize()
                 )
 
-                // Overlay Canvas for local operator touch ripples
-                Canvas(modifier = Modifier.fillMaxSize()) {
-                    touchRipples.forEach { ripple ->
-                        drawCircle(
-                            color = CyanAccent.copy(alpha = 0.5f),
-                            radius = 24.dp.toPx(),
-                            center = ripple
+                if (!hasVideoFrames) {
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.ScreenShare,
+                            contentDescription = null,
+                            tint = CyanAccent.copy(alpha = 0.8f),
+                            modifier = Modifier.size(44.dp)
                         )
-                        drawCircle(
-                            color = Color.White.copy(alpha = 0.7f),
-                            radius = 10.dp.toPx(),
-                            center = ripple
+                        Text(
+                            text = "WAITING FOR REMOTE VIDEO",
+                            color = CyanAccent,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.sp
+                        )
+                        Text(
+                            text = "The receiver must approve screen sharing and start its Android media session. The real screen will appear here when the first video frame arrives.",
+                            color = TextSecondary,
+                            fontSize = 11.sp,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
                     }
                 }
 
-                // Center Live Status (fades once frames stream)
-                Column(
-                    modifier = Modifier
-                        .align(Alignment.Center)
-                        .padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        Icons.Default.ScreenShare,
-                        contentDescription = null,
-                        tint = CyanAccent.copy(alpha = 0.7f),
-                        modifier = Modifier.size(40.dp)
-                    )
-                    Text(
-                        text = "LIVE REMOTE MIRRORING",
-                        color = CyanAccent,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.sp
-                    )
-                    Text(
-                        text = "Display: ${displayMetrics.width}×${displayMetrics.height} • Original phone screen is mirrored directly.",
-                        color = TextSecondary,
-                        fontSize = 10.sp,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                    )
-                }
-
-                // Minimal floating emergency quick controls overlay (non-intrusive)
+                // Volume & Quick System Controls overlay in top-right of canvas
                 Row(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
@@ -382,30 +373,30 @@ private fun RemoteScreenViewport(
                     IconButton(
                         onClick = { viewModel.sendRemoteVolume("DOWN") },
                         modifier = Modifier
-                            .size(28.dp)
-                            .background(DarkSurface.copy(alpha = 0.75f), CircleShape)
+                            .size(32.dp)
+                            .background(DarkSurface.copy(alpha = 0.8f), CircleShape)
                     ) {
-                        Icon(Icons.Default.VolumeDown, contentDescription = "Vol Down", tint = TextPrimary, modifier = Modifier.size(14.dp))
+                        Icon(Icons.Default.VolumeDown, contentDescription = "Vol Down", tint = TextPrimary, modifier = Modifier.size(16.dp))
                     }
                     IconButton(
                         onClick = { viewModel.sendRemoteVolume("UP") },
                         modifier = Modifier
-                            .size(28.dp)
-                            .background(DarkSurface.copy(alpha = 0.75f), CircleShape)
+                            .size(32.dp)
+                            .background(DarkSurface.copy(alpha = 0.8f), CircleShape)
                     ) {
-                        Icon(Icons.Default.VolumeUp, contentDescription = "Vol Up", tint = TextPrimary, modifier = Modifier.size(14.dp))
+                        Icon(Icons.Default.VolumeUp, contentDescription = "Vol Up", tint = TextPrimary, modifier = Modifier.size(16.dp))
                     }
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(4.dp))
+        Spacer(modifier = Modifier.height(6.dp))
 
-        // Quick Keyboard Input Bar for typing into remote fields
+        // Quick Keyboard Input Bar
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 2.dp),
+                .padding(horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
@@ -416,7 +407,7 @@ private fun RemoteScreenViewport(
                 singleLine = true,
                 modifier = Modifier
                     .weight(1f)
-                    .height(46.dp)
+                    .height(48.dp)
                     .testTag("remote_text_field"),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = CyanAccent,
@@ -426,18 +417,73 @@ private fun RemoteScreenViewport(
                     focusedContainerColor = DarkSurfaceElevated,
                     unfocusedContainerColor = DarkSurfaceElevated
                 ),
-                shape = RoundedCornerShape(8.dp)
+                shape = RoundedCornerShape(10.dp)
             )
 
             IconButton(
                 onClick = onSendText,
                 modifier = Modifier
-                    .size(46.dp)
-                    .clip(RoundedCornerShape(8.dp))
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(10.dp))
                     .background(CyanAccent)
                     .testTag("send_remote_text_btn")
             ) {
                 Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = DarkCharcoalBg)
+            }
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Android System Navigation Floating Bar
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = DarkSurface),
+            border = BorderStroke(1.dp, DarkSurfaceBorder),
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp, horizontal = 8.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                NavActionItem(
+                    icon = Icons.AutoMirrored.Filled.ArrowBack,
+                    label = "Back",
+                    onClick = { viewModel.sendRemoteGlobalAction("BACK") },
+                    testTag = "nav_back_btn"
+                )
+                NavActionItem(
+                    icon = Icons.Default.Home,
+                    label = "Home",
+                    onClick = { viewModel.sendRemoteGlobalAction("HOME") },
+                    testTag = "nav_home_btn"
+                )
+                NavActionItem(
+                    icon = Icons.Default.Tab,
+                    label = "Recents",
+                    onClick = { viewModel.sendRemoteGlobalAction("RECENTS") },
+                    testTag = "nav_recents_btn"
+                )
+                NavActionItem(
+                    icon = Icons.Default.Notifications,
+                    label = "Shade",
+                    onClick = { viewModel.sendRemoteGlobalAction("NOTIFICATIONS") },
+                    testTag = "nav_notifications_btn"
+                )
+                NavActionItem(
+                    icon = Icons.Default.Settings,
+                    label = "Quick Set",
+                    onClick = { viewModel.sendRemoteGlobalAction("QUICK_SETTINGS") },
+                    testTag = "nav_quick_settings_btn"
+                )
+                NavActionItem(
+                    icon = Icons.Default.Lock,
+                    label = "Lock",
+                    onClick = { viewModel.sendRemoteGlobalAction("LOCK_SCREEN") },
+                    testTag = "nav_lock_btn"
+                )
             }
         }
     }

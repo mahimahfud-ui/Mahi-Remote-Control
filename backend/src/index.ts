@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import http from 'http';
 import path from 'path';
 import express from 'express';
@@ -10,14 +11,31 @@ const app = express();
 const port = parseInt(process.env.PORT || '8080', 10);
 const host = process.env.HOST || '0.0.0.0';
 
-// Allow all origins for IP-based and Cloudflare tunnel access
+// Browser access is same-origin on the configured HTTPS host. Native clients
+// do not use browser CORS, so wildcard origins are unnecessary.
+app.set('trust proxy', 1);
+const configuredOrigin = (() => {
+  try {
+    const parsed = new URL(process.env.PUBLIC_BASE_URL || '');
+    return parsed.protocol === 'https:' ? parsed.origin : null;
+  } catch {
+    return null;
+  }
+})();
 app.use(cors({
-  origin: '*',
+  origin: (origin, callback) => {
+    if (!origin || (configuredOrigin && origin === configuredOrigin)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error('CORS origin is not allowed'));
+  },
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Device-Id', 'X-Operator-Fingerprint', 'X-Operator-Name', 'X-Operator-Location']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Device-Id', 'X-Device-Fingerprint', 'X-Device-Name', 'X-Client-Role', 'X-Operator-Fingerprint']
 }));
 
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '1mb' }));
 
 // API Endpoints
 app.use('/api/v1', apiRouter);

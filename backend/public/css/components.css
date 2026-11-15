@@ -85,3 +85,22 @@ select{background:var(--surface-2);border:1px solid var(--line-2);border-radius:
 .modal .card{width:min(400px,100%);padding:28px;box-shadow:var(--shadow)}
 .modal p{margin:8px 0 24px}.modal .acts{display:flex;gap:10px;justify-content:flex-end}
 @media (max-width:900px){.drawer.open{position:absolute;right:0;top:0;bottom:0;z-index:8;box-shadow:var(--shadow)}.dock .lbl,.hide-sm{display:none}}
+
+
+/* Real WebRTC video layer: the transparent canvas above it only captures input. */
+.screen { position: relative; background: #000; }
+#remote-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+  z-index: 1;
+}
+#screen {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: transparent;
+}
