@@ -15,6 +15,7 @@ interface ClientConnection {
   remoteAddress: string;
   instanceId: string;
   deviceAuth?: DeviceAuthContext;
+  deviceAccessToken?: string;
   isAlive: boolean;
 }
 
@@ -95,8 +96,8 @@ export class SignalingHub {
   private async acceptConnection(ws: WebSocket, req: IncomingMessage): Promise<void> {
     const requestUrl = new URL(req.url || '/ws', 'http://localhost');
     const suppliedVersion = String(req.headers['x-mahi-protocol-version'] || requestUrl.searchParams.get('protocolVersion') || '');
-    if (suppliedVersion && suppliedVersion !== '1') {
-      ws.close(1002, 'Unsupported Mahi protocol version');
+    if (suppliedVersion !== '1') {
+      ws.close(1002, 'Mahi protocol version 1 is required');
       return;
     }
 
@@ -176,6 +177,7 @@ export class SignalingHub {
       remoteAddress: req.socket.remoteAddress || 'unknown',
       instanceId: this.instanceId,
       deviceAuth: deviceAuth || undefined,
+      deviceAccessToken: deviceAuth ? accessToken : undefined,
       isAlive: true,
     };
 
@@ -204,13 +206,18 @@ export class SignalingHub {
 
     ws.on('pong', () => { client.isAlive = true; });
     ws.on('message', (data, isBinary) => {
-      if (isBinary || Buffer.byteLength(data as Buffer) > MAX_MESSAGE_BYTES) {
+      const raw = Buffer.isBuffer(data)
+        ? data
+        : Array.isArray(data)
+          ? Buffer.concat(data)
+          : Buffer.from(data as ArrayBuffer);
+      if (isBinary || raw.byteLength > MAX_MESSAGE_BYTES) {
         ws.close(1009, 'Message exceeds the allowed size');
         return;
       }
       let parsed: any;
       try {
-        parsed = JSON.parse(data.toString());
+        parsed = JSON.parse(raw.toString('utf8'));
       } catch {
         this.send(client, { type: 'SIGNALING_ERROR', errorCode: 'INVALID_REQUEST', error: 'Invalid JSON message.', protocolVersion: 1 });
         return;
@@ -248,18 +255,19 @@ export class SignalingHub {
     }
   }
 
-  private sendLocal(targetId: string, payload: Record<string, unknown>): void {
+  private async sendLocal(targetId: string, payload: Record<string, unknown>): Promise<boolean> {
     const client = this.clients.get(targetId);
-    if (client) this.send(client, payload);
+    if (!client || client.ws.readyState !== WebSocket.OPEN) return false;
+    if (!await DeviceService.isConnectionOwnedByInstance(targetId, this.instanceId)) return false;
+    this.send(client, payload);
+    return true;
   }
 
-  private async sendToEntity(targetId: string, payload: Record<string, unknown>): Promise<void> {
-    const local = this.clients.get(targetId);
-    if (local && local.ws.readyState === WebSocket.OPEN) {
-      this.send(local, payload);
-      return;
-    }
+  private async sendToEntity(targetId: string, payload: Record<string, unknown>): Promise<boolean> {
+    if (await this.sendLocal(targetId, payload)) return true;
+    if (!await DeviceService.isEntityOnline(targetId)) return false;
     await Database.publishSignal(targetId, payload);
+    return true;
   }
 
   private async handleDisconnect(client: ClientConnection): Promise<void> {
@@ -303,6 +311,27 @@ export class SignalingHub {
     }
   }
 
+  private async ensureDeviceAuthorization(client: ClientConnection): Promise<boolean> {
+    if (!client.deviceAccessToken || !client.deviceAuth) return false;
+    const refreshed = AuthService.verifyDeviceToken(client.deviceAccessToken);
+    if (
+      !refreshed ||
+      refreshed.deviceId !== client.deviceAuth.deviceId ||
+      refreshed.fingerprint !== client.deviceAuth.fingerprint ||
+      refreshed.keyVersion !== client.deviceAuth.keyVersion
+    ) return false;
+
+    const device = await DeviceService.getDevice(refreshed.deviceId).catch(() => null);
+    if (
+      !device ||
+      device.isRevoked ||
+      device.fingerprint !== refreshed.fingerprint ||
+      device.keyVersion !== refreshed.keyVersion
+    ) return false;
+    client.deviceAuth = refreshed;
+    return true;
+  }
+
   private async heartbeatClients(): Promise<void> {
     const current = Array.from(this.clients.values());
     for (const client of current) {
@@ -313,9 +342,19 @@ export class SignalingHub {
       client.isAlive = false;
       try {
         client.ws.ping();
-        await DeviceService.heartbeatConnection(client.id, client.instanceId);
-        if (client.deviceAuth && (client.type === 'RECEIVER' || client.type === 'ANDROID')) {
-          await DeviceService.heartbeatDevice(client.id, client.instanceId);
+        const leaseAlive = await DeviceService.heartbeatConnection(client.id, client.instanceId);
+        if (!leaseAlive) {
+          client.ws.close(4001, 'This connection is active on another backend instance');
+          continue;
+        }
+        if (client.deviceAccessToken && (client.type === 'RECEIVER' || client.type === 'ANDROID')) {
+          if (!await this.ensureDeviceAuthorization(client)) {
+            client.ws.close(1008, 'Device authentication expired or was revoked');
+            continue;
+          }
+          if (!await DeviceService.heartbeatDevice(client.id, client.instanceId)) {
+            client.ws.close(1008, 'Device presence lease expired');
+          }
         }
       } catch {
         client.ws.terminate();
@@ -542,12 +581,12 @@ export class SignalingHub {
       this.send(sender, { type: 'SIGNALING_ERROR', errorCode: 'INVALID_REQUEST', error: 'Message must be a JSON object.', protocolVersion: 1 });
       return;
     }
-    if (message.protocolVersion !== 1) {
-      this.send(sender, { type: 'SIGNALING_ERROR', errorCode: 'INVALID_PROTOCOL_VERSION', error: 'All signaling messages require protocolVersion: 1.', protocolVersion: 1 });
+    if (sender.deviceAccessToken && !await this.ensureDeviceAuthorization(sender)) {
+      sender.ws.close(1008, 'Device authentication expired or was revoked');
       return;
     }
-    if (message.protocolVersion !== undefined && message.protocolVersion !== 1) {
-      sender.ws.close(1002, 'Unsupported Mahi protocol version');
+    if (message.protocolVersion !== 1) {
+      this.send(sender, { type: 'SIGNALING_ERROR', errorCode: 'INVALID_PROTOCOL_VERSION', error: 'All signaling messages require protocolVersion: 1.', protocolVersion: 1 });
       return;
     }
 
