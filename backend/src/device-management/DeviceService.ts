@@ -539,6 +539,21 @@ export class DeviceService {
     return result.rows[0]?.participant_id || null;
   }
 
+  public static async hasSessionScope(
+    sessionId: string,
+    participantId: string,
+    requiredScope: string
+  ): Promise<boolean> {
+    const result = await Database.query(
+      `SELECT 1 FROM support_sessions s
+       JOIN session_participants p ON p.session_id = s.session_id
+       WHERE s.session_id = $1 AND s.status = 'ACTIVE' AND s.expires_at > NOW()
+         AND p.participant_id = $2 AND $3 = ANY(p.scopes)`,
+      [sessionId, participantId, requiredScope]
+    );
+    return Boolean(result.rowCount);
+  }
+
   public static async getSessionParticipants(sessionId: string): Promise<SessionParticipant[]> {
     const result = await Database.query(
       `SELECT participant_id, participant_type, fingerprint, scopes
@@ -654,6 +669,35 @@ export class DeviceService {
       [entityId]
     );
     return Boolean(result.rowCount);
+  }
+
+  public static async cancelPendingRequestsByReceiver(receiverId: string): Promise<PairingRequestRecord[]> {
+    return Database.transaction(async (client) => {
+      const result = await client.query(
+        `UPDATE pairing_requests SET status = 'CANCELLED', decided_at = NOW()
+         WHERE receiver_id = $1 AND status = 'PENDING'
+         RETURNING request_id::text, code_id::text, receiver_id, controller_id,
+                   controller_fingerprint, controller_name, requested_scopes,
+                   (EXTRACT(EPOCH FROM expires_at) * 1000)::bigint AS expires_at_ms`,
+        [receiverId]
+      );
+      const requests: PairingRequestRecord[] = [];
+      const device = await client.query('SELECT device_name FROM devices WHERE device_id = $1', [receiverId]);
+      for (const row of result.rows) {
+        requests.push({
+          requestId: row.request_id,
+          codeId: row.code_id,
+          receiverId: row.receiver_id,
+          receiverName: device.rows[0]?.device_name || 'Receiver',
+          controllerId: row.controller_id,
+          controllerFingerprint: row.controller_fingerprint,
+          controllerName: row.controller_name,
+          requestedScopes: row.requested_scopes,
+          expiresAt: Number(row.expires_at_ms),
+        });
+      }
+      return requests;
+    });
   }
 
   public static async cancelPendingRequestsByController(controllerId: string): Promise<PairingRequestRecord[]> {
