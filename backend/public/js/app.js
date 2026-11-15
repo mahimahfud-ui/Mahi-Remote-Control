@@ -277,8 +277,7 @@
   }
 
   /* -------------------------------------------------------------
-   * 2. Pairing Trigger  /* -------------------------------------------------------------
-   * 2. Pairing Trigger (REST + WebSocket)
+   * 2. Pairing Trigger
    * ------------------------------------------------------------- */
   async function pair() {
     const code = getCodeVal();
@@ -309,7 +308,7 @@
     }
   }
 
-  function onPairSuccess()  function onPairSuccess(msg) {
+  function onPairSuccess(msg) {
     if (!msg || !msg.sessionId || !msg.sessionToken || !msg.sender) {
       setStatus('The server did not issue a valid owner-approved session.', 'error');
       if (go) go.disabled = false;
