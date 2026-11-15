@@ -548,6 +548,28 @@ async function runTests() {
     assert.equal(rotationResult.payload.fingerprint, rotation.fingerprint);
     assert.notEqual(rotationResult.payload.deviceAccessToken, enrolled.payload.deviceAccessToken);
 
+    const revokedTokenWs = makeSocket(WS_URL + '?protocolVersion=1', {
+      headers: {
+        'Authorization': 'Bearer ' + rotationResult.payload.deviceAccessToken,
+        'X-Mahi-Protocol-Version': '1'
+      }
+    });
+    const revokedTokenClose = new Promise(resolve => revokedTokenWs.once('close', code => resolve(code)));
+    await waitOpen(revokedTokenWs).catch(() => undefined);
+    assert.equal(await revokedTokenClose, 1008);
+    await closeSocket(revokedTokenWs);
+
+    console.log('[TEST] Authenticated device self-revocation invalidates tokens and sessions');
+    const selfRevoke = await post('/devices/' + deviceId + '/revoke', {}, rotationResult.payload.deviceAccessToken);
+    assert.equal(selfRevoke.response.status, 200);
+    assert.equal(selfRevoke.payload.success, true);
+    assert.equal(selfRevoke.payload.revokedDeviceId, deviceId);
+    const deviceRevoked = await Database.query(
+      'SELECT is_revoked FROM devices WHERE device_id = $1',
+      [deviceId]
+    );
+    assert.equal(deviceRevoked.rows[0].is_revoked, true);
+
     const oldTokenWs = makeSocket(WS_URL + '?protocolVersion=1', {
       headers: {
         'Authorization': 'Bearer ' + enrolled.payload.deviceAccessToken,
