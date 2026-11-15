@@ -26,17 +26,23 @@ const DEFAULT_SCOPES = ['SCREEN_VIEW', 'REMOTE_INPUT', 'FILES', 'DIAGNOSTICS'];
 
 const EVENT_SCOPE: Record<string, string | null> = {
   SDP_OFFER: 'SCREEN_VIEW',
+  DISPLAY_INFO: 'SCREEN_VIEW',
   SDP_ANSWER: 'SCREEN_VIEW',
   ICE_CANDIDATE: 'SCREEN_VIEW',
   INPUT_EVENT: 'REMOTE_INPUT',
+  APP_COMMAND: 'FILES',
   APP_LIST_REQUEST: 'FILES',
   APP_LIST_RESPONSE: 'FILES',
   APP_LAUNCH: 'FILES',
   APP_STOP: 'FILES',
+  FILE_COMMAND: 'FILES',
   FILE_LIST_REQUEST: 'FILES',
   FILE_LIST_RESPONSE: 'FILES',
   FILE_READ_REQUEST: 'FILES',
   FILE_TRANSFER: 'FILES',
+  FILE_CHUNK_RESPONSE: 'FILES',
+  FILE_WRITE_ACK: 'FILES',
+  FILE_OPERATION_RESULT: 'FILES',
   FILE_UPLOAD_START: 'FILES',
   FILE_UPLOAD_CHUNK: 'FILES',
   FILE_UPLOAD_ACK: 'FILES',
@@ -44,6 +50,8 @@ const EVENT_SCOPE: Record<string, string | null> = {
   FILE_DELETE_REQUEST: 'FILES',
   DIAGNOSTICS_REQUEST: 'DIAGNOSTICS',
   DIAGNOSTICS_RESPONSE: 'DIAGNOSTICS',
+  DIAGNOSTICS_RUN: 'DIAGNOSTICS',
+  DIAGNOSTICS_RESULT: 'DIAGNOSTICS',
   EMERGENCY_DISCONNECT: null,
 };
 
@@ -534,6 +542,10 @@ export class SignalingHub {
       this.send(sender, { type: 'SIGNALING_ERROR', errorCode: 'INVALID_REQUEST', error: 'Message must be a JSON object.', protocolVersion: 1 });
       return;
     }
+    if (message.protocolVersion !== 1) {
+      this.send(sender, { type: 'SIGNALING_ERROR', errorCode: 'INVALID_PROTOCOL_VERSION', error: 'All signaling messages require protocolVersion: 1.', protocolVersion: 1 });
+      return;
+    }
     if (message.protocolVersion !== undefined && message.protocolVersion !== 1) {
       sender.ws.close(1002, 'Unsupported Mahi protocol version');
       return;
@@ -543,10 +555,7 @@ export class SignalingHub {
     const payload = this.payloadObject(message);
 
     if (type === 'PING') {
-      if (sender.deviceAuth && !await DeviceService.isSessionParticipant('', sender.id, sender.fingerprint)) {
-        // Device presence remains independent of an active remote session.
-        await DeviceService.heartbeatDevice(sender.id, sender.instanceId);
-      }
+      if (sender.deviceAuth) await DeviceService.heartbeatDevice(sender.id, sender.instanceId);
       this.send(sender, { type: 'PONG', timestamp: Date.now(), protocolVersion: 1 });
       return;
     }
