@@ -5,7 +5,7 @@ import com.example.security.AuditSeverity
 import com.example.BuildConfig
 import com.example.security.DeviceIdentity
 import android.content.Context
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import android.net.Uri
 import java.security.SecureRandom
 import android.util.Base64
 import kotlinx.coroutines.CoroutineScope
@@ -246,16 +246,19 @@ class SignalingClient(
     private fun openWebSocket() {
         val baseUrl = _serverUrl.value
         val request = try {
-            val parsedUrl = baseUrl.toHttpUrlOrNull()
-                ?: throw IllegalArgumentException("Invalid signaling URL.")
+            val parsedUrl = Uri.parse(baseUrl)
+            if (parsedUrl.scheme != "wss" || parsedUrl.host.isNullOrBlank()) {
+                throw IllegalArgumentException("Signaling endpoint must use a valid WSS URL.")
+            }
             val requestUrl = if (isReceiverRole()) {
-                parsedUrl
+                baseUrl
             } else {
                 val ephemeralFingerprint = newControllerFingerprint()
                 controllerFingerprint = ephemeralFingerprint
-                parsedUrl.newBuilder()
-                    .addQueryParameter("controllerFingerprint", ephemeralFingerprint)
+                parsedUrl.buildUpon()
+                    .appendQueryParameter("controllerFingerprint", ephemeralFingerprint)
                     .build()
+                    .toString()
             }
 
             val builder = Request.Builder()
@@ -338,7 +341,6 @@ class SignalingClient(
             {
               "protocolVersion": 1,
               "type": "$type",
-              "sender": "${if (isReceiverRole()) deviceIdentity.deviceId else controllerFingerprint.orEmpty()}",
               "recipient": ${if (recipient != null) org.json.JSONObject.quote(recipient) else "null"},
               "sessionToken": $tokenJson,
               "payload": ${if (payload.startsWith("{") || payload.startsWith("[")) payload else org.json.JSONObject.quote(payload)},
