@@ -36,7 +36,7 @@ These are source inspections only. They do not establish that the complete workf
 
 ## Backend device-identity integration
 
-Agent 2 published `docs/BACKEND-ANDROID-CONTRACT.md` on branch `agent-backend/persistence-deployment`, source head `7c2b1387be4166da8895446aa93a4da3d14b74b1`. Android client changes follow its protocol-v1 interface:
+Agent 2 published `docs/BACKEND-ANDROID-CONTRACT.md` on branch `agent-backend/persistence-deployment`, latest inspected backend source head `9efa485fbe43ee874b91f3096a24b68742a55aa2`. Android client changes follow its protocol-v1 interface:
 
 - ECDSA P-256 / `secp256r1`, `SHA256withECDSA`, X.509 SPKI DER public key and ASN.1 DER signature, standard Base64.
 - Server-derived fingerprint format `sha256:<64 lowercase hex>`; private key remains exclusively in Android Keystore.
@@ -44,7 +44,7 @@ Agent 2 published `docs/BACKEND-ANDROID-CONTRACT.md` on branch `agent-backend/pe
 - Enrollment/authentication REST calls use protocol-version headers and bodies. Receiver WSS uses the short-lived device bearer token; client-supplied device ID/fingerprint headers are no longer sent as proof. Android controller uses a random ephemeral `controllerFingerprint` query value.
 - Device access tokens remain in memory and are not persisted.
 
-The contract is published, but the Agent 2 backend source at the above revision does not yet contain the enrollment/authentication route handlers or authenticated receiver WSS handshake. Until those endpoints are implemented and deployed, the Android receiver intentionally fails closed rather than falling back to the legacy unverified registration flow. Key rotation is specified by the contract but is not implemented in this Android PR.
+The latest inspected Agent 2 backend source contains the v1 enrollment/authentication REST route handlers, verifies device bearer tokens during the receiver WSS handshake, requires protocol-v1 messages, and creates separate participant session tokens after receiver approval. The Android client is aligned to those source-level routes and event schemas and fails closed on any missing/invalid protocol confirmation. This does not prove that the backend PR has been merged or deployed; production integration remains dependent on Agent 2's reviewed, merged and deployed backend. Key rotation is specified by the contract but is not implemented in this Android PR.
 
 ## Verification status
 
@@ -52,9 +52,9 @@ The contract is published, but the Agent 2 backend source at the above revision 
 |---|---|
 | Baseline APK compile (run 43737218111) | PASS |
 | Baseline Robolectric/unit tests (run 43737218111) | FAIL — JDK 17 with API 36 |
-| QA branch APK compile | PASS on commit `62eca274eff806e403eea93a00e101faba190e06`; protocol integration commit re-run pending |
-| QA branch Robolectric/unit tests | PASS on commit `62eca274eff806e403eea93a00e101faba190e06`; protocol integration commit re-run pending |
-| Protocol integration instrumentation-test compilation | Pending GitHub Actions |
+| QA branch APK compile | PASS on commit `4c3e89f160861090622f59094207a34ee75603da`; later refinements need the latest run |
+| QA branch Robolectric/unit tests | PASS on commit `4c3e89f160861090622f59094207a34ee75603da`; later refinements need the latest run |
+| Protocol integration APK / instrumentation compile / unit & Robolectric checks | PASS on commit `4c3e89f160861090622f59094207a34ee75603da`; later refinements need the latest run |
 | Physical execution of Android instrumentation tests | NOT RUN |
 | Physical Android device matrix | NOT RUN |
 | Android-to-Android owner approval / screen capture | NOT RUN |
