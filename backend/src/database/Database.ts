@@ -67,7 +67,13 @@ export class Database {
   }
 
   public static async transaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
-    const client = await this.getPool().connect();
+    // Migrations use this helper before migrationsReady becomes true. The pool
+    // itself must exist, but application queries remain blocked until migration
+    // startup validation completes.
+    if (!this.pool) {
+      throw new Error('Database pool is not initialized.');
+    }
+    const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
       const result = await work(client);
