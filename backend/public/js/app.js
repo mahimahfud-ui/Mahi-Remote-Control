@@ -500,7 +500,7 @@
     setState('loading');
   }
 
-  function setState(s)  function setState(s) {
+  function setState(s) {
     $('.stage').dataset.state = s;
     const select = $('#state-select');
     if (select) select.value = s;
