@@ -977,7 +977,8 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                 if (metadata.second > RemoteFileTransferRules.MAX_FILE_BYTES) {
                     throw IllegalArgumentException("Files larger than 1 GiB are not supported.")
                 }
-                totalBytes = metadata.second.coerceAtLeast(0L)
+                val declaredSize = metadata.second
+                totalBytes = declaredSize.coerceAtLeast(0L)
                 val destinationPath = File(remoteDirectory, fileName).absolutePath
                 temporaryPath = RemoteFileTransferRules.temporaryUploadPath(destinationPath, transferId)
                 val input = getApplication<Application>().contentResolver.openInputStream(uri)
@@ -1009,7 +1010,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                         if (count == 0) continue
                         val nextOffset = transferredBytes + count
                         if (nextOffset > RemoteFileTransferRules.MAX_FILE_BYTES ||
-                            (totalBytes > 0L && nextOffset > totalBytes)) {
+                            (declaredSize >= 0L && nextOffset > declaredSize)) {
                             throw IllegalStateException("The local file changed or exceeded the 1 GiB transfer limit.")
                         }
                         val chunkOffset = transferredBytes
@@ -1035,7 +1036,7 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
 
-                if (totalBytes > 0L && transferredBytes != totalBytes) {
+                if (declaredSize >= 0L && transferredBytes != declaredSize) {
                     throw IllegalStateException("The local file size changed during upload.")
                 }
                 val finalized = sendRemoteFileCommandAndAwait(
