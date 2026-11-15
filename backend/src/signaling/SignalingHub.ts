@@ -191,10 +191,10 @@ export class SignalingHub {
       await DeviceService.setConnectionOnline(
         client.id,
         client.instanceId,
-        client.type === 'RECEIVER' || client.type === 'ANDROID' ? 'DEVICE' : 'OPERATOR',
+        client.deviceAuth ? 'DEVICE' : 'OPERATOR',
         client.fingerprint
       );
-      if (client.deviceAuth && (client.type === 'RECEIVER' || client.type === 'ANDROID')) {
+      if (client.deviceAuth) {
         await DeviceService.setDeviceOnline(client.id, client.instanceId);
       }
     } catch (error) {
@@ -277,7 +277,7 @@ export class SignalingHub {
 
     try {
       await DeviceService.setConnectionOffline(client.id, client.instanceId);
-      if (client.deviceAuth && (client.type === 'RECEIVER' || client.type === 'ANDROID')) {
+      if (client.deviceAuth) {
         await DeviceService.setDeviceOffline(client.id, client.instanceId);
       }
 
@@ -347,7 +347,7 @@ export class SignalingHub {
           client.ws.close(4001, 'This connection is active on another backend instance');
           continue;
         }
-        if (client.deviceAccessToken && (client.type === 'RECEIVER' || client.type === 'ANDROID')) {
+        if (client.deviceAccessToken) {
           if (!await this.ensureDeviceAuthorization(client)) {
             client.ws.close(1008, 'Device authentication expired or was revoked');
             continue;
@@ -737,7 +737,7 @@ export class SignalingHub {
       try {
         client.ws.close(1001, 'Server shutting down');
         await DeviceService.setConnectionOffline(client.id, client.instanceId);
-        if (client.deviceAuth && (client.type === 'RECEIVER' || client.type === 'ANDROID')) {
+        if (client.deviceAuth) {
           await DeviceService.setDeviceOffline(client.id, client.instanceId);
         }
       } catch {
