@@ -1,3 +1,37 @@
+-- Preserve data from the earlier unused Supabase-oriented schema without
+-- treating its unauthenticated/RLS model as production identity records.
+DO $$
+BEGIN
+  IF to_regclass('public.devices') IS NOT NULL
+     AND NOT EXISTS (
+       SELECT 1 FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'devices' AND column_name = 'key_version'
+     ) THEN
+    ALTER TABLE public.devices RENAME TO legacy_devices_v1;
+  END IF;
+
+  IF to_regclass('public.pairing_codes') IS NOT NULL
+     AND NOT EXISTS (
+       SELECT 1 FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'pairing_codes' AND column_name = 'code_hash'
+     ) THEN
+    ALTER TABLE public.pairing_codes RENAME TO legacy_pairing_codes_v1;
+  END IF;
+
+  IF to_regclass('public.support_sessions') IS NOT NULL
+     AND NOT EXISTS (
+       SELECT 1 FROM information_schema.columns
+       WHERE table_schema = 'public' AND table_name = 'support_sessions' AND column_name = 'expires_at'
+     ) THEN
+    ALTER TABLE public.support_sessions RENAME TO legacy_support_sessions_v1;
+  END IF;
+
+  IF to_regclass('public.audit_logs') IS NOT NULL
+     AND to_regclass('public.legacy_audit_logs_v1') IS NULL THEN
+    ALTER TABLE public.audit_logs RENAME TO legacy_audit_logs_v1;
+  END IF;
+END $$;
+
 -- Mahi Remote Control backend protocol v1.
 -- Applied by backend/src/database/Database.ts; never run by the API client role.
 
