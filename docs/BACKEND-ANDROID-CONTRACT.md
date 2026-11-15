@@ -203,7 +203,26 @@ Request:
 
 Both signatures cover the canonical ROTATE challenge message in section 3. The old signature authorizes rotation and the new signature proves possession of the replacement private key. Update the public key and key version atomically; revoke old device tokens and sessions according to the documented security policy. No private key is ever sent to the server.
 
-### 4.6 TURN credentials
+### 4.6 Revoke this receiver identity
+
+**POST** `/api/v1/devices/{deviceId}/revoke` — requires the current device bearer token and the path `deviceId` must match the authenticated token subject.
+
+Request: `{ "protocolVersion": 1 }`.
+
+Response:
+
+```json
+{
+  "protocolVersion": 1,
+  "success": true,
+  "revokedDeviceId": "MAHI-ABC-12345678",
+  "endedSessionCount": 1
+}
+```
+
+The operation is atomic: mark the receiver revoked, increment its key version, consume active pairing codes, cancel pending requests, remove presence/connection leases, revoke active sessions and write an audit event. Session participants are notified through the cross-instance signaling outbox. The old device token and WebSocket are rejected immediately on the next authorization check. This endpoint only lets a device revoke itself; revoking a different device requires a separate owner/admin authorization system and is not exposed by this protocol.
+
+### 4.7 TURN credentials
 
 **GET** `/api/v1/turn-credentials` — requires `Authorization: Bearer <sessionToken>`.
 
@@ -227,13 +246,13 @@ The backend must verify that the token belongs to a current, unexpired session p
 
 The expiry in the TURN username must be no more than 10 minutes ahead. TURN credentials are never returned by public runtime configuration or before an approved session.
 
-### 4.7 Terminate a session
+### 4.8 Terminate a session
 
 **POST** `/api/v1/sessions/{sessionId}/terminate` — requires the participant session token for that same session.
 
 Response: `{ "protocolVersion": 1, "success": true }`. Termination is idempotent from the client perspective; an already-ended session returns 404 or 409 with a stable error code. The service must revoke both participants' authorization and publish a session-ended event to all backend replicas.
 
-### 4.8 Health and readiness
+### 4.9 Health and readiness
 
 **GET** `/api/v1/health` — liveness only; may succeed while the DB is unavailable.
 
