@@ -100,7 +100,7 @@ class ExampleRobolectricTest {
 
         // Owner approval is not a session until the backend issues authorization.
         assertEquals(null, manager.activeSession.value)
-        assertTrue(manager.markSessionAuthorized("test-session-1"))
+        assertTrue(manager.markSessionAuthorized("req-1", "test-session-1"))
 
         val active = manager.activeSession.value
         assertNotNull(active)
@@ -181,7 +181,7 @@ class ExampleRobolectricTest {
         manager.approveRequest(pending!!)
         assertTrue(manager.approvalInProgress.value)
         assertEquals(null, manager.activeSession.value)
-        assertTrue(manager.markSessionAuthorized("android-session-1"))
+        assertTrue(manager.markSessionAuthorized(pending.requestId, "android-session-1"))
         assertNotNull(manager.activeSession.value)
         assertEquals("Phone A (Pixel 8 Pro)", manager.activeSession.value?.operatorName)
 
@@ -194,7 +194,7 @@ class ExampleRobolectricTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val manager = PairingManager(context, testIdentity())
 
-        assertFalse(manager.markSessionAuthorized("forged-session-id"))
+        assertFalse(manager.markSessionAuthorized("forged-request-id", "forged-session-id"))
         assertEquals(null, manager.activeSession.value)
         assertFalse(manager.approvalInProgress.value)
     }
@@ -268,6 +268,33 @@ class ExampleRobolectricTest {
     }
 
 
+
+    @Test
+    fun testSessionAuthorizationMustMatchApprovedRequestId() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val manager = PairingManager(context, testIdentity())
+        manager.recordIncomingOperatorRequest(
+            controllerId = "controller-request-bound",
+            operatorName = "Request-bound controller",
+            location = "Remote",
+            fingerprint = "AA:BB:CC:DD",
+            scopes = listOf("Screen Mirroring"),
+            requestId = "approved-request-1"
+        )
+
+        val pending = manager.pendingRequest.value
+        assertNotNull(pending)
+        manager.approveRequest(pending!!)
+
+        assertFalse(manager.markSessionAuthorized("different-request", "session-wrong-request"))
+        assertNull(manager.activeSession.value)
+        assertTrue(manager.approvalInProgress.value)
+
+        assertTrue(manager.markSessionAuthorized("approved-request-1", "session-approved-request"))
+        assertEquals("session-approved-request", manager.activeSession.value?.sessionId)
+    }
+
+
     @Test
     fun testRejectedPairingCannotEstablishSession() {
         val context = ApplicationProvider.getApplicationContext<Context>()
@@ -288,7 +315,7 @@ class ExampleRobolectricTest {
         assertNull(manager.pendingRequest.value)
         assertNull(manager.activeSession.value)
         assertFalse(manager.approvalInProgress.value)
-        assertFalse(manager.markSessionAuthorized("late-backend-session"))
+        assertFalse(manager.markSessionAuthorized("rejected-request", "late-backend-session"))
         assertNull(manager.activeSession.value)
     }
 
