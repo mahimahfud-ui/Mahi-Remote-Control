@@ -144,3 +144,17 @@ CREATE TABLE IF NOT EXISTS audit_events (
 
 CREATE INDEX IF NOT EXISTS idx_audit_events_device ON audit_events(device_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_events_session ON audit_events(session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS signaling_connections (
+  entity_id TEXT NOT NULL,
+  instance_id VARCHAR(80) NOT NULL,
+  entity_type VARCHAR(16) NOT NULL CHECK (entity_type IN ('DEVICE', 'OPERATOR')),
+  fingerprint VARCHAR(256) NOT NULL,
+  connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY(entity_id, instance_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_signaling_connections_expiry ON signaling_connections(expires_at);
+CREATE INDEX IF NOT EXISTS idx_signaling_connections_entity ON signaling_connections(entity_id, expires_at);
