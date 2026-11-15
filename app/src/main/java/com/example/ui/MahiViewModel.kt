@@ -900,8 +900,10 @@ class MahiViewModel(application: Application) : AndroidViewModel(application) {
         pairingManager.approveRequest(req)
         val sent = signalingClient.send(
             "PAIR_ACCEPT",
-            """{"requestId":"${req.requestId}","receiverName":"${identity.deviceName}","status":"APPROVED","fingerprint":"${identity.fingerprint}"}""",
-            req.controllerId
+            JSONObject()
+                .put("requestId", req.requestId)
+                .put("status", "APPROVED")
+                .toString()
         )
         if (!sent) {
             pairingManager.failApproval("The approval could not be sent to the signaling server.")
