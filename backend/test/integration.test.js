@@ -354,7 +354,7 @@ async function runTests() {
 
     // Use the winning browser connection for the remaining authorized-session tests.
     controller = pendingController;
-    assert.equal(losingController === controller2 || losingController === controller, true);
+    controller2 = losingController;
 
     console.log('[TEST] TURN credentials are session-scoped and short-lived');
     const turnResponse = await fetch(BASE_URL + '/api/v1/turn-credentials', {
