@@ -281,11 +281,11 @@ class SignalingClient(
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
-                if (response.header("X-Mahi-Protocol-Version") != "1") {
-                    _connectionStatus.value = ConnectionStatus.ERROR
-                    ws.close(1002, "Mahi Remote protocol version mismatch")
-                    AuditLogger.log("SIGNALING", "PROTOCOL_VERSION_REJECTED", "Backend did not confirm protocol version 1 on WSS.", AuditSeverity.CRITICAL)
-                    scheduleReconnect()
+                // A WebSocket 101 upgrade may not expose API response headers through every HTTP stack.
+                // If the header is present it must match; protocolVersion on REGISTER_ACK/events is authoritative.
+                val responseVersion = response.header("X-Mahi-Protocol-Version")
+                if (responseVersion != null && responseVersion != "1") {
+                    rejectProtocolVersion(ws, "WSS response header did not match protocol version 1.")
                     return
                 }
 
@@ -356,16 +356,34 @@ class SignalingClient(
     }
 
     private fun parseAndDispatch(text: String) {
-        // Minimal JSON extraction
         try {
-            val type = Regex(""""type"\s*:\s*"([^"]+)"""").find(text)?.groupValues?.get(1) ?: "UNKNOWN"
-            val sender = Regex(""""sender"\s*:\s*"([^"]+)"""").find(text)?.groupValues?.get(1) ?: "UNKNOWN"
-            val recipient = Regex(""""recipient"\s*:\s*"([^"]+)"""").find(text)?.groupValues?.get(1)
-            
+            val root = org.json.JSONObject(text)
+            if (root.optInt("protocolVersion", -1) != 1) {
+                rejectProtocolVersion(webSocket, "Backend signaling event omitted protocolVersion: 1.")
+                return
+            }
+
+            val type = root.optString("type", "UNKNOWN")
+            val sender = root.optString("sender", "UNKNOWN")
+            val recipient = root.optString("recipient").takeIf { it.isNotBlank() && it != "null" }
             onMessageReceived(SignalingMessage(type, sender, recipient, text))
-        } catch (e: Exception) {
-            // Log parse issue
+        } catch (error: Exception) {
+            AuditLogger.log(
+                "SIGNALING",
+                "INVALID_EVENT",
+                "Rejected malformed signaling event: ${error.message ?: "invalid JSON"}.",
+                AuditSeverity.WARNING
+            )
         }
+    }
+
+    private fun rejectProtocolVersion(socket: WebSocket?, reason: String) {
+        explicitDisconnect = true
+        deviceAccessToken = null
+        sessionToken = null
+        _connectionStatus.value = ConnectionStatus.ERROR
+        socket?.close(1002, "Mahi Remote protocol v1 required")
+        AuditLogger.log("SIGNALING", "PROTOCOL_VERSION_REJECTED", reason, AuditSeverity.CRITICAL)
     }
 
     fun fetchSessionIceConfig(
