@@ -228,6 +228,41 @@ apiRouter.post('/devices/key-rotation/verify', asyncRoute(async (req, res) => {
   });
 }));
 
+apiRouter.post('/devices/:deviceId/revoke', asyncRoute(async (req, res) => {
+  const id = requestId(req);
+  if (!requireProtocolV1(req, res, id)) return;
+  const device = await authenticatedDevice(req);
+  if (!device || device.deviceId !== req.params.deviceId) {
+    return errorResponse(res, 403, 'DEVICE_REVOKED', 'Only the currently authenticated device may revoke its own identity.', id);
+  }
+  if (!await AuthService.checkRateLimit(`device-self-revoke:${device.deviceId}`, 3, 60 * 60_000)) {
+    return errorResponse(res, 429, 'RATE_LIMITED', 'Device revocation is temporarily rate limited.', id, true);
+  }
+
+  const notices = await DeviceService.revokeDevice(
+    device.deviceId,
+    device.fingerprint,
+    device.keyVersion
+  );
+  const otherParticipants = notices.filter((item) => item.participantId !== device.deviceId);
+  await Promise.all(otherParticipants.map(async (item) => {
+    if (!await DeviceService.isEntityOnline(item.participantId)) return;
+    await Database.publishSignal(item.participantId, {
+      type: 'SESSION_ENDED',
+      sessionId: item.sessionId,
+      reason: 'The receiver revoked its device identity.',
+      protocolVersion: 1,
+    });
+  }));
+
+  return res.json({
+    protocolVersion: 1,
+    success: true,
+    revokedDeviceId: device.deviceId,
+    endedSessionCount: Array.from(new Set(notices.map((item) => item.sessionId))).length,
+  });
+}));
+
 apiRouter.get('/turn-credentials', asyncRoute(async (req, res) => {
   const id = requestId(req);
   const token = bearerToken(req);
