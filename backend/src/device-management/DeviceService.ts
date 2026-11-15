@@ -415,13 +415,34 @@ export class DeviceService {
     sessionId: string
   ): Promise<{ request: PairingRequestRecord; session: ActiveSessionRecord }> {
     return Database.transaction(async (client) => {
-      // Lock the receiver before all competing approvals to serialize session creation.
-      const deviceResult = await client.query(
-        'SELECT device_id, device_name, fingerprint, is_revoked FROM devices WHERE device_id = $1 FOR UPDATE',
-        [receiverId]
+      // Read the controller identity without locking the request, then lock both
+      // device rows in deterministic order before locking request/code rows.
+      // This matches device-revocation/key-rotation locking and avoids a
+      // receiver->request->controller versus controller->request deadlock.
+      const preview = await client.query(
+        `SELECT controller_id FROM pairing_requests
+         WHERE request_id = $1 AND receiver_id = $2 AND status = 'PENDING'
+           AND expires_at > NOW()`,
+        [requestId, receiverId]
       );
-      const device = deviceResult.rows[0];
-      if (!device || device.is_revoked) throw new DeviceServiceError('DEVICE_REVOKED', 'Receiver device is not active.');
+      const previewControllerId = preview.rows[0]?.controller_id;
+      if (!previewControllerId) {
+        throw new DeviceServiceError('PAIRING_REQUEST_EXPIRED', 'Pairing request is invalid or expired.');
+      }
+
+      const deviceIds = Array.from(new Set([receiverId, previewControllerId])).sort();
+      const lockedDevices = await client.query(
+        `SELECT device_id, device_name, fingerprint, is_revoked
+         FROM devices WHERE device_id = ANY($1::text[])
+         ORDER BY device_id FOR UPDATE`,
+        [deviceIds]
+      );
+      const byDeviceId = new Map(lockedDevices.rows.map((item) => [item.device_id, item]));
+      const device = byDeviceId.get(receiverId);
+      if (!device || device.is_revoked) {
+        throw new DeviceServiceError('DEVICE_REVOKED', 'Receiver device is not active.');
+      }
+      const controllerDevice = byDeviceId.get(previewControllerId) || null;
 
       const requestResult = await client.query(
         `SELECT request_id::text, code_id::text, receiver_id, controller_id, controller_fingerprint,
@@ -452,11 +473,9 @@ export class DeviceService {
       );
       if (active.rowCount) throw new DeviceServiceError('SESSION_ALREADY_ACTIVE', 'This receiver already has an active remote session.');
 
-      const controllerDeviceResult = await client.query(
-        'SELECT fingerprint, is_revoked FROM devices WHERE device_id = $1 FOR UPDATE',
-        [row.controller_id]
-      );
-      const controllerDevice = controllerDeviceResult.rows[0] || null;
+      if (row.controller_id !== previewControllerId) {
+        throw new DeviceServiceError('PAIRING_REQUEST_CONFLICT', 'Controller identity changed during approval.');
+      }
       if (controllerDevice && (
         controllerDevice.is_revoked ||
         controllerDevice.fingerprint !== row.controller_fingerprint
